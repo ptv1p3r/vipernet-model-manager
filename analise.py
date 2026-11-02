@@ -410,10 +410,59 @@ def pontuar(mensagens: list[Any], janela: int = 8,
             "turnos": turnos, "ferramentas": ferramentas, "herdado_de": herdado_de}
 
 
-def nivel_de_score(score: int, limiares: dict[str, Any] | None = None) -> str:
-    """`score` -> nivel, com limiares configuraveis (`media`, `alta`)."""
+# Sinais que medem *forma* ou *volume*, nao intencao. Nao contam para a regra
+# dos dois sinais: um pedido grande nao e um pedido dificil.
+_SINAIS_AMPLITUDE = {
+    "texto_medio", "texto_longo", "texto_muito_longo",
+}
+# "testa o plugin" nao e analise, e verificacao: o verbo e uma acao de
+# confirmacao, nao um trabalho de analise. Conta zero para `media`.
+_VERBOS_VERIFICACAO = {
+    "testa", "teste", "testar", "test", "testar_",
+    "verifica", "verifique", "verificar", "verificacao",
+    "valida", "valide", "validar", "examina", "examine", "examinar",
+}
+
+
+def sinais_independentes(sinais: list[str]) -> list[str]:
+    """Sinais que contam como evidencia independente de complexidade.
+
+    A regra dos dois sinais existe porque dois sinais fracos somavam um nivel
+    pago: `testa o plugin` da verificacao (2) + dominio (1) = 3 = `media`. Nao
+    e media — e uma confirmacao trivial. Contam-se as categorias, nao os
+    pontos; verbos de verificacao e sinais de volume nao contam.
+    """
+    vistos: list[str] = []
+    for sinal in sinais or []:
+        nome, _, valor = str(sinal).partition("=")
+        nome, valor = nome.strip(), valor.strip().lower()
+        if nome in _SINAIS_AMPLITUDE:
+            continue
+        if nome == "analise" and valor in _VERBOS_VERIFICACAO:
+            continue
+        if nome in vistos:
+            continue
+        vistos.append(nome)
+    return vistos
+
+
+def nivel_de_score(score: int, limiares: dict[str, Any] | None = None,
+                   sinais: list[str] | None = None) -> str:
+    """`score` -> nivel, com limiares configuraveis (`media`, `alta`).
+
+    `limiares.media_sinais: N` troca o limiar de `media` de pontos para N
+    sinais independentes (ver `sinais_independentes`). `alta` continua a ser
+    por pontos — e o nivel caro e nao deve ficar mais facil de atingir.
+    """
     lim = dict(LIMIARES)
+    media_sinais = 0
     for chave, valor in (limiares or {}).items():
+        if chave == "media_sinais":
+            try:
+                media_sinais = int(valor)
+            except (TypeError, ValueError):
+                media_sinais = 0
+            continue
         try:
             lim[chave] = int(valor)
         except (TypeError, ValueError):
@@ -423,6 +472,10 @@ def nivel_de_score(score: int, limiares: dict[str, Any] | None = None) -> str:
         alta = media + 3
     if score >= alta:
         return "alta"
+    if media_sinais > 0:
+        if len(sinais_independentes(sinais or [])) >= media_sinais:
+            return "media"
+        return "leve"
     if score >= media:
         return "media"
     return "leve"
@@ -460,7 +513,7 @@ def decidir(mensagens: list[Any], *, limiares: dict[str, Any] | None = None,
         return {"nivel": "", "origem": "reset", "score": None,
                 "sinais": ["marcador_auto"], "herdado_de": None}
     ponto = pontuar(mensagens, janela, pesos)
-    return {"nivel": nivel_de_score(ponto["score"], limiares), "origem": "analise",
+    return {"nivel": nivel_de_score(ponto["score"], limiares, ponto["sinais"]), "origem": "analise",
             "score": ponto["score"], "sinais": ponto["sinais"],
             "caracteres": ponto["caracteres"], "turnos": ponto["turnos"],
             "ferramentas": ponto["ferramentas"], "herdado_de": ponto["herdado_de"]}

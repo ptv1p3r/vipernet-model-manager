@@ -383,14 +383,18 @@ def testes_plugin() -> None:
         check("interruptor global fica registado",
               any(l.get("evento") == "desligado" for l in linhas))
 
-        # 4. perfil gerido: nivel alta nao tem rota em pessoal -> intacto
+        # 4. perfil gerido: nivel alta nao tem rota em pessoal -> desce para media (C)
         os.environ["VMM_DIR"] = str(_dir_com(_cfg_base()))
         ag = FakeAgent(sid="s4")
         r = chamar(agent=ag, request=pedido("complexidade: alta"), session_id="s4")
-        check("nivel sem rota no perfil: pedido intacto", r is None and not ag.chamadas)
         linhas = [json.loads(l) for l in g.caminho_ledger().read_text().splitlines()]
-        check("nivel sem rota fica registado com falhadas",
-              any(l.get("evento") == "sem_rota" and l.get("perfil") == "pessoal" for l in linhas))
+        degradou = [l for l in linhas if l.get("degradado_de") == "alta"
+                    and l.get("perfil") == "pessoal"]
+        check("sem rota no nivel: degrada para o nivel abaixo em vez de desistir",
+              bool(degradou), str(linhas[-3:]))
+        check("degradacao regista o nivel efectivo",
+              bool(degradou) and degradou[-1].get("nivel_efetivo") in {"media", "leve"},
+              str(degradou[-1] if degradou else None))
 
         # 5. pessoal / leve -> uma das duas rotas de leve, com o perfil certo
         #    Agente com provider/modelo fora do catalogo: a troca tem de acontecer.
@@ -548,6 +552,93 @@ def testes_plugin() -> None:
     finally:
         plugin.resolver_rota = rotas_reais
         plugin.gestor.perfil_atual = perfis_reais
+
+
+# =========================================================================== 2b. realimentacao
+
+
+def testes_realimentacao() -> None:
+    """A (realimentacao), C (degradacao) e D (zona morta) — o lote v3."""
+    print("\n== v3: realimentacao, degradacao e zona morta ==")
+    plugin = _mod("vmm_plugin_v3", AQUI / "__init__.py")
+    os.environ["VMM_DIR"] = str(_dir_com(_cfg_base()))
+
+    # A: turno anterior truncado no mesmo nivel sobe um nivel
+    with plugin._lock:
+        plugin._resultado.clear()
+        plugin._resultado["sA"] = {"nivel": "media", "finish_reason": "length",
+                                   "output_tokens": 8000}
+    nivel, motivo = plugin.ajustar_por_resultado("sA", "media")
+    check("A: truncagem no turno anterior sobe um nivel",
+          nivel == "alta" and "truncado" in motivo, f"{nivel} {motivo}")
+
+    # A: sem truncagem nao mexe
+    with plugin._lock:
+        plugin._resultado["sA2"] = {"nivel": "media", "finish_reason": "stop",
+                                    "output_tokens": 200}
+    nivel, motivo = plugin.ajustar_por_resultado("sA2", "media")
+    check("A: resposta completa no turno anterior nao sobe",
+          nivel == "media" and not motivo, f"{nivel} {motivo}")
+
+    # A: no topo nao passa de alta
+    with plugin._lock:
+        plugin._resultado["sA3"] = {"nivel": "alta", "finish_reason": "length",
+                                    "output_tokens": 9000}
+    nivel, motivo = plugin.ajustar_por_resultado("sA3", "alta")
+    check("A: alta truncada fica em alta (nao inventa nivel)",
+          nivel == "alta" and motivo == "ja_no_topo", f"{nivel} {motivo}")
+
+    # A: nivel diferente do anterior nao conta
+    nivel, motivo = plugin.ajustar_por_resultado("sA", "leve")
+    check("A: so compara com o mesmo nivel",
+          nivel == "leve" and not motivo, f"{nivel} {motivo}")
+
+    # D: zona morta herda o nivel anterior
+    pcfg = g.validar(_cfg_base())[0]["perfis"]["pessoal"]
+    with plugin._lock:
+        plugin._historico.clear()
+        plugin._historico["pessoal\x1fsD"] = {"nivel": "alta", "abaixo": 0}
+    decisao = {"score": 3, "sinais": ["trabalho_producao=2"]}
+    nivel, motivo = plugin.herdar_se_indeciso(
+        "pessoal", "sD", "media", decisao, {"media": 3, "alta": 6})
+    check("D: zona morta herda o nivel anterior",
+          nivel == "alta" and "zona_morta" in motivo, f"{nivel} {motivo}")
+
+    # D: dois sinais independentes decidem media (nao herda)
+    decisao = {"score": 3, "sinais": ["trabalho_producao=2", "dominio_tecnico=1"]}
+    nivel, motivo = plugin.herdar_se_indeciso(
+        "pessoal", "sD", "media", decisao, {"media": 3, "alta": 6})
+    check("D: dois sinais independentes fixam media",
+          nivel == "media" and not motivo, f"{nivel} {motivo}")
+
+    # D: fora da zona morta nao herda
+    decisao = {"score": 5, "sinais": ["trabalho_producao=3", "codigo=1"]}
+    nivel, motivo = plugin.herdar_se_indeciso(
+        "pessoal", "sD", "media", decisao, {"media": 3, "alta": 6})
+    check("D: score acima da zona morta nao herda",
+          nivel == "media" and not motivo, f"{nivel} {motivo}")
+
+    # C: degradacao desce ao nivel que tem rota
+    os.environ["VMM_DIR"] = str(_dir_com(_cfg_base()))
+    pcfg = g.validar(_cfg_base())[0]["perfis"]["pessoal"]
+    plugin.resolver_rota = lambda perfil, prov, mod: {
+        "provider": prov.lower(), "api_key": "z" * 40,
+        "base_url": "https://t.test/v1", "api_mode": "chat", "source": "env"}
+    nivel_ef, entrada, rota, _ = plugin.degradar_nivel(
+        pcfg, "alta", perfil="pessoal", sessao="sC")
+    check("C: alta sem rota desce a media com rota utilizavel",
+          nivel_ef == "media" and entrada is not None and rota is not None,
+          f"{nivel_ef} {entrada}")
+
+    # C: nao sobe nivel
+    nivel_ef, entrada, rota, _ = plugin.degradar_nivel(
+        pcfg, "leve", perfil="pessoal", sessao="sC")
+    check("C: degradacao nunca sobe nem inventa nivel",
+          nivel_ef is None and entrada is None, f"{nivel_ef} {entrada}")
+
+    with plugin._lock:
+        plugin._resultado.clear()
+        plugin._historico.clear()
 
 
 # =========================================================================== 3. CLI
@@ -760,6 +851,7 @@ def testes_verificar() -> None:
 def main() -> int:
     testes_gestor()
     testes_plugin()
+    testes_realimentacao()
     testes_cli()
     testes_verificar()
     falhas = [n for n, ok, _ in _RESULTADOS if not ok]

@@ -39,7 +39,8 @@ from typing import Any
 
 try:  # carregado como pacote do Hermes
     from . import gestor
-    from .analise import NIVEIS, decidir as _decidir, detectar_tarefa as _detectar_tarefa
+    from .analise import (NIVEIS, decidir as _decidir, detectar_tarefa as _detectar_tarefa,
+                          sinais_independentes as _sinais_independentes)
 except Exception:  # import directo (selftest / CLI fora do Hermes)
     import importlib.util as _ilu
 
@@ -55,6 +56,7 @@ except Exception:  # import directo (selftest / CLI fora do Hermes)
     _an = _mod("analise")
     NIVEIS, _decidir = _an.NIVEIS, _an.decidir
     _detectar_tarefa = _an.detectar_tarefa
+    _sinais_independentes = _an.sinais_independentes
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +66,9 @@ _AMBIENTE_DESLIGADO = ("VMM_DESATIVADO", "VIPERNET_MODEL_MANAGER_OFF")
 _TTL_CONFIG = 5.0
 _TTL_ROTA = 600.0
 _TTL_MAU = 120.0
+# Limiares usados so para localizar a zona morta em `herdar_se_indeciso` quando
+# o perfil nao os declara; os efectivos vem sempre do config.
+_LIMIARES_SEGURANCA = {"media": 3, "alta": 6}
 
 _lock = threading.Lock()
 _log_lock = threading.Lock()
@@ -76,6 +81,9 @@ _avisados: set[tuple[str, str, str]] = set()
 _maus_expira: dict[tuple[str, str, str], float] = {}
 _ultimo_perfil: dict[str, str] = {}
 _ultima_decisao: dict[str, dict[str, Any]] = {}
+# Resultado do turno anterior, por sessao: alimenta o nivel do turno seguinte
+# (A). Guarda so o nivel efectivo, o finish_reason e os tokens de saida.
+_resultado: dict[str, dict[str, Any]] = {}
 
 
 # --------------------------------------------------------------------------- estado
@@ -266,6 +274,101 @@ def escolher_com_rota(pcfg: dict[str, Any], nivel: str, *, perfil: str,
     return None, None, falhadas
 
 
+# --------------------------------------------------------------------------- realimentacao
+
+
+_TRUNCADO = {"length", "max_tokens", "max_output_tokens"}
+
+
+def _resultado_do_turno_anterior(sessao: str) -> dict[str, Any]:
+    with _lock:
+        return dict(_resultado.get(sessao) or {})
+
+
+def ajustar_por_resultado(sessao: str, nivel: str) -> tuple[str, str]:
+    """A: sobe o nivel quando o turno anterior foi truncado no mesmo nivel.
+
+    `finish_reason=length` e prova medida de que o trabalho nao coube no
+    modelo: repetir o mesmo nivel no turno seguinte repete a truncagem. So
+    sobe um nivel, e nunca acima de `alta`. A descida continua a ser feita
+    pela histerese (`descer_apos`) — nao se desce por palpite.
+    """
+    if not sessao or not nivel:
+        return nivel, ""
+    antes = _resultado_do_turno_anterior(sessao)
+    if not antes or antes.get("nivel") != nivel:
+        return nivel, ""
+    motivo = str(antes.get("finish_reason") or "").strip().lower()
+    saida = antes.get("output_tokens")
+    truncado = motivo in _TRUNCADO or (isinstance(saida, int) and saida >= 4000)
+    if not truncado:
+        return nivel, ""
+    ordem = {n: i for i, n in enumerate(NIVEIS)}
+    if ordem.get(nivel, 0) >= len(NIVEIS) - 1:
+        return nivel, "ja_no_topo"
+    return NIVEIS[ordem[nivel] + 1], f"turno_anterior_truncado:{motivo or saida}"
+
+
+def degradar_nivel(pcfg: dict[str, Any], nivel: str, *, perfil: str,
+                   sessao: str) -> tuple[str | None, dict[str, Any] | None,
+                                      dict[str, Any] | None, list[str]]:
+    """C: desce um nivel quando o decidido nao tem rota utilizavel.
+
+    Melhor servir no nivel imediatamente abaixo, com registo, do que nao
+    decidir nada: um `sem_rota` silencioso fica com o modelo da sessao, que
+    pode ser o mais caro do catalogo. Nunca sobe — so desce.
+    """
+    ordem = {n: i for i, n in enumerate(NIVEIS)}
+    i = ordem.get(nivel, 0) - 1
+    while i >= 0:
+        abaixo = NIVEIS[i]
+        entrada, rota, falhadas = escolher_com_rota(
+            pcfg, abaixo, perfil=perfil, sessao=sessao)
+        if entrada is not None and rota is not None:
+            return abaixo, entrada, rota, falhadas
+        i -= 1
+    return None, None, None, []
+
+
+def herdar_se_indeciso(perfil: str, sessao: str, nivel: str,
+                       decisao: dict[str, Any],
+                       limiares: dict[str, Any] | None) -> tuple[str, str]:
+    """D: na zona morta do limiar, herda o nivel do turno anterior.
+
+    Um score encostado ao limiar de `media` com um unico sinal independente e
+    um ponto de decisao arbitrario: oscilar aqui troca de provider a cada
+    turno e cada troca invalida o cache do provider (custo real). Herdar o
+    nivel anterior reduz a oscilacao sem inventar um nivel novo.
+    """
+    if not sessao or not nivel:
+        return nivel, ""
+    if nivel != "media":
+        return nivel, ""
+    score = decisao.get("score")
+    if not isinstance(score, int):
+        return nivel, ""
+    lim = dict(_LIMIARES_SEGURANCA)
+    for chave, valor in (limiares or {}).items():
+        if chave == "media_sinais":
+            continue
+        try:
+            lim[chave] = int(valor)
+        except (TypeError, ValueError):
+            continue
+    margem = max(1, int(lim.get("media", 3)))
+    # zona morta: no primeiro ponto acima do limiar de media
+    if score > margem:
+        return nivel, ""
+    sinais = list(decisao.get("sinais") or [])
+    if len(_sinais_independentes(sinais)) >= 2:
+        return nivel, ""
+    with _lock:
+        antes = (_historico.get(f"{perfil}\x1f{sessao}") or {}).get("nivel")
+    if antes in (None, "", "media"):
+        return nivel, ""
+    return antes, f"herdado_da_zona_morta:{antes}"
+
+
 def aplicar_histerese(perfil: str, sessao: str, nivel: str, *, descer_apos: int = 2) -> str:
     """Sobe ja; desce so depois de `descer_apos` avaliacoes abaixo do nivel actual."""
     if not nivel:
@@ -408,6 +511,15 @@ def middleware_llm_request(
             with _lock:
                 _historico.pop(f"{perfil}\x1f{session_id}", None)
         else:
+            # D: zona morta do limiar -> herda o nivel anterior em vez de oscilar.
+            nivel, motivo_d = herdar_se_indeciso(
+                perfil, session_id, nivel, decisao, analise.get("limiares"))
+            if motivo_d:
+                base["indecisao"] = motivo_d
+            # A: turno anterior truncado no mesmo nivel -> sobe um nivel.
+            nivel, motivo_a = ajustar_por_resultado(session_id, nivel)
+            if motivo_a:
+                base["realimentacao"] = motivo_a
             nivel = aplicar_histerese(perfil, session_id, nivel,
                                       descer_apos=int(analise.get("descer_apos", 2) or 2))
         base["nivel"] = nivel
@@ -424,8 +536,19 @@ def middleware_llm_request(
             entrada, rota, falhadas = escolher_com_rota(
                 pcfg, nivel, perfil=perfil, sessao=session_id)
         if entrada is None or rota is None:
-            _registar({**base, "evento": "sem_rota", "falhadas": falhadas}, registar=registar)
-            return None
+            # C: sem rota no nivel decidido, desce um nivel em vez de nao decidir.
+            if not associada:
+                nivel_ef, entrada_ef, rota_ef, falhadas_ef = degradar_nivel(
+                    pcfg, nivel, perfil=perfil, sessao=session_id)
+                if entrada_ef is not None and rota_ef is not None:
+                    base["degradado_de"] = nivel
+                    base["nivel_efetivo"] = nivel_ef
+                    base["falhadas_nivel"] = falhadas
+                    nivel = nivel_ef
+                    entrada, rota, falhadas = entrada_ef, rota_ef, falhadas_ef
+            if entrada is None or rota is None:
+                _registar({**base, "evento": "sem_rota", "falhadas": falhadas}, registar=registar)
+                return None
         _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
                          origem=base["origem"], acesso=entrada.get("acesso", ""),
                          entrada=entrada["id"], escolhido_provider=rota["provider"],
@@ -556,6 +679,19 @@ def pos_resposta(
                                  ("input_tokens", "output_tokens", "prompt_tokens",
                                   "completion_tokens", "total_tokens")
                                  if usage.get(k) is not None}
+        # A: guarda o resultado para o turno seguinte poder ver se o nivel chegou.
+        if session_id and decisao.get("nivel"):
+            saida = None
+            if isinstance(usage, dict):
+                saida = usage.get("output_tokens", usage.get("completion_tokens"))
+            with _lock:
+                _resultado[session_id] = {
+                    "nivel": decisao.get("nivel"),
+                    "finish_reason": finish_reason,
+                    "output_tokens": saida if isinstance(saida, int) else None,
+                }
+                if len(_resultado) > 500:
+                    _resultado.clear()
         _registar(entrada, registar=True)
     except Exception:
         return
