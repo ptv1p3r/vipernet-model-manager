@@ -395,6 +395,22 @@ def testes_plugin() -> None:
         check("degradacao regista o nivel efectivo",
               bool(degradou) and degradou[-1].get("nivel_efetivo") in {"media", "leve"},
               str(degradou[-1] if degradou else None))
+        check("cada decisao regista o motor (versao do manifesto)",
+              bool(linhas) and all(l.get("motor") == plugin._VERSAO_MOTOR for l in linhas
+                                   if l.get("evento") not in {"resposta"})
+              and bool(plugin._VERSAO_MOTOR), str(linhas[-1]))
+
+        # 4b. triagem viva: contexto acima do limiar deixa rasto mesmo com nivel alta
+        os.environ["VMM_DIR"] = str(_dir_com(_cfg_base()))
+        plugin.gestor.perfil_atual = lambda agente=None: "trabalho"
+        ag = FakeAgent(sid="s5")
+        chamar(agent=ag, request=pedido("x" * 120000 + " complexidade: alta"), session_id="s5")
+        linhas = [json.loads(l) for l in g.caminho_ledger().read_text().splitlines()]
+        tri = [l for l in linhas if l.get("triagem") and l.get("perfil") == "trabalho"]
+        check("contexto acima do limiar fica registado na triagem", bool(tri), str(linhas[-2:]))
+        check("triagem nao altera um nivel que ja era alto",
+              bool(tri) and tri[-1].get("nivel") == "alta", str(tri[-1] if tri else None))
+        plugin.gestor.perfil_atual = lambda agente=None: "pessoal"  # repoe para o teste 5
 
         # 5. pessoal / leve -> uma das duas rotas de leve, com o perfil certo
         #    Agente com provider/modelo fora do catalogo: a troca tem de acontecer.
