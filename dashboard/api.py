@@ -31,7 +31,21 @@ import gestor  # noqa: E402  (depende do sys.path acima)
 
 router = APIRouter()
 
-VERSAO_PAINEL = "3.3.0"
+def _versao_painel() -> str:
+    """Versao do painel lida do ``manifest.json`` — um numero, uma casa.
+
+    Este valor ja esteve escrito a mao ao lado do manifest e divergiu: o
+    endpoint respondia 3.3.0 com o manifest em 3.6.x, e quem le a resposta
+    duvida de qual e o codigo que esta a correr. O manifest e a fonte.
+    """
+    try:
+        manifesto = Path(__file__).resolve().parent / "manifest.json"
+        dados = json.loads(manifesto.read_text(encoding="utf-8"))
+        return str(dados.get("version") or "")
+    except Exception:  # noqa: BLE001 - sem manifest o painel ainda responde
+        return ""
+
+
 LIMITE_LOG_MAX = 500
 LIMITE_LOG_OMISSAO = 50
 
@@ -291,7 +305,7 @@ def estado() -> dict[str, Any]:
 
     ledger = gestor.caminho_ledger()
     return {
-        "versao_painel": VERSAO_PAINEL,
+        "versao_painel": _versao_painel(),
         "activo": bool(cfg.get("activo", True)),
         "registar": bool(cfg.get("registar", True)),
         "perfis": saida_perfis,
