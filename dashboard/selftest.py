@@ -217,6 +217,22 @@ def main() -> int:
     # que foi aceite. Sem estado paralelo — deriva do resultado de /validar.
     js = (RAIZ / "dashboard" / "dist" / "index.js").read_text(encoding="utf-8")
     css = (RAIZ / "dashboard" / "dist" / "style.css").read_text(encoding="utf-8")
+
+    # O que o host serve ao browser e o `entry` do manifest, nao um nome fixo.
+    # Foi esta lacuna que deixou passar uma versao sem o verde: o manifest
+    # apontava para dist/index-3.3.0.js e as edicoes iam para dist/index.js.
+    man = json.loads((RAIZ / "dashboard" / "manifest.json").read_text(encoding="utf-8"))
+    entry = man.get("entry") or ""
+    folha = man.get("css") or ""
+    check("manifest: entry existe no pacote", (RAIZ / "dashboard" / entry).is_file(), entry)
+    check("manifest: css existe no pacote", (RAIZ / "dashboard" / folha).is_file(), folha)
+    check("manifest: entry e o ficheiro editado (dist/index.js)", entry == "dist/index.js", entry)
+    check("manifest: css e o ficheiro editado (dist/style.css)", folha == "dist/style.css", folha)
+    entry_txt = (RAIZ / "dashboard" / entry).read_text(encoding="utf-8") if entry else ""
+    check("manifest: o entry servido tem o verde", "✓ Validado" in entry_txt and "vmm-btn-ok" in entry_txt)
+    check("manifest: sem duplicados versionados no dist",
+          not list((RAIZ / "dashboard" / "dist").glob("index-*.js")) and
+          not list((RAIZ / "dashboard" / "dist").glob("style-*.css")))
     check("painel: estado validacaoOk", "const [validacaoOk, setValidacaoOk] = useState(null)" in js)
     check("painel: validar limpa aviso antes de pedir",
           "function validarConfig() {\n      setErrosValidacao([]);\n      setValidacaoOk(null);" in js)
