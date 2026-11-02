@@ -15,7 +15,6 @@ Uso:
   vmm verificar [PERFIL]              resolve credenciais de cada rota (sem as imprimir)
   vmm log [-n N] [--perfil NOME] [--provider P] [--sessao S] [--evento E]
   vmm caminho                         imprime o caminho do config
-  vmm recarregar                      pede ao gateway para recarregar os plugins
 
 Codigos de saida: 0 ok · 1 ha problema · 2 uso invalido · 3 nao encontrado.
 """
@@ -582,20 +581,6 @@ def cmd_caminho(args) -> int:
     return 0
 
 
-def cmd_recarregar(args) -> int:
-    try:
-        _seams = _seams_mod()
-        from hermes_constants import get_default_hermes_root
-    except Exception as exc:
-        return _erro(f"recarregar exige o interpretador do Hermes: {exc}", 1)
-    home = Path(get_default_hermes_root())
-    resposta = _seams.recarregar_gateway(home)
-    if not resposta:
-        return _erro("nenhum gateway respondeu ao pedido de recarga", 1)
-    print(json.dumps(resposta, ensure_ascii=False, indent=2))
-    return 0 if resposta.get("reloaded") else 1
-
-
 # --------------------------------------------------------------------------- main
 
 
@@ -686,8 +671,6 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("caminho", help="caminhos da config e do ledger")
     s.set_defaults(func=cmd_caminho)
 
-    s = sub.add_parser("recarregar", help="recarregar plugins no gateway")
-    s.set_defaults(func=cmd_recarregar)
     return p
 
 

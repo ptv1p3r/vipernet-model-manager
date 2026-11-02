@@ -385,6 +385,63 @@ Uma armadilha que já custou uma sessão: o prompt **tem de conter a palavra
 `400 Invalid request: Prompt must contain the word 'json'` — medido. Está
 travado por teste.
 
+## Triagem do pedido: janela, modalidade, JSON e latência (3.11)
+
+A análise de complexidade diz **quanto raciocínio** o turno pede. Não diz se o
+modelo escolhido *consegue* servir o turno. Um `leve` com 200 páginas anexadas
+continua a ser `leve` na pontuação e não cabe em nenhuma janela de 32k; um
+pedido com uma fotografia não se resolve num modelo só de texto.
+
+A triagem é um filtro de **impossibilidade**, aplicado antes de se tentar a
+credencial: cada rota pode declarar o que consegue, e o que ela declarou não
+conseguir nunca é tentado. Uma rota que não declara nada é permissiva — declarar
+é o que dá a garantia, não declarar não proíbe. A única proibição explícita é
+`json_nativo: false`.
+
+| campo da rota | tipo | efeito |
+|---|---|---|
+| `contexto_max` | inteiro > 0 | recusa quando a estimativa de entrada excede a janela |
+| `modalidades` | lista de `texto`, `imagem`, `audio`, `ficheiro` | recusa quando o pedido traz uma modalidade que não está na lista |
+| `json_nativo` | booleano | `false` recusa pedidos com `response_format` json |
+| `latencia_p95_ms` | inteiro > 0 | recusa quando excede `latencia_max_ms` do perfil |
+
+O que o pedido exige é medido em `analise.necessidades()`:
+
+- **tokens de entrada** — estimativa de 4 caracteres por token sobre todas as
+  mensagens; serve para decidir se cabe, não para faturar;
+- **modalidades** — detetadas nas partes de `content` (`image_url` → imagem,
+  `input_audio` → áudio, `file`/`document` → ficheiro);
+- **JSON** — só quando o pedido traz `response_format` de tipo `json_object` ou
+  `json_schema`. Falar de JSON não é exigir JSON, e o teste fixa esse negativo.
+
+Três consequências, todas com teste:
+
+1. **Texto grande sobe o nível.** Passando `contexto_grande_tokens` (24 000 por
+   omissão), um `leve` é promovido a `media` e o ledger regista
+   `triagem: contexto Ntok`. Não é "mais complexo" — é maior do que cabe.
+2. **Descer de nível não resolve capacidade.** Se a rota do nível não cabe,
+   `degradar_nivel` desce e volta a filtrar; se nada no nível couber, e só
+   então, `escolher_por_janela` procura em todo o catálogo a rota viável com
+   maior `contexto_max` e o ledger regista `escolhido_por_janela`. Um nível
+   *vazio* (sem rota, ou sem credencial) **não** dispara este recurso: aí a
+   resposta certa é não trocar, e o `selftest` trava isso.
+3. **A recusa fica registada.** A rota preterida aparece em `falhadas` como
+   `id:inviavel:<razão>` — `contexto 300000>128000`, `sem modalidade: imagem`,
+   `sem json nativo`, `latencia 3000>1500` — em vez de desaparecer.
+
+```json
+{"id": "janela-grande", "provider": "openrouter", "modelo": "openai/gpt-6.1-sol",
+ "complexidade": ["alta"], "contexto_max": 1000000,
+ "modalidades": ["texto", "imagem"], "json_nativo": true, "latencia_p95_ms": 2500}
+```
+
+**O que não está feito, e não se afirma:** ordenar por custo (a ordem do
+catálogo já é a preferência do dono; reordenar em silêncio sobrepunha-se a uma
+decisão explícita), medir TTFT (só existe `latencia_p95_ms` declarada, não
+medida), e reaproveitar decisões para perguntas *semelhantes* (o cache do
+classificador é por texto normalizado e `cache_ttl_s`; semelhança difusa
+arriscava reutilizar a classificação errada).
+
 ## Tarefas por perfil (3.2)
 
 No mesmo JSON, `perfis.<perfil>.tarefas` define como reconhecer cada tarefa;
@@ -567,11 +624,14 @@ Regras verificadas à data desta versão, com a evidência onde ela existe:
 
 - **Só superfícies públicas**, e uma exceção declarada. O plugin usa middleware,
   `ctx.register_*`, `agent.switch_model`, `agent.reasoning_config` e o SDK do
-  dashboard. Depende de **duas** superfícies não públicas — `resolve_runtime_provider`
-  para trocar o modelo do agente vivo e `reload_gateway_plugins` para o
-  `vmm recarregar` — e ambas vivem isoladas em `seams.py`, com a regra 9 do
-  catálogo citada e a indicação do sítio único a mudar quando existir seam
-  público. Não há patch a código do Hermes nem a markup do Desktop em runtime.
+  dashboard. Depende de **uma** superfície não pública —
+  `resolve_runtime_provider`, para trocar o modelo do agente vivo — isolada em
+  `seams.py`, com a regra 9 do catálogo citada e a indicação do sítio único a
+  mudar quando existir seam público. As outras duas que existiam saíram:
+  `get_active_profile_name` foi substituída por `HERMES_PROFILE`, e
+  `reload_gateway_plugins` desapareceu com o comando `vmm recarregar`
+  (recarregar plugins é operação do anfitrião). Não há patch a código do Hermes
+  nem a markup do Desktop em runtime.
 - **Validação local no commit que se publica**:
   `hermes plugins validate /opt/data/plugins/vipernet-model-manager` → rc 0.
 - **`requires_hermes`** declarado em `plugin.yaml` (`>=0.22.0`), nunca mais

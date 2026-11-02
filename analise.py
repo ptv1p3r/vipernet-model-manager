@@ -697,3 +697,73 @@ def decidir(mensagens: list[Any], *, limiares: dict[str, Any] | None = None,
             "score": ponto["score"], "sinais": ponto["sinais"],
             "caracteres": ponto["caracteres"], "turnos": ponto["turnos"],
             "ferramentas": ponto["ferramentas"], "herdado_de": ponto["herdado_de"]}
+
+
+# --------------------------------------------------------------------------- necessidades do pedido
+#
+# A decisao por complexidade diz *quanto* raciocinio o turno pede. Isto diz o
+# que o turno **exige** e que nenhuma pontuacao exprime: janela que o texto
+# ocupa, modalidades que o pedido traz e formato que a resposta tem de ter.
+# E um filtro de impossibilidade: recusa rotas que declararam nao conseguir,
+# nunca promove uma rota por preferencia.
+
+TOKENS_POR_IMAGEM = 1200   # estimativa conservadora; serve para filtrar janela, nao para faturar
+CHARS_POR_TOKEN = 4
+
+
+def _texto_e_modalidade(conteudo: Any) -> tuple[int, set[str]]:
+    """Caracteres e modalidades de um `content` (string ou lista de partes)."""
+    if isinstance(conteudo, str):
+        return len(conteudo), set()
+    caracteres = 0
+    modalidades: set[str] = set()
+    if not isinstance(conteudo, (list, tuple)):
+        return len(str(conteudo or "")), modalidades
+    for parte in conteudo:
+        if not isinstance(parte, dict):
+            caracteres += len(str(parte))
+            continue
+        tipo = str(parte.get("type") or "").lower()
+        if "image" in tipo:
+            modalidades.add("imagem")
+            caracteres += TOKENS_POR_IMAGEM * CHARS_POR_TOKEN
+        elif "audio" in tipo:
+            modalidades.add("audio")
+        elif tipo in {"file", "document", "pdf", "input_file"}:
+            modalidades.add("ficheiro")
+        texto = parte.get("text")
+        if isinstance(texto, str):
+            caracteres += len(texto)
+        elif isinstance(parte.get("image_url"), (str, dict)):
+            modalidades.add("imagem")
+    return caracteres, modalidades
+
+
+def necessidades(mensagens: Any, pedido: Any = None, *,
+                 limiar_contexto: int = 24000) -> dict[str, Any]:
+    """O que o pedido exige: tokens de entrada, modalidades e JSON.
+
+    `tokens_entrada` e estimativa grosseira (4 caracteres por token) — chega
+    para decidir se um texto de 200 paginas cabe numa janela, e nao serve para
+    contabilidade. `json` so e verdadeiro quando o pedido declara
+    `response_format` de tipo json: e o unico sinal de que a resposta *tem* de
+    ser JSON, nao de que o utilizador falou de JSON.
+    """
+    caracteres = 0
+    modalidades: set[str] = set()
+    for mensagem in mensagens or ():
+        if isinstance(mensagem, dict):
+            c, m = _texto_e_modalidade(mensagem.get("content"))
+        else:
+            c, m = len(str(mensagem)), set()
+        caracteres += c
+        modalidades |= m
+    tokens = caracteres // CHARS_POR_TOKEN
+    formato = pedido.get("response_format") if isinstance(pedido, dict) else None
+    tipo = str((formato or {}).get("type") or "").lower() if isinstance(formato, dict) else ""
+    return {
+        "tokens_entrada": tokens,
+        "modalidades": sorted(modalidades),
+        "json": tipo in {"json_object", "json_schema"},
+        "contexto_grande": tokens >= int(limiar_contexto or 0),
+    }
