@@ -237,6 +237,9 @@
     const [erro, setErro] = useState(null);
     const [aGravar, setAGravar] = useState(false);
     const [aCarregar, setACarregar] = useState(false);
+    const [mostrarEditor, setMostrarEditor] = useState(false);
+    const [configJSON, setConfigJSON] = useState("");
+    const [errosValidacao, setErrosValidacao] = useState([]);
 
     const carregar = useCallback(function () {
       setACarregar(true);
@@ -263,6 +266,54 @@
         .then(function () { return carregar(); })
         .catch(function (e) { setErro(String(e && e.message ? e.message : e)); })
         .then(function () { setAGravar(false); });
+    }
+
+    function carregarConfig() {
+      pedir("/config")
+        .then(function (c) { setConfigJSON(JSON.stringify(c, null, 2)); setErrosValidacao([]); })
+        .catch(function (e) { setErro("Erro ao carregar config: " + String(e && e.message ? e.message : e)); });
+    }
+
+    function validarConfig() {
+      setErrosValidacao([]);
+      try {
+        const cfg = JSON.parse(configJSON);
+        pedir("/validar", { method: "POST", body: JSON.stringify(cfg) })
+          .then(function (r) {
+            if (r && r.erros && r.erros.length) {
+              setErrosValidacao(r.erros);
+              setErro("Configuração inválida: " + r.erros.join("; "));
+            } else {
+              setErro(null);
+            }
+          })
+          .catch(function (e) { setErro("Erro ao validar: " + String(e && e.message ? e.message : e)); });
+      } catch (e) {
+        setErrosValidacao(["JSON inválido: " + String(e && e.message ? e.message : e)]);
+        setErro("JSON inválido: " + String(e && e.message ? e.message : e));
+      }
+    }
+
+    function salvarConfig() {
+      try {
+        const cfg = JSON.parse(configJSON);
+        pedir("/config", { method: "POST", body: JSON.stringify(cfg) })
+          .then(function () {
+            setMostrarEditor(false);
+            setConfigJSON("");
+            setErrosValidacao([]);
+            carregar();
+          })
+          .catch(function (e) { setErro("Erro ao salvar: " + String(e && e.message ? e.message : e)); });
+      } catch (e) {
+        setErro("JSON inválido: " + String(e && e.message ? e.message : e));
+      }
+    }
+
+    function fecharEditor() {
+      setMostrarEditor(false);
+      setConfigJSON("");
+      setErrosValidacao([]);
     }
 
     if (!estado && !erro) {
@@ -304,12 +355,56 @@
               title: "Ligar/desligar o gestor em todos os perfis",
             })
           ),
-          h(Button, { size: "sm", variant: "outline", onClick: carregar, disabled: aCarregar },
+          h(Button, {
+            size: "sm",
+            variant: "outline",
+            onClick: function() { setMostrarEditor(true); carregarConfig(); }
+          },
+          "Editar configuração"
+        ),
+        h(Button, { size: "sm", variant: "outline", onClick: carregar, disabled: aCarregar },
             aCarregar ? "a actualizar…" : "Actualizar")
         )
       ),
 
       erro ? h("div", { className: "vmm-erro" }, "erro: " + erro) : null,
+
+      mostrarEditor && h(
+        Card,
+        { className: "vmm-card-editor" },
+        h(
+          CardContent,
+          { className: "vmm-card-content" },
+          h(
+            "div",
+            { className: "vmm-linha vmm-editor-cabecalho" },
+            h("h3", { className: "vmm-editor-titulo" }, "Editor de Configuração"),
+            h(Button, { size: "sm", variant: "ghost", onClick: fecharEditor }, "Fechar")
+          ),
+          h(
+            "div",
+            { className: "vmm-editor-corpo" },
+            h("textarea", {
+              value: configJSON,
+              onChange: function (e) { setConfigJSON(e.target.value); },
+              className: "vmm-editor-textarea",
+              style: { width: "100%", height: "350px", fontFamily: "monospace", fontSize: "12px", lineHeight: "1.5", padding: "8px", border: "1px solid var(--border)", borderRadius: "4px", resize: "vertical" }
+            }),
+            errosValidacao.length > 0 && h(
+              "div",
+              { className: "vmm-editor-erros" },
+              errosValidacao.map(function (e, i) { return h("div", { key: i, className: "vmm-erro-item" }, "• " + e); })
+            )
+          ),
+          h(
+            "div",
+            { className: "vmm-editor-accoes" },
+            h(Button, { size: "sm", variant: "outline", onClick: validarConfig }, "Validar"),
+            h(Button, { size: "sm", variant: "default", onClick: salvarConfig, disabled: aGravar }, aGravar ? "A gravar…" : "Salvar"),
+            h(Button, { size: "sm", variant: "ghost", onClick: fecharEditor }, "Cancelar")
+          )
+        )
+      ),
 
       h(
         "div",
@@ -359,7 +454,7 @@
       ),
 
       h("div", { className: "vmm-pe vmm-mudo" },
-        "Catalogo e associacoes de tarefa vivem em plugin-data/vipernet-model-manager/config.json — este painel nao os reescreve. Versao do painel: " +
+        "Catalogo e associacoes de tarefa vivem em plugin-data/vipernet-model-manager/config.json — este painel permite editar a configuração. Versao do painel: " +
         ((estado && estado.versao_painel) || "—"))
     );
   }
