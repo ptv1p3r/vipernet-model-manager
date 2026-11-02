@@ -717,9 +717,12 @@ def testes_cli() -> None:
     check("simular mostra nivel e ausencia de rota",
           r.returncode == 1 and "alta" in r.stdout and "nenhuma" in r.stdout, r.stdout + r.stderr)
 
+    # O ponto e a classificacao, nao a rota: `pessoal` pode nao cobrir `alta`,
+    # e nesse caso o simular sai com rc 1 e diz "nenhuma". rc 0/1 sao ambos ok.
     r = vmm("simular", "pessoal", "Implementa isto em /opt/data/x.py e corre os testes")
     check("simular classifica texto de engenharia acima de leve",
-          r.returncode == 0 and ("media" in r.stdout or "alta" in r.stdout), r.stdout)
+          r.returncode in (0, 1) and ("nivel: media" in r.stdout or "nivel: alta" in r.stdout),
+          r.stdout + r.stderr)
 
     r = vmm("perfil", "rm", "novo")
     cfg, _ = g.carregar(d / "config.json")

@@ -226,8 +226,17 @@ class Regras(unittest.TestCase):
             ["analise=2", "analise=2", "dominio_tecnico=1"])), 2)
 
     def test_sem_media_sinais_mantem_comportamento_antigo(self):
-        d = a.decidir(m("testa o plugin"), limiares={"media": 3, "alta": 6})
+        """Sem a regra, sinais fracos voltam a somar — mas verificar nunca e analisar.
+
+        A v4 exclui verbos de verificacao no proprio `_ANALISE`, por isso
+        "testa o plugin" fica leve mesmo sem `media_sinais`. A prova da
+        compatibilidade usa um caso sem verbo de verificacao.
+        """
+        d = a.decidir(m("analisa o ficheiro /opt/data/x.py"),
+                      limiares={"media": 3, "alta": 6})
         self.assertEqual(d["nivel"], "media", d)
+        # e verificar continua a nao comprar um nivel pago, com ou sem a regra
+        self.assertEqual(a.decidir(m("testa o plugin"))["nivel"], "leve")
 
 
 if __name__ == "__main__":

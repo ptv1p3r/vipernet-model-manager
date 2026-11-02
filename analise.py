@@ -59,16 +59,35 @@ _MARCA_TRADUZ = {"low": "leve", "medium": "media", "high": "alta",
 
 # Produzir/alterar: o que justifica o modelo caro. Sem acentos (texto normalizado).
 _TRABALHO = re.compile(
-    r"\b(implement\w*|refactor\w*|refator\w*|reescrev\w*|reescreve\w*|migr\w*|"
+    r"\b(implement\w*|refactor\w*|refator\w*|reescrev\w*|reescreve\w*|"
     r"substitu\w*|convert\w*|otimiz\w*|optimiz\w*|"
     r"depur\w*|debug\w*|integr\w*|constru\w*|constroi\w*|cri\w*|cria\w*|"
-    r"escrev\w*|escreve\w*|ger\w*|gera\w*|desenh\w*|desenha\w*|mont\w*|monta\w*|"
-    r"produz\w*|entreg\w*|entreg\w*|prepar\w*|prepara\w*|projet\w*|projeta\w*|"
-    r"plane\w*|planeia\w*|configur\w*|configura\w*|instal\w*|instala\w*|"
-    r"deploy\w*|provision\w*|automatiz\w*|automatiza\w*|adicion\w*|adiciona\w*|"
-    r"acrescent\w*|acrescenta\w*|atualiz\w*|atualiza\w*|aplic\w*|aplica\w*)\b"
+    r"escrev\w*|escreve\w*|ger\w*|gera\w*|desenh\w*|desenha\w*|"
+    r"mont\w*|monta\w*|produz\w*|entreg\w*|prepar\w*|prepara\w*|"
+    r"projet\w*|projeta\w*|configur\w*|configura\w*|instal\w*|instala\w*|"
+    r"deploy\w*|provision\w*|automatiz\w*|automatiza\w*)\b",
+    re.IGNORECASE,
 )
-# Analisar/comparar: trabalho intelectual, mas consultivo.
+# Objetos de sistema vivo: "corrige a automacao" e trabalho, nao manutencao fina.
+_OBJETO_VIVO = re.compile(
+    r"\b(automa[\w]*|instala[\w]*|script[\w]*|servi[\w]*|servico[\w]*|"
+    r"container[\w]*|contentor[\w]*|systemd[\w]*|docker[\w]*|"
+    r"home[ -]?assistant|ha\b|proxmox[\w]*|inversor[\w]*|bateria[\w]*|"
+    r"modulo[\w]*|pipeline[\w]*|api\b|dashboard[\w]*)\b",
+    re.IGNORECASE,
+)
+# Manutencao pequena: corrigir, adicionar, atualizar, revisao fina.
+_MANUTENCAO = re.compile(
+    r"\b(adicion\w*|adiciona\w*|atualiz\w*|atualiza\w*|corrig\w*|corrige\w*|"
+    r"acrescent\w*|acrescenta\w*|revis\w*|melhor\w*|melhora\w*)\b",
+    re.IGNORECASE,
+)
+# Planeamento: decidir o futuro, com janela, rollback, proposta.
+_PLANEAMENTO = re.compile(
+    r"\b(plano\w*|plane\w*|planeia\w*|janela\w*|rollback\w*|propost\w*|"
+    r"migr\w*|migracao\w*|estrat\w*|cronogr\w*|calend\w*|sequenc\w*)\b",
+    re.IGNORECASE,
+)
 _ANALISE = re.compile(
     r"\b(analis\w*|analisa\w*|compar\w*|compar\w*|investig\w*|investiga\w*|"
     r"avali\w*|avalia\w*|revis\w*|rev\w*|med\w*|mede\w*|estud\w*|estuda\w*|"
@@ -152,7 +171,7 @@ _FERRAMENTAS_ESCRITA = {
 # Pesos. Todos substituiveis por config (`analise.pesos`) sem tocar no codigo.
 PESOS = {
     "trabalho": 5,        # produzir/alterar
-    "manutencao": 3,     # corrigir typo, adicionar teste, atualizar lista
+    "manutencao": 3,      # corrigir typo, adicionar teste, revisao pequena
     "planeamento": 5,     # plano, janela, rollback, proposta de migracao
     "analise": 2,         # analisar/comparar
     "auditoria": 4,       # auditar/diagnosticar sistema vivo
@@ -289,6 +308,15 @@ def _ferramentas_de_escrita(mensagens: list[Any], janela: int) -> int:
     return total
 
 
+# Sinais que medem forma ou volume, nao intencao: nao contam para a regra
+# dos dois sinais — um pedido grande nao e um pedido dificil.
+_SINAIS_AMPLITUDE = {"texto_medio", "texto_longo", "texto_muito_longo"}
+# Verificar nao e analisar: "testa o plugin" nao conta como evidencia.
+_VERBOS_VERIFICACAO = {
+    "testa", "teste", "testar", "test", "verifica", "verifique", "verificar",
+    "verificacao", "valida", "valide", "validar", "examina", "examine", "examinar",
+}
+
 def _pontuar_texto(texto: str, pesos: dict[str, int], ferramentas_escrita: int,
                    turnos: int, ferramentas: int) -> tuple[int, list[str]]:
     """Nucleo da pontuacao, sobre texto ja limpo e normalizado."""
@@ -320,8 +348,13 @@ def _pontuar_texto(texto: str, pesos: dict[str, int], ferramentas_escrita: int,
         score += pesos["trabalho"]
         sinais.append(f"trabalho_producao={verbo_trabalho}")
     elif not consulta and _primeiro_verbo(_ANALISE, texto):
-        score += pesos["analise"]
-        sinais.append(f"analise={_primeiro_verbo(_ANALISE, texto)}")
+        # Verificar nao e analisar: "testa/adiciona um teste" e confirmacao. Sem
+        # isto, `adiciona um teste ao parser` somava analise (2) + manutencao (3)
+        # + dominio (1) = 6 e comprava o modelo caro para uma tarefa de minutos.
+        verbo = _primeiro_verbo(_ANALISE, texto)
+        if verbo not in _VERBOS_VERIFICACAO:
+            score += pesos["analise"]
+            sinais.append(f"analise={verbo}")
     if _STACK.search(texto):
         score += pesos["erro_stack"]
         sinais.append("erro_com_evidencia")
@@ -329,29 +362,7 @@ def _pontuar_texto(texto: str, pesos: dict[str, int], ferramentas_escrita: int,
         score += pesos["erro_avaria"]
         sinais.append("avaria_sem_evidencia")
 
-    # Manutencao e planeamento.
-_MANUTENCAO = re.compile(
-    r"\b(adicion[aá]r?\w*|adiciona\w*|atualiz[aá]r?\w*|corri[aá]g[aá]r?\w*|corrige\w*|"
-    r"atualiz[aá]|atualiza\w*|adiciona\w*|fazer\w*|faz\w*|test[eé]\w*|teste\w*|"
-    r"revis[aá]o|revisar|melhor[aá]r?)\b",
-    re.IGNORECASE,
-)
-_PLANEAMENTO = re.compile(
-    r"\b(plano\w*|plano|janela\w*|rollback\w*|propost[aá]\w*|"
-    r"migr[aá]r?\w*|migracao\w*|proposta\w*|estrat[eé]gi[aá]\w*|"
-    r"cronogr[aá]m[aá]\w*|calend[aá]ri\w*|sequ[eê]nci[aá]\w*)\b",
-    re.IGNORECASE,
-)
-
     # Amplitude.
-    # Manutencao e planeamento - separados de trabalho e arquitura.
-    if _MANUTENCAO.search(texto) and not _TRABALHO.search(texto) and not _ARQUITETURA.search(texto):
-        score += pesos["manutencao"]
-        sinais.append("manutencao_increm")
-    if _PLANEAMENTO.search(texto):
-        score += pesos["planeamento"]
-        sinais.append("planeamento_futuro")
-
     if _CODIGO.search(texto):
         score += pesos["codigo"]
         sinais.append("codigo")
@@ -382,6 +393,20 @@ _PLANEAMENTO = re.compile(
     if duas and _EXPLICACAO.search(texto):
         score += pesos["explicacao"]
         sinais.append("pedido_de_explicacao")
+
+    # Manutencao pequena e planeamento — categorias proprias.
+    if _MANUTENCAO.search(texto) and not _TRABALHO.search(texto):
+        # Corrigir um objeto de sistema vivo (automacao, servico, instalacao)
+        # e trabalho de producao, nao manutencao fina de texto.
+        if _OBJETO_VIVO.search(texto):
+            score += pesos["trabalho"]
+            sinais.append("trabalho_producao=" + (_primeiro_verbo(_MANUTENCAO, texto) or "manutencao"))
+        else:
+            score += pesos["manutencao"]
+            sinais.append("manutencao_increm")
+    if _PLANEAMENTO.search(texto):
+        score += pesos["planeamento"]
+        sinais.append("planeamento_futuro")
 
     # Trabalho em curso: escreveu/alterou ficheiros nas ultimas mensagens.
     if ferramentas_escrita:
@@ -425,13 +450,44 @@ def pontuar(mensagens: list[Any], janela: int = 8,
             if not texto_ant or _e_continuacao(texto_ant):
                 continue
             score_ant, _ = _pontuar_texto(texto_ant, p, escrita, turnos, ferramentas)
-            if score_ant > score:
+            # Continuacao que manda corrigir/alterar sobre o objeto vivo do turno
+            # anterior e trabalho de producao, nao manutencao fina: "audita o HA"
+            # -> "corrige" e uma intervencao no sistema, com o peso de trabalho.
+            alvo_vivo = bool(_MANUTENCAO.search(texto) and _OBJETO_VIVO.search(texto_ant))
+            if alvo_vivo:
+                score = score_ant + p["trabalho"] - p["manutencao"]
+                herdado_de = texto_ant[:80]
+                sinais = ["continuacao_herda",
+                          "trabalho_producao=" + (_primeiro_verbo(_MANUTENCAO, texto) or "manutencao")]
+            elif score_ant > score:
                 score, herdado_de = score_ant, texto_ant[:80]
                 sinais = ["continuacao_herda"] + [s for s in sinais if s != "sem_texto"]
             break
 
     return {"score": score, "sinais": sinais, "caracteres": len(texto),
             "turnos": turnos, "ferramentas": ferramentas, "herdado_de": herdado_de}
+
+
+def sinais_independentes(sinais: list[str]) -> list[str]:
+    """Categorias de evidencia independente de complexidade.
+
+    Dois sinais fracos somavam um nivel pago: verificacao (2) + dominio (1) = 3
+    = `media` para "testa o plugin". Contam-se categorias, nao pontos; volume e
+    verbos de verificacao nao contam.
+    """
+    vistos: list[str] = []
+    for s in sinais or []:
+        bruto = str(s).strip()
+        nome, _, valor = bruto.partition("=")
+        nome, valor = nome.strip(), valor.strip()
+        if not nome or nome in _SINAIS_AMPLITUDE or nome in _VERBOS_VERIFICACAO:
+            continue
+        # "analise=testa": o verbo e que decide, nao a categoria que o apanhou.
+        if valor and valor in _VERBOS_VERIFICACAO:
+            continue
+        if nome not in vistos:
+            vistos.append(nome)
+    return vistos
 
 
 def nivel_de_score(score: int, limiares: dict[str, Any] | None = None) -> str:
@@ -484,7 +540,20 @@ def decidir(mensagens: list[Any], *, limiares: dict[str, Any] | None = None,
         return {"nivel": "", "origem": "reset", "score": None,
                 "sinais": ["marcador_auto"], "herdado_de": None}
     ponto = pontuar(mensagens, janela, pesos)
-    return {"nivel": nivel_de_score(ponto["score"], limiares), "origem": "analise",
+    nivel = nivel_de_score(ponto["score"], limiares)
+    # Regra dos dois sinais: `media` exige `media_sinais` categorias de evidencia
+    # independente. Existe porque dois sinais fracos somavam um nivel pago.
+    minimo = None
+    for chave, valor in (limiares or {}).items():
+        if chave == "media_sinais":
+            try:
+                minimo = int(valor)
+            except (TypeError, ValueError):
+                minimo = None
+    if nivel == "media" and minimo and minimo > 0:
+        if len(sinais_independentes(ponto["sinais"])) < minimo:
+            nivel = "leve"
+    return {"nivel": nivel, "origem": "analise",
             "score": ponto["score"], "sinais": ponto["sinais"],
             "caracteres": ponto["caracteres"], "turnos": ponto["turnos"],
             "ferramentas": ponto["ferramentas"], "herdado_de": ponto["herdado_de"]}
