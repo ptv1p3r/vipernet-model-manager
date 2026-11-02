@@ -438,5 +438,62 @@ class TestPromocaoEReversao(unittest.TestCase):
         self.assertIn("nunca houve promocao", r["erro"])
 
 
+class TestFronteiras(unittest.TestCase):
+    """O portao mede a fronteira binaria que o plugin decide, nao o kappa 3 classes."""
+
+    def _pares(self, reais, previstos):
+        a = [{"id": str(i), "rotulo": r} for i, r in enumerate(reais)]
+        b = [{"id": str(i), "rotulo": p} for i, p in enumerate(previstos)]
+        return a, b
+
+    def test_concordancia_perfeita(self):
+        a, b = self._pares(["leve", "media", "alta"] * 8, ["leve", "media", "alta"] * 8)
+        f = A.kappa_fronteiras(a, b)
+        for nivel in A.NIVEIS:
+            self.assertEqual(f[nivel]["kappa"], 1.0, nivel)
+
+    def test_discordancia_numa_classe_nao_afunda_as_outras(self):
+        # `media` e sempre previsto como `leve`; `alta` e `leve` ficam certos
+        reais = ["leve", "media", "alta"] * 10
+        prev = ["leve", "leve", "alta"] * 10
+        a, b = self._pares(reais, prev)
+        f = A.kappa_fronteiras(a, b)
+        self.assertEqual(f["alta"]["kappa"], 1.0)
+        self.assertLess(f["media"]["kappa"], 0.4)
+
+    def test_fronteira_sem_casos_suficientes(self):
+        a, b = self._pares(["alta"] * 3, ["alta"] * 3)
+        f = A.kappa_fronteiras(a, b)
+        self.assertEqual(f["media"]["n"], 3)
+        depois = {"macro_f1": 0.8, "por_classe": {c: {"f1": 0.8} for c in A.NIVEIS}}
+        ok, razoes = A.portoes({"n": 3, "kappa": 0.9}, depois, depois, 0.60, 0.02, f)
+        self.assertFalse(ok)
+        self.assertTrue(any("sem casos suficientes" in r for r in razoes))
+
+    def test_portao_por_fronteira_recusa_uma_so_abaixo(self):
+        f = {"leve": {"n": 30, "kappa": 0.9}, "media": {"n": 30, "kappa": 0.59},
+             "alta": {"n": 30, "kappa": 0.9}}
+        m = {"macro_f1": 0.8, "por_classe": {c: {"f1": 0.8} for c in A.NIVEIS}}
+        ok, razoes = A.portoes({"n": 90, "kappa": 0.9}, m, m, 0.60, 0.02, f)
+        self.assertFalse(ok)
+        self.assertTrue(any("`media`" in r and "autoridade" in r for r in razoes))
+        self.assertEqual(len(razoes), 1)
+
+    def test_portao_por_fronteira_aceita_todas_acima(self):
+        f = {n: {"n": 30, "kappa": 0.88} for n in A.NIVEIS}
+        antes = {"macro_f1": 0.70, "por_classe": {c: {"f1": 0.70} for c in A.NIVEIS}}
+        depois = {"macro_f1": 0.80, "por_classe": {c: {"f1": 0.80} for c in A.NIVEIS}}
+        ok, razoes = A.portoes({"n": 90, "kappa": 0.49}, antes, depois, 0.60, 0.02, f)
+        self.assertTrue(ok, razoes)
+        # kappa global 0,49 continua abaixo do limiar e ja nao fecha o portao
+        self.assertEqual(razoes, [])
+
+    def test_sem_fronteiras_mantem_o_portao_antigo(self):
+        m = {"macro_f1": 0.8, "por_classe": {c: {"f1": 0.8} for c in A.NIVEIS}}
+        ok, razoes = A.portoes({"n": 90, "kappa": 0.49}, m, m, 0.60, 0.02, None)
+        self.assertFalse(ok)
+        self.assertTrue(any("discorda dos rotulos" in r for r in razoes))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

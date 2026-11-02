@@ -90,3 +90,49 @@ níveis diferentes ao longo do próprio turno** — o nível pode mudar a meio, 
 torna o custo imprevisível e pode trocar de modelo dentro de um turno; e o
 ledger **não guarda texto**, por isso a amostra com conversa real fica fora do
 repositório e o extractor recusa-se a escrevê-la lá (rc 2).
+
+## O ciclo automático (`aprender.py`)
+
+Uma vez por semana (job `b52071e298fa`, domingo 04:20), sem agente:
+colhe os pedidos novos, rotula-os com o juiz calibrado, treina pesos para a
+heurística, compara variantes do prompt do classificador e **só promove se os
+portões passarem**.
+
+```
+python3 eval/aprender.py                        # ciclo completo
+python3 eval/aprender.py --so-treinar           # sem juiz, sem rede
+python3 eval/aprender.py --reverter             # desfaz a última promoção
+python3 scripts/vmm-aprender.py --self-test     # prova o ciclo inteiro, offline
+```
+
+Portões, e cada um fecha por si:
+
+1. **kappa do juiz ≥ 0,55** contra os rótulos de referência — sem isto, o juiz
+   não tem autoridade para ensinar nada.
+2. **ganho na validação** — os pesos novos têm de bater a heurística actual num
+   conjunto que o treino não viu.
+3. **F1 de `media`** não pode descer — era o pior buraco medido (0,36).
+
+Promover grava `analise.pesos` e `analise.aprendiz` na config viva pelo
+`gestor.gravar` (validação única, escrita atómica, backup). `--reverter` volta
+aos pesos da promoção anterior, ou aos de origem do código quando só houve uma.
+
+### Medições que fecharam os portões (2026-11-02)
+
+| juiz | kappa | nota |
+|---|---|---|
+| 3 classes, zero-shot | **0,483** | `alta` 15/15; todo o erro em media↔leve |
+| 2 fronteiras binárias | 0,288 | refutada a hipótese de que binário calibraria melhor |
+| 3 classes + 9 âncoras few-shot | 0,395 / 0,432 | refutada; pior sem contaminação cruzada |
+
+E a razão de fundo: **o juiz não é auto-consistente**. Com `temperature: 0` e
+`top_p: 1`, o mesmo texto em 3 repetições só dá o mesmo nível em **7 de 12**
+casos (0,583). Aprender com este juiz é aprender ruído, e é por isso que os
+pesos nunca foram promovidos em produção — o portão está a fazer o seu trabalho,
+não está avariado.
+
+O que falta para desbloquear: **rótulos de referência independentes**. A fila
+`--revisao` do `medir.py` e a rubrica do `rotulos.py` existem para isso; com 40
+casos rotulados pelo dono mede-se o kappa real do segundo rotulador. Enquanto
+não houver, o ciclo colhe, mede e relata — e não promove.
+

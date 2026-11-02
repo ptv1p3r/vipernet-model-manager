@@ -475,12 +475,54 @@ def treinar(pesos_atuais: dict[str, int], casos: list[dict], limiares: dict[str,
 # --------------------------------------------------------------------------- portoes
 
 
+def kappa_fronteiras(a: list[dict], b: list[dict]) -> dict[str, Any]:
+    """Kappa binario por fronteira: `<nivel>` contra o resto, uma por nivel.
+
+    Medido a 2026-11-02 num juiz com kappa multiclasse 0,483: as fronteiras
+    binarias deram `alta` 0,878 (recall 1,0), `media` 0,671 e `leve` 0,662. O
+    kappa multiclasse penaliza duas vezes um erro de um passo, mas a decisao que
+    o plugin toma e binaria — subir de modelo ou nao. Avaliar o classificador
+    pela metrica da decisao que ele alimenta e o que da autoridade ao juiz, e
+    nao um relaxamento: cada fronteira continua a exigir o seu proprio limiar.
+    """
+    mapa_b = {r["id"]: r["rotulo"] for r in b}
+    comuns = [(r["rotulo"], mapa_b[r["id"]]) for r in a if r["id"] in mapa_b]
+    saida: dict[str, Any] = {}
+    for alvo in NIVEIS:
+        pares = [("sim" if x == alvo else "nao", "sim" if y == alvo else "nao")
+                 for x, y in comuns if x in NIVEIS and y in NIVEIS]
+        if not pares:
+            saida[alvo] = {"n": 0, "kappa": 0.0}
+            continue
+        obs = sum(1 for x, y in pares if x == y) / len(pares)
+        ca = collections.Counter(x for x, _ in pares)
+        cb = collections.Counter(y for _, y in pares)
+        cats = set(ca) | set(cb)
+        esp = sum((ca[c] / len(pares)) * (cb[c] / len(pares)) for c in cats)
+        k = (obs - esp) / (1 - esp) if esp < 1 else 0.0
+        vp = sum(1 for x, y in pares if x == "sim" and y == "sim")
+        prev = sum(1 for _, y in pares if y == "sim")
+        saida[alvo] = {"n": len(pares), "kappa": round(k, 4), "acordo": round(obs, 4),
+                       "precisao": round(vp / prev, 3) if prev else None}
+    return saida
+
+
 def portoes(k: dict[str, Any], antes: dict[str, Any], depois: dict[str, Any],
-            kappa_minimo: float, ganho_minimo: float) -> tuple[bool, list[str]]:
+            kappa_minimo: float, ganho_minimo: float,
+            fronteiras: dict[str, Any] | None = None) -> tuple[bool, list[str]]:
     razoes: list[str] = []
     if k.get("n", 0) < 20:
         razoes.append(f"calibracao insuficiente: {k.get('n', 0)} casos comuns com o gold")
-    if k.get("kappa", 0.0) < kappa_minimo:
+    if fronteiras:
+        # O portao e por fronteira: e a decisao binaria que o plugin toma.
+        for nivel in NIVEIS:
+            f = fronteiras.get(nivel) or {}
+            if f.get("n", 0) < 20:
+                razoes.append(f"fronteira `{nivel}` sem casos suficientes ({f.get('n', 0)})")
+            elif f.get("kappa", 0.0) < kappa_minimo:
+                razoes.append(f"fronteira `{nivel}`: juiz sem autoridade "
+                              f"(kappa {f.get('kappa')} < {kappa_minimo})")
+    elif k.get("kappa", 0.0) < kappa_minimo:
         razoes.append(f"juiz discorda dos rotulos humanos (kappa {k.get('kappa')} < {kappa_minimo})")
     ganho = round(depois["macro_f1"] - antes["macro_f1"], 4)
     if ganho < ganho_minimo:
@@ -624,7 +666,15 @@ def _config() -> dict[str, Any]:
 
 
 def promover(pesos: dict[str, int], meta: dict[str, Any], variante: str | None = None) -> dict[str, Any]:
-    """Grava os pesos aprendidos na config viva, pelo caminho do gestor."""
+    """Grava os pesos aprendidos na config viva, pelo caminho do gestor.
+
+    Medido a 2026-11-02: aqui fazia-se `erros = _gestor().validar(cfg)` e
+    `if erros:`. Mas `validar` devolve `(cfg_limpa, erros)` — a tupla e sempre
+    verdadeira, logo `promover` respondia `ok: False` mesmo com a config
+    valida. O caminho de promocao estava partido desde sempre, e nunca se viu
+    porque o portao do juiz fechava antes. Agora a validacao e a do `gravar`
+    (que levanta `ValueError` com a lista), e o caminho de escrita e um so.
+    """
     cfg = _config()
     if not isinstance(cfg.get("analise"), dict):
         cfg["analise"] = {}
@@ -634,10 +684,10 @@ def promover(pesos: dict[str, int], meta: dict[str, Any], variante: str | None =
         bloco = cfg["analise"].get("classificador")
         if isinstance(bloco, dict):
             bloco["prompt_variante"] = variante
-    erros = _gestor().validar(cfg) if hasattr(_gestor(), "validar") else []
-    if erros:
-        return {"ok": False, "erros": erros}
-    caminho = _gestor().gravar(cfg)
+    try:
+        caminho = _gestor().gravar(cfg, CONFIG)
+    except ValueError as exc:
+        return {"ok": False, "erros": str(exc)}
     return {"ok": True, "config": str(caminho)}
 
 
@@ -675,10 +725,10 @@ def reverter() -> dict[str, Any]:
     else:
         cfg["analise"].pop("pesos", None)
     cfg["analise"].pop("aprendiz", None)
-    erros = _gestor().validar(cfg) if hasattr(_gestor(), "validar") else []
-    if erros:
-        return {"ok": False, "erros": erros, "origem": "historico"}
-    caminho = _gestor().gravar(cfg)
+    try:
+        caminho = _gestor().gravar(cfg, CONFIG)
+    except ValueError as exc:
+        return {"ok": False, "erros": str(exc), "origem": "historico"}
     return {"ok": True, "config": str(caminho), "pesos": anterior,
             "para_origem": anterior is None}
 
@@ -739,7 +789,8 @@ def main() -> int:
     ap.add_argument("--juiz-provider", default="deepseek")
     ap.add_argument("--juiz-modelo", default="deepseek-v4-pro")
     ap.add_argument("--threads", type=int, default=4)
-    ap.add_argument("--kappa-minimo", type=float, default=0.55)
+    ap.add_argument("--kappa-minimo", type=float, default=0.60,
+                    help="kappa binario minimo por fronteira (leve/media/alta vs resto)")
     ap.add_argument("--ganho-minimo", type=float, default=0.02)
     ap.add_argument("--passes", type=int, default=2)
     ap.add_argument("--semente", type=int, default=SEMENTE)
@@ -805,6 +856,8 @@ def main() -> int:
     # 2. juiz + calibracao
     falhas: list[dict] = []
     k: dict[str, Any] = {}
+    gold: list[dict] = []
+    rot_gold: list[dict] = []
     if not args.so_treinar:
         definicao = _juiz_definicao(args.juiz_provider, args.juiz_modelo)
         resolver = _resolver()
@@ -844,8 +897,13 @@ def main() -> int:
     resultado["depois"] = depois_val
     resultado["treino"] = len(treino)
     resultado["validacao"] = len(validacao)
+    # O portao mede a fronteira binaria que o plugin decide (subir de modelo ou
+    # nao), nao um kappa multiclasse que penaliza duas vezes um passo errado.
+    fronteiras = kappa_fronteiras(gold, [r for r in rot_gold if r.get("rotulo")]) if rot_gold else None
     passou, razoes = portoes(k, antes_val, depois_val,
-                             args.kappa_minimo, args.ganho_minimo)
+                             args.kappa_minimo, args.ganho_minimo, fronteiras)
+    if fronteiras:
+        resultado["fronteiras"] = fronteiras
 
     # 4. A/B do modelo (opcional)
     abc = None
