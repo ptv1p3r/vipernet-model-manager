@@ -647,6 +647,12 @@ Regras verificadas à data desta versão, com a evidência onde ela existe:
   `uso.err` em `plugin-data`; o painel serve rotas HTTP no *plugin host*. Não
   abre sockets próprios, não recolhe telemetria, não envia nada para fora além
   dessas chamadas aos providers.
+- **Leitura fora dos dados do plugin, só em ferramenta de avaliação**. O
+  `eval/extrair_amostra.py` lê o `state.db` do Hermes (tabela `messages`, em
+  modo `ro`) para juntar a cada decisão do ledger o prompt que a originou. Não
+  corre no caminho do turno, não é invocado pelo middleware nem pelo painel, e
+  **recusa-se a escrever dentro do repositório** (rc 2): a amostra contém
+  conversa real e fica fora do repo. O que se publica é o código e a rubrica.
 - **Versionamento**: `plugin.yaml` e `dashboard/manifest.json` acompanham o
   código que publicam; o painel mostra `versao` lida do manifest, não uma
   constante escrita à mão.
@@ -665,7 +671,8 @@ $P /opt/data/plugins/vipernet-model-manager/test_analise.py        # 40
 $P /opt/data/plugins/vipernet-model-manager/test_tarefas.py        # 16
 $P /opt/data/plugins/vipernet-model-manager/test_classificador.py  # 55
 $P /opt/data/plugins/vipernet-model-manager/test_eval.py           # 32
-$P /opt/data/plugins/vipernet-model-manager/test_triagem.py        # 48
+$P /opt/data/plugins/vipernet-model-manager/test_triagem.py       # 48
+$P /opt/data/plugins/vipernet-model-manager/eval/test_amostra.py  # 22
 $P /opt/data/plugins/vipernet-model-manager/dashboard/selftest.py  # 79 (exige fastapi)
 node /opt/data/plugins/vipernet-model-manager/dashboard/test_logica.js  # 35
 ```
