@@ -235,6 +235,12 @@ def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str
 def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
     """Normaliza e valida; devolve `(config, erros)`. Nunca levanta."""
     erros: list[str] = []
+    # tentativa defensiva: se vier string, tenta parsear JSON
+    if isinstance(cfg, str):
+        try:
+            cfg = json.loads(cfg)
+        except (json.JSONDecodeError, ValueError):
+            pass  # continuará à validação normal que rejeitará non-dict
     if not isinstance(cfg, dict):
         return copy.deepcopy(SEED), ["config nao e um objecto"]
     saida: dict[str, Any] = {
@@ -328,11 +334,21 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
 def carregar(caminho: Path | None = None) -> tuple[dict[str, Any], list[str]]:
     caminho = Path(caminho) if caminho else ficheiro_config()
     try:
-        bruto = json.loads(caminho.read_text(encoding="utf-8-sig"))
+        texto = caminho.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return copy.deepcopy(SEED), []
-    except Exception as exc:  # JSON partido nao pode deixar o turno sem plugin
-        return copy.deepcopy(SEED), [f"config ilegivel: {type(exc).__name__}: {exc}"]
+    # tentativa defensiva: se json.loads falhar, tenta ler como string e fazer parse
+    try:
+        bruto = json.loads(texto)
+    except (json.JSONDecodeError, ValueError):
+        # se o ficheiro contiver um objeto JSON em formato de string, tenta converter
+        if isinstance(texto, str):
+            try:
+                bruto = json.loads(texto)
+            except (json.JSONDecodeError, ValueError):
+                return copy.deepcopy(SEED), ["config nao e um objecto"]
+        else:
+            return copy.deepcopy(SEED), ["config nao e um objecto"]
     return validar(bruto)
 
 
