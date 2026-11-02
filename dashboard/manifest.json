@@ -3,12 +3,12 @@
   "label": "Model Manager",
   "description": "Gestor de provider+modelo por perfil: interruptor, catalogo por complexidade, associacoes de tarefa e o registo do que foi servido a cada turno (modelo, provider, perfil, nivel, origem).",
   "icon": "Router",
-  "version": "3.3.0",
+  "version": "3.3.1",
   "tab": {
     "path": "/model-manager",
     "position": "end"
   },
-  "entry": "dist/index.js",
-  "css": "dist/style.css",
+  "entry": "dist/index-3.3.0.js",
+  "css": "dist/style-3.3.0.css",
   "api": "api.py"
 }
