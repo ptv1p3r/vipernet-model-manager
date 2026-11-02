@@ -98,6 +98,21 @@
   // classificador ligado que falha cai na heuristica, e um perfil sem bloco
   // herda o global sem o mostrar em lado nenhum. Por isso o rotulo diz as duas
   // coisas: o que devia decidir e a evidencia do ledger de que decidiu.
+  function _hhmm(iso) {
+    try {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return "";
+      return d.toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" });
+    } catch (e) { return ""; }
+  }
+  function _haMin(iso) {
+    try {
+      const t = Date.parse(iso);
+      if (isNaN(t)) return null;
+      return Math.max(0, Math.round((Date.now() - t) / 60000));
+    } catch (e) { return null; }
+  }
+
   function rotuloAnalise(a) {
     const vazio = {
       modo: "heuristica",
@@ -123,9 +138,16 @@
       const n = origens[k] || 0;
       if (n > 0) contagens.push(n + " " + (nomes[k] || k));
     });
-    const evidencia = a.respostas > 0
+    let evidencia = a.respostas > 0
       ? "últimos " + a.respostas + " turnos: " + contagens.join(" · ")
       : "";
+    const taxa = a.taxa || {};
+    const lidas = (taxa.leituras || 0) + (taxa.falhas || 0);
+    if (lidas > 0) {
+      const taxaTxt = (taxa.leituras || 0) + "/" + lidas + " leituras ok"
+        + (taxa.falhas ? " (" + Math.round((taxa.falhas / lidas) * 100) + "% falhas)" : "");
+      evidencia = evidencia ? evidencia + " · classificador: " + taxaTxt : "classificador: " + taxaTxt;
+    }
     const rasto = a.rasto || {};
     // O aviso so vale para a ultima chamada: um erro antigo nao pode ficar a
     // assombrar um classificador que voltou a acertar (foi medido: 149 leituras
@@ -146,7 +168,15 @@
         tom: "default",
         detalhe: extra.join(" · "),
         evidencia: evidencia,
-        alerta: alertaBruto ? "o classificador falhou no último turno — caiu na heurística: " + alertaBruto : "",
+        alerta: (function () {
+          if (!alertaBruto) return "";
+          const hora = _hhmm(rasto.ts);
+          const idade = _haMin(rasto.ts);
+          const quando = hora
+            ? " às " + hora + (idade !== null ? " (há " + (idade < 1 ? "instantes" : idade + " min") + ")" : "")
+            : "";
+          return "o classificador falhou" + quando + " — caiu na heurística: " + alertaBruto;
+        })(),
       };
     }
     const motivo = String(c.motivo || "");

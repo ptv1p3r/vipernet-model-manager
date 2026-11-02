@@ -161,7 +161,29 @@ const rFalhou = T.rotuloAnalise({
   rasto: { provider: "inception", modelo: "mercury-3", falhou: "ValueError", lido: null },
 });
 check("rotuloAnalise: falha da ultima leitura avisa e mostra o erro",
-      /falhou no último turno/.test(rFalhou.alerta) && /length 320tok/.test(rFalhou.alerta), rFalhou.alerta);
+      /o classificador falhou/.test(rFalhou.alerta) && /length 320tok/.test(rFalhou.alerta), rFalhou.alerta);
+
+// Sem `ts` nao ha hora a mostrar; com `ts` o aviso diz quando — um erro de ha
+// meia hora nao pode parecer que aconteceu agora.
+const rFalhouComHora = T.rotuloAnalise({
+  classificador: { modo: "modelo", provider: "inception", modelo: "mercury-3", origem: "herdado" },
+  erro: "resposta sem nivel reconhecel (length 320tok)",
+  rasto: { provider: "inception", modelo: "mercury-3", falhou: "ValueError",
+           ts: new Date(Date.now() - 12 * 60000).toISOString() },
+});
+check("rotuloAnalise: o alerta diz quando falhou",
+      /falhou às \d{2}:\d{2} \(há 12 min\)/.test(rFalhouComHora.alerta), rFalhouComHora.alerta);
+
+// A taxa do classificador e evidencia, nao decoracao: diz se o erro e isolado
+// ou se o modelo falha com frequencia.
+const rComTaxa = T.rotuloAnalise({
+  classificador: { modo: "modelo", provider: "inception", modelo: "mercury-3", origem: "herdado" },
+  origens: { modelo: 4 }, respostas: 4,
+  taxa: { leituras: 184, falhas: 19, ultima_falha: "2026-11-02T19:38:07+00:00" },
+  rasto: { provider: "inception", modelo: "mercury-3", lido: "alta", ms: 1600, falhou: "" },
+});
+check("rotuloAnalise: mostra a taxa de leituras do classificador",
+      /184\/203 leituras ok \(9% falhas\)/.test(rComTaxa.evidencia), rComTaxa.evidencia);
 
 // O mesmo erro, mas a ultima leitura correu bem: nao se avisa. Um erro antigo
 // nao pode ficar a assombrar um classificador que voltou a acertar.
