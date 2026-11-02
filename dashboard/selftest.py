@@ -223,6 +223,8 @@ def main() -> int:
          "nivel": "media", "origem": "analise"},
         {"ts": "2026-11-02T11:00:01+00:00", "evento": "sem_troca", "perfil": "trabalho",
          "nivel": "media",
+         "classificador": {"provider": "inception", "modelo": "mercury-3",
+                           "perfil": "trabalho", "falhou": "ValueError"},
          "classificador_erro": "resposta sem nivel reconhecel (length 320tok)"},
         {"ts": "2026-11-02T11:01:00+00:00", "evento": "resposta", "perfil": "default",
          "sessao": "d1", "provider": "deepseek", "modelo": "deepseek-flash",
@@ -262,6 +264,12 @@ def main() -> int:
     check("indicador: falha do classificador chega ao cartao",
           "length 320tok" in str((ptrb.get("analise") or {}).get("erro")),
           str((ptrb.get("analise") or {}).get("erro")))
+    check("indicador: a ultima leitura falhada fica marcada no rasto",
+          ((ptrb.get("analise") or {}).get("rasto") or {}).get("falhou") == "ValueError",
+          str((ptrb.get("analise") or {}).get("rasto")))
+    check("indicador: leitura boa nao fica marcada como falhada",
+          ((pdef.get("analise") or {}).get("rasto") or {}).get("falhou") == "",
+          str((pdef.get("analise") or {}).get("rasto")))
     check("indicador: limiares do cartao sao os efectivos (herdados)",
           (pdef.get("limiares") or {}).get("alta") == 7, str(pdef.get("limiares")))
 

@@ -126,20 +126,27 @@
     const evidencia = a.respostas > 0
       ? "últimos " + a.respostas + " turnos: " + contagens.join(" · ")
       : "";
-    const alertaBruto = c.modo === "modelo" ? (a.erro || "") : "";
+    const rasto = a.rasto || {};
+    // O aviso so vale para a ultima chamada: um erro antigo nao pode ficar a
+    // assombrar um classificador que voltou a acertar (foi medido: 149 leituras
+    // boas e 16 falhas no mesmo modelo, intermitente).
+    const alertaBruto = c.modo === "modelo" && rasto.falhou ? (a.erro || "falhou") : "";
 
     if (c.modo === "modelo") {
       const onde = c.origem === "proprio" ? "próprio do perfil" : "herdado do global";
       const extra = [];
       if (c.esforco) extra.push("esforço " + c.esforco);
       extra.push(onde);
+      if (rasto.lido) {
+        extra.push("leu " + rasto.lido + (rasto.ms ? " em " + Math.round(rasto.ms) + " ms" : ""));
+      }
       return {
         modo: "modelo",
         titulo: "modelo · " + (c.provider || "?") + "/" + (c.modelo || "?"),
         tom: "default",
         detalhe: extra.join(" · "),
         evidencia: evidencia,
-        alerta: alertaBruto ? "o modelo falhou no último turno — caiu na heurística: " + alertaBruto : "",
+        alerta: alertaBruto ? "o classificador falhou no último turno — caiu na heurística: " + alertaBruto : "",
       };
     }
     const motivo = String(c.motivo || "");
