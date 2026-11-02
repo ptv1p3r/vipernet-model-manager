@@ -53,3 +53,40 @@ Saída: `eval/reports/rel-<data>.json` (tudo) e `.md` (legível).
   custo é zero e o número relevante é o de tokens.
 - Uma corrida mede o modelo naquele dia, naquela versão do prompt. Mudar o
   prompt ou o modelo exige nova corrida — o relatório anterior não se reescreve.
+
+## Amostra estratificada e rubrica de rotulagem
+
+O `medir.py` responde «o classificador acerta nos 60 casos do gold?». A amostra
+do tráfego real responde a outra pergunta: «onde erra, e em que proporção». São
+ferramentas diferentes e ficam separadas.
+
+```
+python3 eval/extrair_amostra.py --saida /fora/do/repo/amostra.jsonl           # do ledger
+python3 eval/extrair_amostra.py --fonte sessoes --saida /fora/repo/pool.jsonl # reserva
+python3 eval/rotulos.py --amostra a.jsonl --rotulos r.jsonl --previsoes p.jsonl
+```
+
+- **`extrair_amostra.py`** — a unidade de amostragem é o **prompt de
+  utilizador**, não a decisão. Medido: 6 214 decisões no ledger correspondem a
+  **144 prompts** (razão 43:1), porque um turno gera dezenas de pedidos no laço
+  de ferramentas. Amostrar decisões pesaria a amostra pela profundidade do laço,
+  não pela intenção. O modo `--fonte sessoes` extrai da reserva os prompts
+  distintos de todas as sessões (3 588 com ≥12 caracteres), estratificados por
+  perfil e comprimento.
+- **`RUBRICA.md`** — o que é `leve`/`media`/`alta`, a regra do máximo (raciocínio,
+  contexto, especialidade), as contra-âncoras dos erros já medidos
+  (avaria≠complexidade, jargão≠complexidade, continuação herda), a adjudicação
+  com kappa ≥ 0,60, os splits dev/val/test e os critérios de aceitação.
+- **`rotulos.py`** — valida os rótulos (domínio, id existente, motivo obrigatório
+  quando a confiança não é alta), calcula macro-F1, precisão/cobertura por classe,
+  matriz de confusão e kappa entre dois rotuladores. Complementa o `--revisao` do
+  `medir.py`: aqui o rótulo é validado e a concordância medida, ali o caso entra
+  no relatório.
+- **`test_amostra.py`** — 22 verificações sem rede: recusa de escrita dentro do
+  repo, recusa de rótulo fora do domínio, motivo obrigatório, métricas e kappa.
+
+Duas propriedades que a medição fixou: **37% dos prompts (53 de 144) receberam
+níveis diferentes ao longo do próprio turno** — o nível pode mudar a meio, o que
+torna o custo imprevisível e pode trocar de modelo dentro de um turno; e o
+ledger **não guarda texto**, por isso a amostra com conversa real fica fora do
+repositório e o extractor recusa-se a escrevê-la lá (rc 2).

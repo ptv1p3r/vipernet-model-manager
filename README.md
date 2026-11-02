@@ -632,14 +632,38 @@ Regras verificadas à data desta versão, com a evidência onde ela existe:
   `get_active_profile_name` foi substituída por `HERMES_PROFILE`, e
   `reload_gateway_plugins` desapareceu com o comando `vmm recarregar`
   (recarregar plugins é operação do anfitrião). Não há patch a código do Hermes
-  nem a markup do Desktop em runtime.
+  nem a markup do Desktop em runtime. `hermes_constants` e `agent.secret_scope`
+  não contam para esta exceção: ambos estão na lista de módulos públicos do
+  próprio validador.
+
+  **Porque a exceção não se resolveu sozinha, medido.** Tentou-se substituir o
+  seam pela via pública (`providers.get_provider_profile` +
+  `agent.secret_scope.get_secret`) e mediu-se caso a caso contra o resolver
+  privado, no perfil default: `deepseek` e `openrouter` reproduzem-se (perfil
+  dá `base_url` e `api_mode`; a chave vem do `env_vars` declarado), mas
+  `deepseek` resolve por `source: manual`, ou seja a chave está na config e não
+  no ambiente; `inception` chega como provider `custom` com `base_url` vazio
+  (a config dos providers custom manda); e `openai-codex` é OAuth, onde a
+  própria regra 11 proíbe que o token chegue ao plugin. Reimplementar essas
+  quatro escadas por fora é duplicar a resolução de credenciais do Hermes —
+  exactamente o que a regra desaconselha — e falharia na subscrição. Fica uma
+  costura declarada, degradável (`seam_disponivel()`), e o caminho correcto
+  para a fechar é o que a documentação do catálogo prescreve: pedir o hook. O
+  texto do pedido está em `docs/issue-seam-switch-model.md`.
 - **Validação local no commit que se publica**:
   `hermes plugins validate /opt/data/plugins/vipernet-model-manager` → rc 0.
 - **`requires_hermes`** declarado em `plugin.yaml` (`>=0.22.0`), nunca mais
   recente do que a release instalada.
 - **Sem segredos**: o plugin não lê credenciais; usa o resolver do Hermes. A
   config não guarda chaves. Nada de `subprocess`, `eval`, `exec` nem escrita
-  fora de `/opt/data/plugin-data/vipernet-model-manager/`.
+  fora de `/opt/data/plugin-data/vipernet-model-manager/`. As três variáveis de
+  ambiente que o plugin **lê** (`VMM_DESATIVADO`,
+  `VIPERNET_MODEL_MANAGER_OFF`, `VMM_DIR`) não são credenciais — são
+  interruptores e um override de directoria de testes — e estão declaradas em
+  `optional_env` no `plugin.yaml`, para a capacidade declarada casar com o que
+  o código faz. A regra 11 fala de segredos: ler `HERMES_PROFILE`/`HERMES_HOME`
+  para saber que perfil se serve não é ler um cofre, e nenhum `.env`,
+  `auth.json`, chaveiro ou cofre é aberto por este plugin.
 - **Efeitos declarados** (o que o plugin faz na rede e no disco, para quem vai
   ler o código antes de o instalar): faz pedidos HTTPS **aos providers que o
   dono configurou** — é a razão de existir, e o classificador opcional faz um
@@ -647,6 +671,12 @@ Regras verificadas à data desta versão, com a evidência onde ela existe:
   `uso.err` em `plugin-data`; o painel serve rotas HTTP no *plugin host*. Não
   abre sockets próprios, não recolhe telemetria, não envia nada para fora além
   dessas chamadas aos providers.
+- **Leitura fora dos dados do plugin, só em ferramenta de avaliação**. O
+  `eval/extrair_amostra.py` lê o `state.db` do Hermes (tabela `messages`, em
+  modo `ro`) para juntar a cada decisão do ledger o prompt que a originou. Não
+  corre no caminho do turno, não é invocado pelo middleware nem pelo painel, e
+  **recusa-se a escrever dentro do repositório** (rc 2): a amostra contém
+  conversa real e fica fora do repo. O que se publica é o código e a rubrica.
 - **Versionamento**: `plugin.yaml` e `dashboard/manifest.json` acompanham o
   código que publicam; o painel mostra `versao` lida do manifest, não uma
   constante escrita à mão.
@@ -660,17 +690,19 @@ vai; o `config.example.json` vai).
 
 ```sh
 P=/opt/hermes/.venv/bin/python
-$P /opt/data/plugins/vipernet-model-manager/selftest.py            # 187
+$P /opt/data/plugins/vipernet-model-manager/selftest.py            # 190
 $P /opt/data/plugins/vipernet-model-manager/test_analise.py        # 40
 $P /opt/data/plugins/vipernet-model-manager/test_tarefas.py        # 16
 $P /opt/data/plugins/vipernet-model-manager/test_classificador.py  # 55
 $P /opt/data/plugins/vipernet-model-manager/test_eval.py           # 32
-$P /opt/data/plugins/vipernet-model-manager/test_triagem.py        # 48
+$P /opt/data/plugins/vipernet-model-manager/test_triagem.py       # 51
+$P /opt/data/plugins/vipernet-model-manager/eval/test_amostra.py  # 22
 $P /opt/data/plugins/vipernet-model-manager/dashboard/selftest.py  # 79 (exige fastapi)
 node /opt/data/plugins/vipernet-model-manager/dashboard/test_logica.js  # 35
 ```
 
-187 verificações no selftest, 55 no classificador por modelo (servidor HTTP
+190 verificações no selftest, 55 no classificador por modelo (servidor HTTP
 local a sério, sem mocks), 32 no banco de avaliação (métricas, percentis,
 congelamento do gold, recusa de afinar, consistência entre registos), 79 no
-painel — incluindo a lógica pura do editor corrida em node — e 16 de tarefas.
+painel — incluindo a lógica pura do editor corrida em node —, 51 na triagem por
+necessidades, 22 na amostragem/rotulagem e 16 de tarefas.
