@@ -1049,6 +1049,43 @@ def testes_classificador() -> None:
         servidor.server_close()
 
 
+def testes_sem_copia_do_global() -> None:
+    """Um perfil nao grava copias do global, nem nas chaves simples.
+
+    Medido a 2026-11-02: os tres perfis guardavam `descer_apos`,
+    `janela_mensagens`, `varredura_max_mensagens` e `limiares` iguais ao global.
+    Nao e uma declaracao: e uma copia que fixa o perfil ao valor do dia.
+    `validar` descarta o que e igual ao global, e um perfil sem nada declarado
+    fica sem a chave `analise`.
+    """
+    print("\n== sem copia do global nas chaves simples ==")
+    cfg = _cfg_base()
+    cfg["analise"]["descer_apos"] = 2
+    cfg["analise"]["limiares"] = {"media": 3, "alta": 6}
+    cfg["perfis"]["trabalho"]["analise"] = {
+        "descer_apos": 2,
+        "limiares": {"media": 3, "alta": 7},
+        "janela_mensagens": 8,
+    }
+    saida, erros = g.validar(cfg)
+    check("sem copia do global: validar aceita", erros == [], erros)
+    analise = saida["perfis"]["trabalho"].get("analise") or {}
+    check("sem copia do global: descer_apos igual nao e guardado", "descer_apos" not in analise, analise)
+    check("sem copia do global: janela_mensagens igual nao e guardada", "janela_mensagens" not in analise, analise)
+    check("sem copia do global: limiares fica so com o que difere",
+        analise.get("limiares") == {"alta": 7}, analise.get("limiares"))
+
+    vivo = {"versao": 3, "activo": True, "registar": True,
+            "analise": {"descer_apos": 3, "limiares": {"media": 3, "alta": 6},
+                        "classificador": {"activo": True, "provider": "deepseek", "modelo": "deepseek-flash"}},
+            "perfis": {"trabalho": {"estrategia": "rodizio", "catalogo": [], "tarefas": {}}}}
+    saida2, erros2 = g.validar(vivo)
+    check("sem copia do global: perfil sem analise nao ganha a chave",
+        "analise" not in saida2["perfis"]["trabalho"], saida2["perfis"]["trabalho"].keys())
+    check("sem copia do global: o global chega ao perfil na leitura",
+        g.perfil_config(saida2, "trabalho")["analise"].get("descer_apos") == 3, erros2)
+
+
 def testes_heranca_classificador() -> None:
     """Heranca global -> perfil: o que se grava e so o que o perfil declara.
 
@@ -1123,6 +1160,7 @@ def main() -> int:
     testes_plugin()
     testes_realimentacao()
     testes_classificador()
+    testes_sem_copia_do_global()
     testes_heranca_classificador()
     testes_cli()
     testes_verificar()

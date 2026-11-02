@@ -382,14 +382,14 @@ processos diferentes.
 ```sh
 P=/opt/hermes/.venv/bin/python
 $P /opt/data/plugins/vipernet-model-manager/selftest.py            # 137
-$P /opt/data/plugins/vipernet-model-manager/test_analise.py        # 38
+$P /opt/data/plugins/vipernet-model-manager/test_analise.py        # 40
 $P /opt/data/plugins/vipernet-model-manager/test_tarefas.py        # 16
-$P /opt/data/plugins/vipernet-model-manager/test_classificador.py  # 29
+$P /opt/data/plugins/vipernet-model-manager/test_classificador.py  # 37
 $P /opt/data/plugins/vipernet-model-manager/dashboard/selftest.py  # 69 (exige fastapi)
 node /opt/data/plugins/vipernet-model-manager/dashboard/test_logica.js  # 15
 ```
 
-137 verificações no selftest, 29 no classificador por modelo (servidor HTTP
+143 verificações no selftest, 37 no classificador por modelo (servidor HTTP
 local a serio, sem mocks), 69 no painel — incluindo a lógica pura do editor
 corrida em node — e 16 de tarefas: validação do esquema
 (incluindo o `acesso` e os casos negativos), semântica de perfil não
