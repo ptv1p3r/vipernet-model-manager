@@ -621,6 +621,10 @@ seguinte, e tem de ser feito num conjunto de desenvolvimento e validado num
 
 ## Prontidão para o catálogo público
 
+A matriz completa, regra a regra (18 regras, com a evidência de cada uma e os
+dois bloqueios que faltam), está em **`docs/CATALOGO.md`**. Resumo aqui do que
+muda o desenho, não do que é processo:
+
 Regras verificadas à data desta versão, com a evidência onde ela existe:
 
 - **Só superfícies públicas**, e uma exceção declarada. O plugin usa middleware,
