@@ -710,6 +710,68 @@ def perfil_config(cfg: dict[str, Any], perfil: str) -> dict[str, Any] | None:
     return saida
 
 
+def classificador_efectivo(cfg: dict[str, Any], perfil: str) -> dict[str, Any]:
+    """O que decide a complexidade neste perfil: um modelo (qual) ou a heuristica.
+
+    Uma casa so para a pergunta que o painel e o CLI fazem — o painel nao
+    reimplementa a heranca nem o "e utilizavel?". `perfil_config` resolve a
+    heranca (global -> perfil); `analise_modelo.normalizar` diz se a definicao
+    serve. Devolve sempre as mesmas chaves, para o consumidor nao ter de saber
+    distinguir "nao existe" de "existe e nao presta":
+
+    - ``modo``: ``"modelo"`` ou ``"heuristica"``.
+    - ``provider``/``modelo``/``esforco``: o que esta em vigor (vazio se heuristica).
+    - ``origem``: ``"proprio"`` (o perfil declara o bloco), ``"herdado"`` (vem do
+      global) ou ``"heuristica"`` (ninguem declarou nada).
+    - ``motivo``: porque e que um bloco declarado nao esta a decidir. Vazio quando
+      o modo e ``modelo``. **Nao se esconde**: um classificador configurado que
+      falha a validacao parece ligado a quem so olha para o `activo`.
+    """
+    pcfg = perfil_config(cfg, perfil) or {}
+    analise = pcfg.get("analise") or {}
+    bruto = analise.get("classificador")
+    definicao, erros = _analise_modelo().normalizar(bruto)
+
+    # O bloco que o perfil declara tem de ser lido do perfil CRU: `perfil_config`
+    # ja fundiu o global, e sem isto todo o perfil parecia "proprio".
+    cru = ((cfg.get("perfis") or {}).get(perfil) or {}).get("analise")
+    declara = isinstance(cru, dict) and "classificador" in cru
+    tem_rota = bool(definicao.get("provider") and definicao.get("modelo"))
+
+    if declara:
+        origem = "proprio"
+    elif tem_rota or definicao.get("activo"):
+        origem = "herdado"
+    else:
+        origem = "heuristica"
+
+    saida: dict[str, Any] = {
+        "modo": "heuristica",
+        "activo": False,
+        "provider": "",
+        "modelo": "",
+        "esforco": "",
+        "origem": origem,
+        "motivo": "",
+    }
+    if definicao.get("activo") and tem_rota and not erros:
+        saida.update(
+            {
+                "modo": "modelo",
+                "activo": True,
+                "provider": definicao["provider"],
+                "modelo": definicao["modelo"],
+                "esforco": definicao.get("esforco") or "",
+            }
+        )
+        return saida
+    if erros:
+        saida["motivo"] = "; ".join(erros)
+    elif tem_rota:
+        saida["motivo"] = "desligado"
+    return saida
+
+
 def catalogo_utilizavel(pcfg: dict[str, Any]) -> list[dict[str, Any]]:
     return [e for e in (pcfg.get("catalogo") or []) if isinstance(e, dict) and not e.get("desligado")]
 

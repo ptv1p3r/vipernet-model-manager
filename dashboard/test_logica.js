@@ -130,6 +130,55 @@ check("lerJSON: objecto valido", T.lerJSON('{"a":1}') !== null);
 check("lerJSON: array recusado", T.lerJSON("[1,2]") === null);
 check("lerJSON: texto invalido recusado", T.lerJSON("{oops") === null);
 
+// 8. rotuloAnalise: o indicador modelo/heuristica de cada cartao
+check("rotuloAnalise: exposto para teste", typeof T.rotuloAnalise === "function");
+
+const rModelo = T.rotuloAnalise({
+  classificador: { modo: "modelo", provider: "inception", modelo: "mercury-3", esforco: "baixo", origem: "herdado", motivo: "" },
+  origens: { modelo: 4, analise: 1 },
+  respostas: 5,
+  erro: "",
+});
+check("rotuloAnalise: modelo diz provider/modelo", rModelo.titulo === "modelo · inception/mercury-3", rModelo.titulo);
+check("rotuloAnalise: modelo usa o tom de destaque", rModelo.tom === "default", rModelo.tom);
+check("rotuloAnalise: modelo declara esforco e heranca", rModelo.detalhe === "esforço baixo · herdado do global", rModelo.detalhe);
+check("rotuloAnalise: modelo conta a evidencia do ledger", rModelo.evidencia === "últimos 5 turnos: 4 modelo · 1 heurística", rModelo.evidencia);
+check("rotuloAnalise: modelo sem erro nao alerta", rModelo.alerta === "", rModelo.alerta);
+
+const rProprio = T.rotuloAnalise({
+  classificador: { modo: "modelo", provider: "deepseek", modelo: "deepseek-flash", esforco: "", origem: "proprio" },
+  origens: {},
+  respostas: 0,
+});
+check("rotuloAnalise: proprio do perfil distingue-se de herdado", rProprio.detalhe === "próprio do perfil", rProprio.detalhe);
+check("rotuloAnalise: sem turnos nao inventa evidencia", rProprio.evidencia === "", rProprio.evidencia);
+
+const rFalhou = T.rotuloAnalise({
+  classificador: { modo: "modelo", provider: "inception", modelo: "mercury-3", origem: "herdado" },
+  origens: { analise: 3 },
+  respostas: 3,
+  erro: "resposta sem nivel reconhecel (length 320tok)",
+});
+check("rotuloAnalise: modelo que falhou avisa e mostra o erro", /falhou/.test(rFalhou.alerta) && /length 320tok/.test(rFalhou.alerta), rFalhou.alerta);
+
+const rDesligado = T.rotuloAnalise({
+  classificador: { modo: "heuristica", origem: "herdado", motivo: "desligado", provider: "inception", modelo: "mercury-3" },
+  origens: { analise: 2, tarefa: 1 },
+  respostas: 3,
+});
+check("rotuloAnalise: desligado nao diz heuristica sem modelo", rDesligado.detalhe === "classificador desligado — decide a heurística", rDesligado.detalhe);
+check("rotuloAnalise: desligado conta tarefa e heuristica", rDesligado.evidencia === "últimos 3 turnos: 2 heurística · 1 tarefa", rDesligado.evidencia);
+check("rotuloAnalise: desligado nao e alerta", rDesligado.alerta === "" && rDesligado.tom === "secondary");
+
+const rInvalido = T.rotuloAnalise({
+  classificador: { modo: "heuristica", origem: "proprio", motivo: "analise.classificador: activo exige provider e modelo" },
+});
+check("rotuloAnalise: bloco invalido explica porque nao decide",
+      /sem efeito/.test(rInvalido.detalhe) && /exige provider/.test(rInvalido.detalhe), rInvalido.detalhe);
+
+const rVazio = T.rotuloAnalise(null);
+check("rotuloAnalise: sem dados nao rebenta", rVazio.modo === "heuristica" && rVazio.titulo === "heurística");
+
 console.log("");
 if (falhas) {
   console.log(falhas + " de " + total + " verificacoes FALHARAM");

@@ -201,6 +201,70 @@ def main() -> int:
     antes = (d / "config.json").read_text(encoding="utf-8")
     check("/toggle invalido nao gravou", "nao-existe" not in antes)
 
+    # --- indicador do cartao: modelo (qual) ou heuristica -------------------
+    # O cartao tem de responder por perfil: que modo esta em vigor, de onde vem
+    # (proprio/herdado), que modelo, e se o modelo falhou no ultimo turno. Um
+    # perfil que herda nao pode aparecer como "desligado", e um bloco invalido
+    # nao pode aparecer como "ligado" — foi por isso que o indicador passou a
+    # ler `gestor.classificador_efectivo`, e nao o `activo` cru.
+    cfg_ind = json.loads(json.dumps(CONFIG))
+    cfg_ind["analise"]["classificador"] = {
+        "activo": True, "provider": "inception", "modelo": "mercury-3",
+        "esforco": "baixo", "max_tokens": 1200,
+    }
+    cfg_ind["perfis"]["trabalho"].setdefault("analise", {})["classificador"] = {
+        "activo": False, "provider": "inception", "modelo": "mercury-3",
+    }
+    (d / "config.json").write_text(json.dumps(cfg_ind, ensure_ascii=False, indent=2),
+                                   encoding="utf-8")
+    ledger_ind = [
+        {"ts": "2026-11-02T11:00:00+00:00", "evento": "resposta", "perfil": "trabalho",
+         "sessao": "t1", "provider": "deepseek", "modelo": "deepseek-flash",
+         "nivel": "media", "origem": "analise"},
+        {"ts": "2026-11-02T11:00:01+00:00", "evento": "sem_troca", "perfil": "trabalho",
+         "nivel": "media",
+         "classificador_erro": "resposta sem nivel reconhecel (length 320tok)"},
+        {"ts": "2026-11-02T11:01:00+00:00", "evento": "resposta", "perfil": "default",
+         "sessao": "d1", "provider": "deepseek", "modelo": "deepseek-flash",
+         "nivel": "media", "origem": "analise"},
+        {"ts": "2026-11-02T11:02:00+00:00", "evento": "troca", "perfil": "default",
+         "nivel": "alta",
+         "classificador": {"provider": "inception", "modelo": "mercury-3",
+                           "lido": "alta", "ms": 1620, "cache": False}},
+        {"ts": "2026-11-02T11:03:00+00:00", "evento": "resposta", "perfil": "default",
+         "sessao": "d1", "provider": "deepseek", "modelo": "deepseek-v4-pro",
+         "nivel": "alta", "origem": "modelo"},
+    ]
+    with (d / "uso.jsonl").open("w", encoding="utf-8") as fh:
+        for ev in ledger_ind:
+            fh.write(json.dumps(ev, ensure_ascii=False) + "\n")
+
+    est = cli.get("/estado").json()
+    pdef = (est.get("perfis") or {}).get("default") or {}
+    ptrb = (est.get("perfis") or {}).get("trabalho") or {}
+    cdef = (pdef.get("analise") or {}).get("classificador") or {}
+    ctrb = (ptrb.get("analise") or {}).get("classificador") or {}
+    check("indicador: perfil que herda aparece como modelo",
+          cdef.get("modo") == "modelo" and cdef.get("origem") == "herdado", str(cdef))
+    check("indicador: diz qual o modelo e o esforco em vigor",
+          cdef.get("provider") == "inception" and cdef.get("modelo") == "mercury-3"
+          and cdef.get("esforco") == "baixo", str(cdef))
+    check("indicador: conta as origens dos ultimos turnos",
+          (pdef.get("analise") or {}).get("origens") == {"analise": 1, "modelo": 1},
+          str((pdef.get("analise") or {}).get("origens")))
+    check("indicador: traz o rasto do classificador (ms e leitura)",
+          ((pdef.get("analise") or {}).get("rasto") or {}).get("lido") == "alta"
+          and ((pdef.get("analise") or {}).get("rasto") or {}).get("ms") == 1620,
+          str((pdef.get("analise") or {}).get("rasto")))
+    check("indicador: perfil que desliga o global aparece como heuristica",
+          ctrb.get("modo") == "heuristica" and ctrb.get("origem") == "proprio"
+          and ctrb.get("motivo") == "desligado", str(ctrb))
+    check("indicador: falha do classificador chega ao cartao",
+          "length 320tok" in str((ptrb.get("analise") or {}).get("erro")),
+          str((ptrb.get("analise") or {}).get("erro")))
+    check("indicador: limiares do cartao sao os efectivos (herdados)",
+          (pdef.get("limiares") or {}).get("alta") == 7, str(pdef.get("limiares")))
+
     # --- ledger ausente ----------------------------------------------------
     (d / "uso.jsonl").unlink()
     r = cli.get("/log")

@@ -150,8 +150,16 @@ def _ler_ledger(limite: int, perfil: Optional[str]) -> tuple[list[dict[str, Any]
     return saida, vistos
 
 
-def _ultimo_por_perfil(limite_linhas: int = 4000) -> dict[str, dict[str, Any]]:
-    """Ultimo evento ``resposta`` de cada perfil, numa so passagem do fim para o inicio."""
+def _resumo_por_perfil(
+    por_perfil: int = 25, limite_linhas: int = 20000
+) -> dict[str, dict[str, Any]]:
+    """Por perfil: ultimo turno, contagem de origens e ultimo rasto do classificador.
+
+    Uma so passagem do fim para o inicio, com orcamento de linhas. A contagem de
+    origens e o que distingue "tem modelo definido" de "o modelo esta mesmo a
+    decidir": um classificador ligado que falha cai na heuristica e o painel so
+    o mostra se olhar para o ledger, nao para a config.
+    """
     caminho = gestor.caminho_ledger()
     if not caminho.exists():
         return {}
@@ -179,11 +187,42 @@ def _ultimo_por_perfil(limite_linhas: int = 4000) -> dict[str, dict[str, Any]]:
                     ev = json.loads(cru)
                 except Exception:
                     continue
+                p = ev.get("perfil") or ""
+                if not p:
+                    continue
+                reg = achados.setdefault(
+                    p,
+                    {
+                        "ultimo": None,
+                        "origens": {},
+                        "respostas": 0,
+                        "classificador": None,
+                        "classificador_erro": "",
+                    },
+                )
+                # O rasto do classificador vive nos eventos de troca/sem_troca, que
+                # sao anteriores a `resposta` no ficheiro; a primeira ocorrencia que
+                # se ve aqui e a mais recente.
+                if reg["classificador"] is None and isinstance(ev.get("classificador"), dict):
+                    reg["classificador"] = {
+                        "provider": ev["classificador"].get("provider"),
+                        "modelo": ev["classificador"].get("modelo"),
+                        "lido": ev["classificador"].get("lido"),
+                        "ms": ev["classificador"].get("ms"),
+                        "cache": ev["classificador"].get("cache"),
+                        "ts": ev.get("ts"),
+                    }
+                if not reg["classificador_erro"] and ev.get("classificador_erro"):
+                    reg["classificador_erro"] = str(ev["classificador_erro"])
                 if ev.get("evento") != "resposta":
                     continue
-                p = ev.get("perfil") or ""
-                if p and p not in achados:
-                    achados[p] = {
+                if reg["respostas"] >= por_perfil:
+                    continue
+                reg["respostas"] += 1
+                origem = str(ev.get("origem") or "—")
+                reg["origens"][origem] = reg["origens"].get(origem, 0) + 1
+                if reg["ultimo"] is None:
+                    reg["ultimo"] = {
                         "ts": ev.get("ts"),
                         "provider": ev.get("provider"),
                         "modelo": ev.get("modelo"),
@@ -192,6 +231,8 @@ def _ultimo_por_perfil(limite_linhas: int = 4000) -> dict[str, dict[str, Any]]:
                         "origem": ev.get("origem"),
                         "sessao": ev.get("sessao"),
                     }
+    for reg in achados.values():
+        reg["janela"] = reg["respostas"]
     return achados
 
 
@@ -202,7 +243,7 @@ def _ultimo_por_perfil(limite_linhas: int = 4000) -> dict[str, dict[str, Any]]:
 def estado() -> dict[str, Any]:
     cfg = _cfg()
     perfis = cfg.get("perfis") or {}
-    ultimos = _ultimo_por_perfil()
+    resumos = _resumo_por_perfil()
 
     saida_perfis: dict[str, Any] = {}
     for nome, dados in perfis.items():
@@ -222,14 +263,27 @@ def estado() -> dict[str, Any]:
                     "acesso": entrada.get("acesso") or "api",
                 }
             )
+        pcfg = gestor.perfil_config(cfg, nome) or {}
+        resumo = resumos.get(nome) or {}
         saida_perfis[nome] = {
             "activo": bool(dados.get("activo", True)),
             "estrategia": dados.get("estrategia") or "rodizio",
             "rodizio": dados.get("rodizio") or {},
-            "limiares": (dados.get("analise") or {}).get("limiares") or {},
+            # Efectivo, nao o cru do perfil: um perfil que herda os limiares do
+            # global tem de mostrar os que estao a decidir, nao uma lista vazia.
+            "limiares": (pcfg.get("analise") or {}).get("limiares") or {},
             "tarefas": dados.get("tarefas") or {},
             "catalogo": catalogo,
-            "ultimo": ultimos.get(nome),
+            "ultimo": resumo.get("ultimo"),
+            # O indicador do cartao: modelo (qual) ou heuristica, e a evidencia
+            # de que este perfil esta mesmo a usar aquilo que declara.
+            "analise": {
+                "classificador": gestor.classificador_efectivo(cfg, nome),
+                "origens": resumo.get("origens") or {},
+                "respostas": resumo.get("respostas", 0),
+                "rasto": resumo.get("classificador"),
+                "erro": resumo.get("classificador_erro") or "",
+            },
         }
 
     ledger = gestor.caminho_ledger()

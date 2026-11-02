@@ -128,29 +128,19 @@ def cmd_classificador(args) -> int:
     perfis = cfg.get("perfis") or {}
 
     if args.cmd == "ver" or args.cmd is None:
-        am = g._analise_modelo()  # noqa: SLF001 - irmao do mesmo plugin
         linhas = [["perfil", "classificador", "provider", "modelo", "esforco", "origem"]]
-        for nome, p in sorted(perfis.items()):
-            # `perfil_config` e quem aplica a heranca global -> perfil; ler o
-            # perfil cru respondia "desligado" a um perfil que herda um global
-            # ligado. A pergunta e sempre a definicao efectiva.
-            try:
-                analise = (g.perfil_config(cfg, nome) or {}).get("analise") or {}
-            except Exception:  # noqa: BLE001 - config invalida nao trava o CLI
-                analise = p.get("analise") or {}
-            definicao = am.efectiva(analise)
-            cru = (p.get("analise") or {}) if isinstance(p.get("analise"), dict) else {}
-            herdou = "proprio" if "classificador" in cru else "herdado"
-            if definicao:
-                linhas.append([nome, "ligado", definicao["provider"], definicao["modelo"],
-                               definicao.get("esforco") or "-", herdou])
-            else:
-                bruto = analise.get("classificador") or {}
-                declarado = bool(bruto.get("provider") and bruto.get("modelo"))
-                linhas.append([nome, "desligado", str(bruto.get("provider") or "-"),
-                               str(bruto.get("modelo") or "-"),
-                               str(bruto.get("esforco") or "-"),
-                               herdou if declarado else "heuristica"])
+        for nome in sorted(perfis):
+            # Uma so casa para a pergunta: `classificador_efectivo` resolve a
+            # heranca e o "e utilizavel?" — o CLI nao repete essa logica.
+            c = g.classificador_efectivo(cfg, nome)
+            linhas.append([
+                nome,
+                "ligado" if c["modo"] == "modelo" else "desligado",
+                c["provider"] or "-",
+                c["modelo"] or "-",
+                c["esforco"] or "-",
+                c["origem"] + (f" ({c['motivo']})" if c["motivo"] else ""),
+            ])
         print(_tabela(linhas))
         global_c = (cfg.get("analise") or {}).get("classificador") or {}
         estado = "ligado" if global_c.get("activo") else "desligado"

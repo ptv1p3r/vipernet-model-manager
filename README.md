@@ -155,20 +155,47 @@ O plugin traz um painel próprio no dashboard do Hermes, na tab **Model Manager*
 | `dist/index.js` | IIFE que usa `window.__HERMES_PLUGIN_SDK__` e `__HERMES_PLUGINS__.register` |
 | `dist/style.css` | geometria do painel (cores e tipografia vêm do tema do host) |
 
-O painel mostra, por perfil: o interruptor, a estratégia, as associações de tarefa,
-o catálogo com a complexidade de cada modelo e o último modelo servido; em baixo,
-o registo das últimas respostas (quando, perfil, modelo, provider, nível, origem,
-superfície, sessão).
+O painel mostra, por perfil: o interruptor, a estratégia, o **indicador da análise
+de complexidade**, as associações de tarefa, o catálogo com a complexidade e o
+esforço de cada modelo, e o último modelo servido; em baixo, o registo das últimas
+respostas (quando, perfil, modelo, provider, nível, origem, superfície, sessão).
 
-Escreve **só** o interruptor — global ou por perfil — por `gestor.gravar`
-(validação, backup e `os.replace`), com releitura independente antes de responder OK.
-Catálogo, tarefas e log são leitura: mudam-se no `config.json`, não no browser.
+Escreve o interruptor (global ou por perfil) e a configuração inteira (editor JSON,
+`POST /config`, com `POST /validar` antes), sempre por `gestor.gravar` — validação,
+backup e `os.replace`, com releitura independente antes de responder OK. O log é
+leitura.
 
 O host descobre painéis por `<plugins root>/<nome>/dashboard/manifest.json`; a cache
 de descoberta do processo do dashboard **não** se invalida sozinha quando aparece um
 painel novo — depois de instalar, reiniciar o contentor do dashboard (ou forçar
-`/api/dashboard/plugins/rescan`). O plugin do agente não precisa de reinício: a config
-é lida a quente.
+`/api/dashboard/plugins/rescan`). Alterações ao `api.py` também só entram no
+arranque: o router é montado uma vez. A config do agente é lida a quente (TTL 5 s).
+
+### Indicador da análise por cartão (3.7)
+
+Cada cartão de perfil responde a uma pergunta só: **a complexidade deste turno está
+a ser decidida por um modelo — e qual — ou pela heurística?** A barra à esquerda e o
+chip dizem o modo; o texto diz o resto:
+
+| o que se vê | significado |
+|---|---|
+| `modelo · inception/mercury-3` + `esforço baixo · herdado do global` | o perfil não declara bloco e usa o global |
+| `modelo · deepseek/deepseek-flash` + `próprio do perfil` | o perfil declara o seu próprio classificador |
+| `heurística` + `classificador desligado — decide a heurística` | existe bloco, mas `activo: false` |
+| `heurística` + `classificador sem efeito (…) — decide a heurística` | bloco declarado que não passa a validação |
+| `heurística` + `sem modelo definido` | ninguém declarou nada, em nenhum âmbito |
+| `últimos N turnos: 22 modelo · 3 heurística` | evidência do ledger, não da config |
+| `⚠ o modelo falhou no último turno — caiu na heurística: …` | o classificador está ligado mas falhou |
+
+As duas últimas linhas são o que distingue **declarado** de **a decidir**: um
+classificador ligado que erra cai na heurística em silêncio, e a config continuaria a
+dizer "ligado". A contagem vem dos eventos `resposta` do perfil (últimos 25) e o
+motivo do erro do último evento com `classificador_erro`.
+
+Uma só casa para a resposta: `gestor.classificador_efectivo(cfg, perfil)` — usada
+pelo cartão (`/estado`) e pelo `vmm classificador ver`. Resolve a herança e a
+validação; o painel não reimplementa nenhuma das duas.
+
 
 Auto-teste do painel (não toca na config viva):
 

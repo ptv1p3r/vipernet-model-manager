@@ -1155,6 +1155,76 @@ def testes_heranca_classificador() -> None:
         os.environ.pop("VMM_DIR", None)
 
 
+def testes_indicador_analise() -> None:
+    """O indicador do cartao: modelo (qual) ou heuristica, e porque nao decide.
+
+    A pergunta do painel e "este perfil esta a usar um modelo ou a heuristica?".
+    A resposta tem de vir de uma casa so, senao o cartao e o CLI divergem — e o
+    defeito que aqui se trava e o mais provavel: mostrar "desligado" a um perfil
+    que herda um global ligado, ou "ligado" a um bloco que falha a validacao.
+    """
+    print("\n== indicador do cartao: modelo ou heuristica, e o motivo ==")
+    LIGADO = {"activo": True, "provider": "inception", "modelo": "mercury-3",
+              "esforco": "baixo"}
+    CHAVES = {"modo", "activo", "provider", "modelo", "esforco", "origem", "motivo"}
+
+    def cfg(global_c=None, pessoal_c=None, com_global=True):
+        base = _cfg_base()
+        if com_global:
+            base["analise"]["classificador"] = global_c or LIGADO
+        else:
+            base["analise"].pop("classificador", None)
+        if pessoal_c is not None:
+            base["perfis"]["pessoal"].setdefault("analise", {})["classificador"] = pessoal_c
+        return base
+
+    def ind(config, perfil):
+        return g.classificador_efectivo(config, perfil)
+
+    # 1. heranca: o perfil nao declara, o global decide
+    c = ind(cfg(), "trabalho")
+    check("indicador: perfil que herda aparece como modelo", c["modo"] == "modelo", str(c))
+    check("indicador: heranca diz de onde vem e qual o modelo",
+          c["origem"] == "herdado" and c["provider"] == "inception"
+          and c["modelo"] == "mercury-3" and c["esforco"] == "baixo", str(c))
+    check("indicador: modelo utilizavel nao tem motivo", c["motivo"] == "", str(c))
+    check("indicador: devolve sempre as mesmas chaves", set(c) == CHAVES, str(sorted(c)))
+
+    # 2. o perfil desliga o que o global liga
+    c = ind(cfg(pessoal_c={"activo": False, "provider": "inception",
+                           "modelo": "mercury-3"}), "pessoal")
+    check("indicador: perfil que desliga mostra heuristica",
+          c["modo"] == "heuristica" and c["origem"] == "proprio"
+          and c["motivo"] == "desligado", str(c))
+    check("indicador: desligado nao expoe modelo em vigor",
+          c["modelo"] == "" and c["provider"] == "", str(c))
+
+    # 3. modelo proprio do perfil vence o global
+    c = ind(cfg(pessoal_c={"activo": True, "provider": "deepseek",
+                           "modelo": "deepseek-flash", "esforco": "medio"}), "pessoal")
+    check("indicador: modelo proprio diz proprio e traz o esforco",
+          c["modo"] == "modelo" and c["origem"] == "proprio"
+          and c["modelo"] == "deepseek-flash" and c["esforco"] == "medio", str(c))
+
+    # 4. bloco invalido: o cartao nao pode dizer "ligado"
+    c = ind(cfg(global_c={"activo": True}), "trabalho")
+    check("indicador: activo sem provider/modelo cai em heuristica com motivo",
+          c["modo"] == "heuristica" and "exige provider" in c["motivo"], str(c))
+
+    # 5. global desligado mas com rota declarada
+    c = ind(cfg(global_c={"activo": False, "provider": "inception",
+                          "modelo": "mercury-3"}), "trabalho")
+    check("indicador: global desligado explica que esta desligado",
+          c["modo"] == "heuristica" and c["origem"] == "herdado"
+          and c["motivo"] == "desligado", str(c))
+
+    # 6. config antiga, sem bloco nenhum
+    c = ind(cfg(com_global=False), "trabalho")
+    check("indicador: sem classificador nenhum e heuristica limpa",
+          c["modo"] == "heuristica" and c["origem"] == "heuristica"
+          and c["motivo"] == "", str(c))
+
+
 def testes_esforco() -> None:
     """Esforco baixo/medio/alto: vocabulario, forma no fio e reposicao.
 
@@ -1307,6 +1377,7 @@ def main() -> int:
     testes_classificador()
     testes_sem_copia_do_global()
     testes_heranca_classificador()
+    testes_indicador_analise()
     testes_esforco()
     testes_cli()
     testes_verificar()
