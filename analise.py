@@ -60,7 +60,7 @@ _MARCA_TRADUZ = {"low": "leve", "medium": "media", "high": "alta",
 # Produzir/alterar: o que justifica o modelo caro. Sem acentos (texto normalizado).
 _TRABALHO = re.compile(
     r"\b(implement\w*|refactor\w*|refator\w*|reescrev\w*|reescreve\w*|migr\w*|"
-    r"substitu\w*|convert\w*|otimiz\w*|optimiz\w*|corrig\w*|corrige\w*|"
+    r"substitu\w*|convert\w*|otimiz\w*|optimiz\w*|"
     r"depur\w*|debug\w*|integr\w*|constru\w*|constroi\w*|cri\w*|cria\w*|"
     r"escrev\w*|escreve\w*|ger\w*|gera\w*|desenh\w*|desenha\w*|mont\w*|monta\w*|"
     r"produz\w*|entreg\w*|entreg\w*|prepar\w*|prepara\w*|projet\w*|projeta\w*|"
@@ -152,8 +152,10 @@ _FERRAMENTAS_ESCRITA = {
 # Pesos. Todos substituiveis por config (`analise.pesos`) sem tocar no codigo.
 PESOS = {
     "trabalho": 5,        # produzir/alterar
+    "manutencao": 3,     # corrigir typo, adicionar teste, atualizar lista
+    "planeamento": 5,     # plano, janela, rollback, proposta de migracao
     "analise": 2,         # analisar/comparar
-    "auditoria": 6,       # auditar/diagnosticar sistema vivo
+    "auditoria": 4,       # auditar/diagnosticar sistema vivo
     "arquitetura": 6,     # decidir/desenhar (o topo)
     "erro_stack": 5,      # avaria com evidencia (traceback, excecao)
     "erro_avaria": 3,     # sintoma sem evidencia
@@ -327,7 +329,29 @@ def _pontuar_texto(texto: str, pesos: dict[str, int], ferramentas_escrita: int,
         score += pesos["erro_avaria"]
         sinais.append("avaria_sem_evidencia")
 
-    # Amplitude.
+    # Manutencao e planeamento.
+_MANUTENCAO = re.compile(
+    r"\b(adicion[aá]r?\w*|adiciona\w*|atualiz[aá]r?\w*|corri[aá]g[aá]r?\w*|corrige\w*|"
+    r"atualiz[aá]|atualiza\w*|adiciona\w*|fazer\w*|faz\w*|test[eé]\w*|teste\w*|"
+    r"revis[aá]o|revisar|melhor[aá]r?)\b",
+    re.IGNORECASE,
+)
+_PLANEAMENTO = re.compile(
+    r"\b(plano\w*|plano|janela\w*|rollback\w*|propost[aá]\w*|"
+    r"migr[aá]r?\w*|migracao\w*|proposta\w*|estrat[eé]gi[aá]\w*|"
+    r"cronogr[aá]m[aá]\w*|calend[aá]ri\w*|sequ[eê]nci[aá]\w*)\b",
+    re.IGNORECASE,
+)
+
+# Amplitude.
+    # Manutencao e planeamento - separados de trabalho e arquitura.
+    if _MANUTENCAO.search(texto) and not _TRABALHO.search(texto) and not _ARQUITETURA.search(texto):
+        score += pesos["manutencao"]
+        sinais.append("manutencao_increm")
+    if _PLANEAMENTO.search(texto):
+        score += pesos["planeamento"]
+        sinais.append("planeamento_futuro")
+
     if _CODIGO.search(texto):
         score += pesos["codigo"]
         sinais.append("codigo")
@@ -410,59 +434,10 @@ def pontuar(mensagens: list[Any], janela: int = 8,
             "turnos": turnos, "ferramentas": ferramentas, "herdado_de": herdado_de}
 
 
-# Sinais que medem *forma* ou *volume*, nao intencao. Nao contam para a regra
-# dos dois sinais: um pedido grande nao e um pedido dificil.
-_SINAIS_AMPLITUDE = {
-    "texto_medio", "texto_longo", "texto_muito_longo",
-}
-# "testa o plugin" nao e analise, e verificacao: o verbo e uma acao de
-# confirmacao, nao um trabalho de analise. Conta zero para `media`.
-_VERBOS_VERIFICACAO = {
-    "testa", "teste", "testar", "test", "testar_",
-    "verifica", "verifique", "verificar", "verificacao",
-    "valida", "valide", "validar", "examina", "examine", "examinar",
-}
-
-
-def sinais_independentes(sinais: list[str]) -> list[str]:
-    """Sinais que contam como evidencia independente de complexidade.
-
-    A regra dos dois sinais existe porque dois sinais fracos somavam um nivel
-    pago: `testa o plugin` da verificacao (2) + dominio (1) = 3 = `media`. Nao
-    e media — e uma confirmacao trivial. Contam-se as categorias, nao os
-    pontos; verbos de verificacao e sinais de volume nao contam.
-    """
-    vistos: list[str] = []
-    for sinal in sinais or []:
-        nome, _, valor = str(sinal).partition("=")
-        nome, valor = nome.strip(), valor.strip().lower()
-        if nome in _SINAIS_AMPLITUDE:
-            continue
-        if nome == "analise" and valor in _VERBOS_VERIFICACAO:
-            continue
-        if nome in vistos:
-            continue
-        vistos.append(nome)
-    return vistos
-
-
-def nivel_de_score(score: int, limiares: dict[str, Any] | None = None,
-                   sinais: list[str] | None = None) -> str:
-    """`score` -> nivel, com limiares configuraveis (`media`, `alta`).
-
-    `limiares.media_sinais: N` troca o limiar de `media` de pontos para N
-    sinais independentes (ver `sinais_independentes`). `alta` continua a ser
-    por pontos — e o nivel caro e nao deve ficar mais facil de atingir.
-    """
+def nivel_de_score(score: int, limiares: dict[str, Any] | None = None) -> str:
+    """`score` -> nivel, com limiares configuraveis (`media`, `alta`)."""
     lim = dict(LIMIARES)
-    media_sinais = 0
     for chave, valor in (limiares or {}).items():
-        if chave == "media_sinais":
-            try:
-                media_sinais = int(valor)
-            except (TypeError, ValueError):
-                media_sinais = 0
-            continue
         try:
             lim[chave] = int(valor)
         except (TypeError, ValueError):
@@ -472,10 +447,6 @@ def nivel_de_score(score: int, limiares: dict[str, Any] | None = None,
         alta = media + 3
     if score >= alta:
         return "alta"
-    if media_sinais > 0:
-        if len(sinais_independentes(sinais or [])) >= media_sinais:
-            return "media"
-        return "leve"
     if score >= media:
         return "media"
     return "leve"
@@ -513,7 +484,7 @@ def decidir(mensagens: list[Any], *, limiares: dict[str, Any] | None = None,
         return {"nivel": "", "origem": "reset", "score": None,
                 "sinais": ["marcador_auto"], "herdado_de": None}
     ponto = pontuar(mensagens, janela, pesos)
-    return {"nivel": nivel_de_score(ponto["score"], limiares, ponto["sinais"]), "origem": "analise",
+    return {"nivel": nivel_de_score(ponto["score"], limiares), "origem": "analise",
             "score": ponto["score"], "sinais": ponto["sinais"],
             "caracteres": ponto["caracteres"], "turnos": ponto["turnos"],
             "ferramentas": ponto["ferramentas"], "herdado_de": ponto["herdado_de"]}
