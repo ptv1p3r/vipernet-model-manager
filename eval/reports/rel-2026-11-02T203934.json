@@ -1,0 +1,357 @@
+{
+  "quando": "2026-11-02T20:39:34+00:00",
+  "duracao_s": 158.4,
+  "gold": {
+    "sha256": "bd8049358756b979316b7becf450b08537cd86541d89d4688d768be0e7111338",
+    "estado": "igual",
+    "n": 60
+  },
+  "repeticoes": 3,
+  "parametros_fixos": {
+    "temperature": 0,
+    "top_p": 1,
+    "prompt": "system do classificador (analise_modelo.PROMPT)"
+  },
+  "rotulos_humanos": 0,
+  "runners": [
+    {
+      "runner": "heuristica",
+      "n_casos": 60,
+      "n_validos": 60,
+      "n_sem_nivel": 0,
+      "sem_nivel_ids": [],
+      "metricas": {
+        "n": 60,
+        "acerto": 0.6,
+        "macro_f1": 0.5973,
+        "por_classe": {
+          "leve": {
+            "precisao": 0.613,
+            "cobertura": 0.76,
+            "f1": 0.679,
+            "n": 25
+          },
+          "media": {
+            "precisao": 0.571,
+            "cobertura": 0.333,
+            "f1": 0.421,
+            "n": 24
+          },
+          "alta": {
+            "precisao": 0.6,
+            "cobertura": 0.818,
+            "f1": 0.692,
+            "n": 11
+          }
+        },
+        "matriz": {
+          "leve": {
+            "leve": 19,
+            "media": 5,
+            "alta": 1
+          },
+          "media": {
+            "leve": 11,
+            "media": 8,
+            "alta": 5
+          },
+          "alta": {
+            "leve": 1,
+            "media": 1,
+            "alta": 9
+          }
+        }
+      },
+      "latencia_ms": {
+        "n": 60,
+        "p50": 0.1,
+        "p95": 0.2,
+        "min": 0.0,
+        "max": 0.2,
+        "media": 0.1
+      },
+      "custo_tokens": {
+        "entrada": 0,
+        "saida": 0
+      },
+      "por_categoria": {
+        "adversaria": {
+          "n": 4,
+          "acerto": 1.0
+        },
+        "ambigua": {
+          "n": 8,
+          "acerto": 0.75
+        },
+        "claro": {
+          "n": 30,
+          "acerto": 0.6
+        },
+        "extremo": {
+          "n": 4,
+          "acerto": 1.0
+        },
+        "giria": {
+          "n": 6,
+          "acerto": 0.0
+        },
+        "misto": {
+          "n": 3,
+          "acerto": 1.0
+        },
+        "typo": {
+          "n": 5,
+          "acerto": 0.2
+        }
+      },
+      "erros": []
+    },
+    {
+      "runner": "modelo:inception/mercury-3",
+      "n_casos": 60,
+      "n_validos": 59,
+      "n_sem_nivel": 1,
+      "sem_nivel_ids": [
+        "g039"
+      ],
+      "metricas": {
+        "n": 59,
+        "acerto": 0.6949,
+        "macro_f1": 0.6802,
+        "por_classe": {
+          "leve": {
+            "precisao": 0.7,
+            "cobertura": 0.875,
+            "f1": 0.778,
+            "n": 24
+          },
+          "media": {
+            "precisao": 0.9,
+            "cobertura": 0.375,
+            "f1": 0.529,
+            "n": 24
+          },
+          "alta": {
+            "precisao": 0.579,
+            "cobertura": 1.0,
+            "f1": 0.733,
+            "n": 11
+          }
+        },
+        "matriz": {
+          "leve": {
+            "leve": 21,
+            "media": 1,
+            "alta": 2
+          },
+          "media": {
+            "leve": 9,
+            "media": 9,
+            "alta": 6
+          },
+          "alta": {
+            "leve": 0,
+            "media": 0,
+            "alta": 11
+          }
+        }
+      },
+      "latencia_ms": {
+        "n": 60,
+        "p50": 651.3,
+        "p95": 1363.0,
+        "min": 0.0,
+        "max": 3183.1,
+        "media": 809.3
+      },
+      "custo_tokens": {
+        "entrada": 0,
+        "saida": 0
+      },
+      "por_categoria": {
+        "adversaria": {
+          "n": 4,
+          "acerto": 0.75
+        },
+        "ambigua": {
+          "n": 8,
+          "acerto": 0.75
+        },
+        "claro": {
+          "n": 30,
+          "acerto": 0.7667
+        },
+        "extremo": {
+          "n": 3,
+          "acerto": 1.0
+        },
+        "giria": {
+          "n": 6,
+          "acerto": 0.0
+        },
+        "misto": {
+          "n": 3,
+          "acerto": 1.0
+        },
+        "typo": {
+          "n": 5,
+          "acerto": 0.6
+        }
+      },
+      "determinismo": {
+        "repeticoes": 3,
+        "concordancia_media": 0.9,
+        "casos_instaveis": [
+          "g003",
+          "g008",
+          "g019",
+          "g020",
+          "g021",
+          "g030",
+          "g032",
+          "g033",
+          "g034",
+          "g035",
+          "g036",
+          "g038",
+          "g039",
+          "g051",
+          "g052"
+        ]
+      },
+      "definicao": {
+        "provider": "inception",
+        "modelo": "mercury-3",
+        "esforco": "baixo",
+        "formato_json": "auto",
+        "max_tokens": 320,
+        "timeout_s": 8.0
+      },
+      "erros": []
+    }
+  ],
+  "variantes": [
+    {
+      "runner": "heuristica",
+      "grupos": [
+        {
+          "grupo": "arquitetura",
+          "niveis": [
+            "alta",
+            "alta",
+            "alta"
+          ],
+          "consistente": true
+        },
+        {
+          "grupo": "auditoria",
+          "niveis": [
+            "leve",
+            "media",
+            "leve"
+          ],
+          "consistente": false
+        },
+        {
+          "grupo": "consulta",
+          "niveis": [
+            "leve",
+            "leve",
+            "media"
+          ],
+          "consistente": false
+        },
+        {
+          "grupo": "diagnostico",
+          "niveis": [
+            "alta",
+            "leve",
+            "leve"
+          ],
+          "consistente": false
+        },
+        {
+          "grupo": "implementacao",
+          "niveis": [
+            "alta",
+            "media",
+            "alta"
+          ],
+          "consistente": false
+        },
+        {
+          "grupo": "manutencao",
+          "niveis": [
+            "media",
+            "media",
+            "leve"
+          ],
+          "consistente": false
+        }
+      ],
+      "n": 6,
+      "taxa_consistencia": 0.167
+    },
+    {
+      "runner": "modelo:inception/mercury-3",
+      "grupos": [
+        {
+          "grupo": "arquitetura",
+          "niveis": [
+            "alta",
+            "alta",
+            "alta"
+          ],
+          "consistente": true
+        },
+        {
+          "grupo": "auditoria",
+          "niveis": [
+            "alta",
+            "media",
+            "alta"
+          ],
+          "consistente": false
+        },
+        {
+          "grupo": "consulta",
+          "niveis": [
+            "media",
+            "media",
+            "media"
+          ],
+          "consistente": true
+        },
+        {
+          "grupo": "diagnostico",
+          "niveis": [
+            "alta",
+            "alta",
+            "alta"
+          ],
+          "consistente": true
+        },
+        {
+          "grupo": "implementacao",
+          "niveis": [
+            "alta",
+            "alta",
+            "alta"
+          ],
+          "consistente": true
+        },
+        {
+          "grupo": "manutencao",
+          "niveis": [
+            "leve",
+            "leve",
+            "leve"
+          ],
+          "consistente": true
+        }
+      ],
+      "n": 6,
+      "taxa_consistencia": 0.833
+    }
+  ]
+}

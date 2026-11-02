@@ -164,6 +164,22 @@ _AVARIA = re.compile(
     r"est[aá] a falhar|parou de|deixou de|deixaram de|passou a falhar|d[aá] (?:este |um )?erro|est[aá] mal)",
     re.IGNORECASE,
 )
+# Avaria em registo coloquial. O dicionario tecnico falha onde o dono escreve
+# depressa: "ta tudo bugado", "isto quebrou", "deu barraca", "nao ta a
+# funcionar". Medido no gold de 2026-11-02: 0/6 em giria com o padrao tecnico,
+# porque `n[aã]o funciona\b` nao apanha o gerundio nem a forma sem acentos.
+_AVARIA_COLOQUIAL = re.compile(
+    r"(\b(?:t[aá]|est[aá]|esta)\s+(?:a\s+)?(?:dar\s+)?(?:erro|raia|barraca)|\bdeu\s+barraca|"
+    r"\bbugad\w*|\bquebr(?:ou|aram|ado|ada)\b|\bencrav\w*|\bmarad\w*|\bpifou\b|"
+    r"\bdeu\s+o\s+berro\b|\bnum\s+t[aá]\b|\bn[aã]o\s+t[aá]\b|"
+    r"n[aã]o\s+(?:est[aá]|esta|ta)\s+(?:a\s+)?funcion\w*|\bfuncionando\b|\bareia\b)",
+    re.IGNORECASE,
+)
+# Trabalho levado a producao, tambem em registo coloquial: "meter isso a
+# bombar" e um deploy, nao uma avaria — sem isto ficava sem sinal nenhum.
+_PRODUCAO_COLOQUIAL = re.compile(
+    r"(meter\s+(?:isso\s+|isto\s+)?a\s+bombar|p[oô]r\s+(?:isso\s+|isto\s+)?a\s+(?:correr|bombar)|"
+    r"lan[cç]ar\s+(?:em|para)\s+produ[cç][aã]o|virar\s+(?:para|em)\s+produ)", re.IGNORECASE)
 # Falha de servico: o objeto e um processo que devia estar a correr.
 _SERVICO_AVARIADO = re.compile(
     r"\b(container\w*|contentor\w*|servi[cç]o\w*|docker\w*|systemd\w*|"
@@ -474,6 +490,13 @@ def _pontuar_texto(texto: str, pesos: dict[str, int], ferramentas_escrita: int,
         if _SERVICO_AVARIADO.search(texto):
             score += pesos["avaria_de_servico"]
             sinais.append("avaria_de_servico")
+    elif _AVARIA_COLOQUIAL.search(texto):
+        # Mesmo peso da avaria tecnica: o registo nao muda o trabalho que da.
+        score += pesos["erro_avaria"]
+        sinais.append("avaria_coloquial")
+    if _PRODUCAO_COLOQUIAL.search(texto):
+        score += pesos["trabalho"]
+        sinais.append("producao_coloquial")
 
     # Amplitude.
     if _CODIGO.search(texto):

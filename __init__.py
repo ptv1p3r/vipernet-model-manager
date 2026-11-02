@@ -266,17 +266,10 @@ def resolver_rota(perfil: str, provider: str, modelo: str) -> dict[str, Any]:
             if "erro" in guardado:
                 raise RuntimeError(guardado["erro"])
             return dict(guardado["rota"])
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from . import seams as _seams
 
     try:
-        rt = resolve_runtime_provider(requested=provider, target_model=modelo)
-        rota = {
-            "provider": (rt.get("provider") or provider).strip().lower(),
-            "api_key": rt.get("api_key") or "",
-            "base_url": rt.get("base_url") or "",
-            "api_mode": rt.get("api_mode") or "",
-            "source": rt.get("source") or "",
-        }
+        rota = _seams.resolver_provider(provider, modelo)
         if not rota["api_key"]:
             raise RuntimeError(f"provider {provider} sem credencial no perfil {perfil}")
     except Exception as exc:

@@ -664,12 +664,26 @@ def perfil_atual(agente: Any = None) -> str:
             home = None
     if home is not None:
         return nome_do_perfil(home)
+    # Uma so casa para o perfil: `seams.nome_perfil()` (env -> seam -> default).
     try:
-        from hermes_cli.profiles import get_active_profile_name
-
-        return str(get_active_profile_name() or "default")
-    except Exception:
-        return "default"
+        from . import seams as _seams  # type: ignore[import-not-found]
+        return _seams.nome_perfil()
+    except Exception:  # noqa: BLE001 — gestor carregado standalone, sem pacote
+        import importlib.util as _ilu2
+        _cache = globals().get("_SEAMS_G")
+        if _cache is None:
+            try:
+                _spec = _ilu2.spec_from_file_location(
+                    "vmm_seams_g", Path(__file__).with_name("seams.py"))
+                _cache = _ilu2.module_from_spec(_spec)  # type: ignore[arg-type]
+                _spec.loader.exec_module(_cache)  # type: ignore[union-attr]
+                globals()["_SEAMS_G"] = _cache
+            except Exception:  # noqa: BLE001
+                return "default"
+        try:
+            return _cache.nome_perfil()
+        except Exception:  # noqa: BLE001
+            return "default"
 
 
 # O bloco por omissao do classificador vem de `analise_modelo.PADRAO` — uma so

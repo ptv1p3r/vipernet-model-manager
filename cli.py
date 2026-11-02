@@ -183,12 +183,14 @@ def cmd_classificador(args) -> int:
         if erros_d:
             return _erro("; ".join(erros_d), 2)
         try:
-            from hermes_cli.runtime_provider import resolve_runtime_provider
+            _seams = _seams_mod()
+            if not _seams.seam_disponivel():
+                return _erro(f"resolve_runtime_provider indisponivel: {_seams.seam_erro()}", 1)
         except Exception as exc:  # noqa: BLE001
             return _erro(f"resolve_runtime_provider indisponivel: {exc}", 1)
 
         def resolver(provider: str, modelo: str) -> dict:
-            rt = resolve_runtime_provider(requested=provider, target_model=modelo)
+            rt = _seams.resolver_provider(provider, modelo)
             return {"base_url": rt.get("base_url") or "", "api_key": rt.get("api_key") or "",
                     "source": rt.get("source") or ""}
 
@@ -452,6 +454,30 @@ def cmd_simular(args) -> int:
     return 0
 
 
+def _seams_mod():
+    """Carrega `seams.py` tanto em pacote (Hermes) como standalone (CLI/testes)."""
+    try:
+        from . import seams as mod  # type: ignore[import-not-found]
+        return mod
+    except Exception:  # noqa: BLE001 — carregado por ficheiro, sem `__package__`
+        import importlib.util as _ilu
+        global _SEAMS_CACHE
+        if _SEAMS_CACHE is not None:
+            return _SEAMS_CACHE
+        caminho = Path(__file__).with_name("seams.py")
+        spec = _ilu.spec_from_file_location("vmm_seams", caminho)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("seams.py nao encontrado junto de cli.py")
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        sys.modules.setdefault("vmm_seams", mod)
+        _SEAMS_CACHE = mod
+        return mod
+
+
+_SEAMS_CACHE = None
+
+
 def cmd_verificar(args) -> int:
     cfg, _ = _cfg()
     perfis = cfg.get("perfis") or {}
@@ -459,7 +485,9 @@ def cmd_verificar(args) -> int:
     if args.perfil and args.perfil not in perfis:
         return _erro(f"perfil '{args.perfil}' nao existe", 3)
     try:
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        _seams = _seams_mod()
+        if not _seams.seam_disponivel():
+            return _erro(f"resolve_runtime_provider indisponivel: {_seams.seam_erro()}", 1)
     except Exception as exc:
         return _erro(f"resolve_runtime_provider indisponivel: {exc}", 1)
     # Contexto do perfil alvo: home + escopo de segredos. Sem isto, o CLI
@@ -502,7 +530,7 @@ def cmd_verificar(args) -> int:
         try:
             for r in perfis[nome].get("catalogo") or []:
                 try:
-                    rt = resolve_runtime_provider(requested=r["provider"], target_model=r["modelo"])
+                    rt = _seams.resolver_provider(r["provider"], r["modelo"])
                     chave = rt.get("api_key") or ""
                     marca = "ok" if len(chave) > 15 else f"chave curta ({len(chave)} B)"
                     if not chave or len(chave) <= 15:
@@ -556,12 +584,12 @@ def cmd_caminho(args) -> int:
 
 def cmd_recarregar(args) -> int:
     try:
-        from gateway.control_socket import reload_gateway_plugins
+        _seams = _seams_mod()
         from hermes_constants import get_default_hermes_root
     except Exception as exc:
         return _erro(f"recarregar exige o interpretador do Hermes: {exc}", 1)
     home = Path(get_default_hermes_root())
-    resposta = reload_gateway_plugins(home)
+    resposta = _seams.recarregar_gateway(home)
     if not resposta:
         return _erro("nenhum gateway respondeu ao pedido de recarga", 1)
     print(json.dumps(resposta, ensure_ascii=False, indent=2))
