@@ -665,9 +665,15 @@ Regras verificadas à data desta versão, com a evidência onde ela existe:
   `VIPERNET_MODEL_MANAGER_OFF`, `VMM_DIR`) não são credenciais — são
   interruptores e um override de directoria de testes — e estão declaradas em
   `optional_env` no `plugin.yaml`, para a capacidade declarada casar com o que
-  o código faz. A regra 11 fala de segredos: ler `HERMES_PROFILE`/`HERMES_HOME`
-  para saber que perfil se serve não é ler um cofre, e nenhum `.env`,
-  `auth.json`, chaveiro ou cofre é aberto por este plugin.
+  o código faz. Nota medida, para não se ler o `optional_env` como mais do que
+  é: nesta versão do Hermes (0.22.5) o manifesto aceita o campo, mas o único
+  consumidor (`config._platform_manifest_env_entries`) só o lê para plugins
+  `kind: platform`; num plugin `standalone` a declaração **não** é apresentada
+  ao instalador — vale como declaração explícita para quem revê o código, que
+  é o que a regra 6 pede. A regra 11 fala de segredos: ler
+  `HERMES_PROFILE`/`HERMES_HOME` para saber que perfil se serve não é ler um
+  cofre, e nenhum `.env`, `auth.json`, chaveiro ou cofre é aberto por este
+  plugin.
 - **Efeitos declarados** (o que o plugin faz na rede e no disco, para quem vai
   ler o código antes de o instalar): faz pedidos HTTPS **aos providers que o
   dono configurou** — é a razão de existir, e o classificador opcional faz um
