@@ -1282,8 +1282,20 @@ def testes_esforco() -> None:
               corpo.get("thinking") == {"type": "enabled"}
               and corpo.get("reasoning_effort") == "high"
               and "extra_body" not in corpo, str(corpo))
+        check("esforco: classificador com esforco sobe o orcamento de saida",
+              corpo.get("max_tokens") == 1200, str(corpo.get("max_tokens")))
         check("esforco: classificador classifica com o corpo alterado",
               (resultado or {}).get("nivel") == "media", str(resultado))
+        sem = dict(g._analise_modelo().PADRAO, provider="deepseek",
+                   modelo="deepseek-flash")
+        g._analise_modelo().classificar(
+            [{"role": "user", "content": "outra pergunta sem esforco nenhum"}],
+            sem, lambda p, m: {"base_url": url, "api_key": "teste"}, perfil="esf2")
+        corpo_sem = capturado[-1] if capturado else {}
+        check("esforco: sem esforco o orcamento e o declarado e nao ha campos",
+              corpo_sem.get("max_tokens") == 320
+              and "thinking" not in corpo_sem
+              and "reasoning_effort" not in corpo_sem, str(corpo_sem))
     finally:
         servidor.shutdown()
 

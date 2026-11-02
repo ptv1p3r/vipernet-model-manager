@@ -79,6 +79,9 @@ _MAX_TOKENS_MIN, _MAX_TOKENS_MAX = 2, 1024
 _MAX_TOKENS_ANTIGO = 12
 _FALHAS_PARA_SUSPENDER = 3
 _SUSPENSAO_S = 300.0
+#: Piso de `max_tokens` quando o classificador declara esforco: o raciocinio sai
+#: do mesmo orcamento e 320 tokens podem ser todos gastos a pensar.
+_MAX_TOKENS_COM_ESFORCO = 1200
 
 PROMPT = (
     "Classificas a complexidade de um pedido feito a um agente de engenharia.\n"
@@ -294,7 +297,17 @@ def _extrair_nivel(payload: dict[str, Any]) -> tuple[str, str]:
             nivel = achados[-1].lower().replace("é", "e")
             return nivel, "raciocinio:" + raciocinio[-120:]
     if not achado:
-        raise ValueError("resposta sem nivel reconhecivel")
+        # O `finish_reason` e os tokens dizem se o orcamento foi gasto a
+        # raciocinar (`length`) ou se o modelo respondeu outra coisa: sem isso o
+        # ledger diz «sem nivel reconhecivel» e nao se sabe onde olhar.
+        detalhe = ""
+        if isinstance(escolhas, list) and escolhas and isinstance(escolhas[0], dict):
+            detalhe = str(escolhas[0].get("finish_reason") or "")
+        uso = payload.get("usage") if isinstance(payload, dict) else None
+        if isinstance(uso, dict) and uso.get("completion_tokens"):
+            detalhe += f" {uso.get('completion_tokens')}tok"
+        raise ValueError("resposta sem nivel reconhecivel"
+                         + (f" ({detalhe.strip()})" if detalhe.strip() else ""))
     nivel = achado.group(1).lower().replace("é", "e")
     return nivel, conteudo[:120]
 
@@ -357,6 +370,13 @@ def classificar(
             provider, modelo, definicao.get("esforco"), session_id=perfil)
         corpo.update(extra_e)
         corpo.update(topo_e)
+        # Raciocinio e resposta partilham o mesmo orcamento de `max_tokens`: com
+        # esforco ligado o modelo pode gastar os 320 tokens a pensar e devolver
+        # `content` vazio (medido a 2026-11-02: `resposta sem nivel reconhecivel`
+        # na primeira classificacao com `esforco: baixo`). Com esforco, o
+        # orcamento tem um piso.
+        if (extra_e or topo_e) and int(corpo["max_tokens"]) < _MAX_TOKENS_COM_ESFORCO:
+            corpo["max_tokens"] = _MAX_TOKENS_COM_ESFORCO
         resposta = _pedir(rota, definicao, corpo)
         nivel, lido = _extrair_nivel(resposta["json"])
     except (urllib.error.HTTPError) as exc:

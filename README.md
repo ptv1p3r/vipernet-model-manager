@@ -284,7 +284,11 @@ Como é aplicado — e porque não é uma linha só:
   isso, um turno que viesse do OpenRouter levava um `reasoning` que o deepseek
   recusa.
 - **No classificador** o esforço entra plano no corpo (é HTTP directo, sem SDK,
-  logo `extra_body` não existe ali).
+  logo `extra_body` não existe ali). Com esforço declarado, o `max_tokens` do
+  classificador tem um **piso de 1200**: o raciocínio sai do mesmo orçamento e
+  os 320 tokens por omissão podem ser todos gastos a pensar — medido, a primeira
+  classificação com `esforco: baixo` falhou com
+  `resposta sem nivel reconhecivel (length 320tok)` e caiu para a heurística.
 
 Testado por `selftest.py` (21 verificações novas): vocabulário, validação no
 catálogo, forma por provider, limpeza do payload, reposição do valor de origem
