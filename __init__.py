@@ -68,6 +68,27 @@ NIVEIS = _analise_mod.NIVEIS
 
 logger = logging.getLogger(__name__)
 
+
+def _versao_do_manifesto() -> str:
+    """Versao declarada em ``plugin.yaml``, lida uma vez no import.
+
+    Vai em **cada** evento de decisao do ledger como ``motor``: e a unica forma
+    de responder "que codigo decidiu este turno?" quando o processo ja tem o
+    modulo em memoria e o ficheiro em disco ja mudou. Sem isto, provar que uma
+    recarga entrou exigia adivinhar por mudanca de comportamento.
+    """
+    try:
+        for linha in (Path(__file__).resolve().parent / "plugin.yaml").read_text(
+                encoding="utf-8").splitlines():
+            if linha.startswith("version:"):
+                return linha.split(":", 1)[1].strip().strip('"\'')
+    except Exception:  # noqa: BLE001 - metadado ausente nunca parte um turno
+        logger.debug("plugin.yaml sem version legivel", exc_info=True)
+    return ""
+
+
+_VERSAO_MOTOR = _versao_do_manifesto()
+
 _FICHEIRO_ANALISE = Path(_analise_mod.__file__ or "analise.py").resolve()
 _MTIME_ANALISE = [0]
 _FICHEIRO_ANALISE_MODELO = Path(_analise_modelo_mod.__file__ or "analise_modelo.py").resolve()
@@ -711,6 +732,7 @@ def middleware_llm_request(
                                "score": None}
         nivel = decisao["nivel"] or ("leve" if associada else "")
         base = {"perfil": perfil, "sessao": session_id, "nivel": nivel,
+                "motor": _VERSAO_MOTOR,
                 "origem": "tarefa" if associada else decisao["origem"],
                 "tarefa": tarefa, "score": decisao.get("score"),
                 "sinais": decisao.get("sinais")}
@@ -758,10 +780,15 @@ def middleware_llm_request(
             _mensagens(request), request,
             limiar_contexto=int(analise.get("contexto_grande_tokens") or 24000))
         needs["latencia_max_ms"] = gestor.teto_latencia(pcfg)
-        if needs.get("contexto_grande") and nivel == "leve":
-            nivel = "media"
-            base["nivel"] = nivel
+        if needs.get("contexto_grande"):
+            # Regista sempre que o contexto passa o limiar, mesmo quando o nivel
+            # ja era media/alta: se so ficar registado quando promove um `leve`,
+            # um turno de 80k tokens nao deixa rasto nenhum de que a triagem
+            # correu — e deixa de ser possivel provar que esta viva.
             base["triagem"] = f"contexto {needs['tokens_entrada']}tok"
+            if nivel == "leve":
+                nivel = "media"
+                base["nivel"] = nivel
         if needs.get("modalidades") or needs.get("json"):
             base["exige"] = {k: needs[k] for k in ("modalidades", "json") if needs.get(k)}
         entrada, rota, falhadas = escolher_com_rota(
