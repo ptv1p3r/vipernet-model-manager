@@ -32,12 +32,20 @@
   const BASE = "/api/plugins/" + NOME;
 
   function pedir(caminho, opcoes) {
-    if (SDK.fetchJSON) return SDK.fetchJSON(BASE + caminho, opcoes);
+    var opts = Object.assign({}, opcoes || {});
+    // Se o body for objeto e nao string, serializa para o fallback fetch.
+    // O SDK.fetchJSON espera body como objeto e serializa ele proprio.
+    if (opts.body && typeof opts.body === "object" && !(opts.body instanceof FormData) && !(opts.body instanceof URLSearchParams)) {
+      if (!SDK.fetchJSON) {
+        opts.body = JSON.stringify(opts.body);
+      }
+    }
+    if (SDK.fetchJSON) return SDK.fetchJSON(BASE + caminho, opts);
     // Fallback minimo: o host injeta o token de sessao no header em modo loopback.
     const tok = window.__HERMES_SESSION_TOKEN__;
     const headers = { "Content-Type": "application/json" };
     if (tok) headers["X-Hermes-Session-Token"] = tok;
-    return fetch(BASE + caminho, Object.assign({ credentials: "include", headers: headers }, opcoes || {}))
+    return fetch(BASE + caminho, Object.assign({ credentials: "include", headers: headers }, opts))
       .then(function (r) {
         if (!r.ok) throw new Error(r.status + ": " + r.statusText);
         return r.json();
@@ -262,7 +270,7 @@
       setAGravar(true);
       const corpo = { ambito: ambito, activo: activo };
       if (perfil) corpo.perfil = perfil;
-      pedir("/toggle", { method: "POST", body: JSON.stringify(corpo) })
+      pedir("/toggle", { method: "POST", body: corpo })
         .then(function () { return carregar(); })
         .catch(function (e) { setErro(String(e && e.message ? e.message : e)); })
         .then(function () { setAGravar(false); });
@@ -278,7 +286,7 @@
       setErrosValidacao([]);
       try {
         const cfg = JSON.parse(configJSON);
-        pedir("/validar", { method: "POST", body: JSON.stringify(cfg) })
+        pedir("/validar", { method: "POST", body: cfg })
           .then(function (r) {
             if (r && r.erros && r.erros.length) {
               setErrosValidacao(r.erros);
@@ -297,7 +305,7 @@
     function salvarConfig() {
       try {
         const cfg = JSON.parse(configJSON);
-        pedir("/config", { method: "POST", body: JSON.stringify(cfg) })
+        pedir("/config", { method: "POST", body: cfg })
           .then(function () {
             setMostrarEditor(false);
             setConfigJSON("");
