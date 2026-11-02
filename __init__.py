@@ -28,6 +28,7 @@ Regras de desenho:
 """
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
@@ -39,8 +40,7 @@ from typing import Any
 
 try:  # carregado como pacote do Hermes
     from . import gestor
-    from .analise import (NIVEIS, decidir as _decidir, detectar_tarefa as _detectar_tarefa,
-                          sinais_independentes as _sinais_independentes)
+    from . import analise as _analise_mod
 except Exception:  # import directo (selftest / CLI fora do Hermes)
     import importlib.util as _ilu
 
@@ -53,12 +53,40 @@ except Exception:  # import directo (selftest / CLI fora do Hermes)
         return mod
 
     gestor = _mod("gestor")
-    _an = _mod("analise")
-    NIVEIS, _decidir = _an.NIVEIS, _an.decidir
-    _detectar_tarefa = _an.detectar_tarefa
-    _sinais_independentes = _an.sinais_independentes
+    _analise_mod = _mod("analise")
+
+NIVEIS = _analise_mod.NIVEIS
 
 logger = logging.getLogger(__name__)
+
+_FICHEIRO_ANALISE = Path(_analise_mod.__file__ or "analise.py").resolve()
+_MTIME_ANALISE = [0]
+
+
+def _recarregar_analise_se_mudou() -> None:
+    """Recarrega `analise.py` quando o ficheiro mudou no disco.
+
+    O gateway importa o plugin uma vez e, com `from .analise import decidir`,
+    congela a funcao em memoria: um classificador novo so entrava com restart
+    do gateway, o que corta as sessoes vivas. Aqui o modulo e relido quando o
+    mtime muda, para que a melhoria entre no turno seguinte.
+    Fail-open: se a recarga falhar, mantem-se a versao em memoria e regista-se.
+    """
+    global NIVEIS
+    try:
+        mtime = _FICHEIRO_ANALISE.stat().st_mtime_ns
+    except OSError:
+        return
+    if mtime == _MTIME_ANALISE[0]:
+        return
+    try:
+        importlib.reload(_analise_mod)
+        NIVEIS = _analise_mod.NIVEIS
+        _MTIME_ANALISE[0] = mtime
+        logger.info("analisador recarregado (analise.py mudou)")
+    except Exception:  # noqa: BLE001 - nunca partir um turno por causa disto
+        logger.warning("falha a recarregar o analisador; mantem a versao em memoria",
+                       exc_info=True)
 
 NOME = gestor.NOME
 _AMBIENTE_DESLIGADO = ("VMM_DESATIVADO", "VIPERNET_MODEL_MANAGER_OFF")
@@ -360,7 +388,7 @@ def herdar_se_indeciso(perfil: str, sessao: str, nivel: str,
     if score > margem:
         return nivel, ""
     sinais = list(decisao.get("sinais") or [])
-    if len(_sinais_independentes(sinais)) >= 2:
+    if len(_analise_mod.sinais_independentes(sinais)) >= 2:
         return nivel, ""
     with _lock:
         antes = (_historico.get(f"{perfil}\x1f{sessao}") or {}).get("nivel")
@@ -486,14 +514,15 @@ def middleware_llm_request(
                            "sessao": session_id}, registar=registar)
             return None
         analise = pcfg.get("analise") or {}
-        decisao = _decidir(
+        _recarregar_analise_se_mudou()
+        decisao = _analise_mod.decidir(
             _mensagens(request),
             limiares=analise.get("limiares"),
             janela=int(analise.get("janela_mensagens", 8) or 8),
             maximo=int(analise.get("varredura_max_mensagens", 60) or 60),
             pesos=analise.get("pesos"),
         )
-        tarefa = _detectar_tarefa(_mensagens(request), pcfg.get("tarefas") or {})
+        tarefa = _analise_mod.detectar_tarefa(_mensagens(request), pcfg.get("tarefas") or {})
         associada = tarefa if any(tarefa in e.get("tarefas", [])
                                  for e in gestor.catalogo_utilizavel(pcfg)) else None
         nivel = decisao["nivel"] or ("leve" if associada else "")
