@@ -212,6 +212,34 @@ def main() -> int:
     check("/estado sem config 200", r.status_code == 200, str(r.status_code))
     check("/estado sem config tem perfis", bool((r.json() or {}).get("perfis")))
 
+    # --- painel: confirmacao verde da validacao (frontend estatico) ---------
+    # O sucesso tem de ser visivel: banner verde, botao a verde e texto com o
+    # que foi aceite. Sem estado paralelo — deriva do resultado de /validar.
+    js = (RAIZ / "dashboard" / "dist" / "index.js").read_text(encoding="utf-8")
+    css = (RAIZ / "dashboard" / "dist" / "style.css").read_text(encoding="utf-8")
+    check("painel: estado validacaoOk", "const [validacaoOk, setValidacaoOk] = useState(null)" in js)
+    check("painel: validar limpa aviso antes de pedir",
+          "function validarConfig() {\n      setErrosValidacao([]);\n      setValidacaoOk(null);" in js)
+    check("painel: validar com sucesso publica aviso",
+          "setValidacaoOk(mensagemValido(cfg))" in js)
+    check("painel: mensagem com contagens medidas",
+          "Validado com sucesso — " in js and "rota(s)" in js and "0 erros" in js)
+    check("painel: validar com erros nao deixa aviso verde",
+          "setValidacaoOk(null);\n              setErro(\"Configuração inválida" in js)
+    check("painel: botao Validar muda para confirmado", "\"✓ Validado\" : \"Validar\"" in js)
+    check("painel: botao Validar ganha classe verde", "className: validacaoOk ? \"vmm-btn-ok\" : undefined" in js)
+    check("painel: aviso verde dentro do editor", "className: \"vmm-editor-ok\"" in js)
+    check("painel: aviso verde na pagina apos gravar", "className: \"vmm-ok\"" in js)
+    check("painel: gravar publica aviso de sucesso",
+          "setValidacaoOk(\"Configuração gravada com sucesso" in js)
+    check("painel: editar o texto invalida o aviso",
+          "// o texto mudou: o \"validado\" anterior deixa de ser verdade" in js)
+    check("painel: fechar o editor limpa o aviso",
+          "setErrosValidacao([]);\n      setValidacaoOk(null);\n    }\n\n    if (!estado && !erro)" in js)
+    for cls in (".vmm-ok", ".vmm-editor-ok", ".vmm-btn-ok"):
+        check(f"painel: CSS {cls}", cls in css)
+    check("painel: verde com variante para tema escuro", "[data-theme=\"dark\"] .vmm-ok" in css)
+
     print(f"\n{OK} verificacoes OK, {len(FALHAS)} falhas")
     for f in FALHAS:
         print("  FALHA:", f)

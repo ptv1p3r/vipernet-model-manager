@@ -251,6 +251,10 @@
     const [mostrarEditor, setMostrarEditor] = useState(false);
     const [configJSON, setConfigJSON] = useState("");
     const [errosValidacao, setErrosValidacao] = useState([]);
+    const [aValidar, setAValidar] = useState(false);
+    // Mensagem de sucesso da ultima validacao/gravacao (null = sem aviso).
+    // Distinta de "erro": verde, e limpa assim que o texto volta a mudar.
+    const [validacaoOk, setValidacaoOk] = useState(null);
 
     const carregar = useCallback(function () {
       setACarregar(true);
@@ -287,6 +291,8 @@
 
     function validarConfig() {
       setErrosValidacao([]);
+      setValidacaoOk(null);
+      setAValidar(true);
       try {
         const cfg = JSON.parse(configJSON);
         // Garantia extra: o corpo deve ser um objecto (não array, não string)
@@ -297,16 +303,39 @@
           .then(function (r) {
             if (r && r.erros && r.erros.length) {
               setErrosValidacao(r.erros);
+              setValidacaoOk(null);
               setErro("Configuração inválida: " + r.erros.join("; "));
             } else {
               setErro(null);
+              setValidacaoOk(mensagemValido(cfg));
             }
           })
-          .catch(function (e) { setErro("Erro ao validar: " + String(e && e.message ? e.message : e)); });
+          .catch(function (e) {
+            setValidacaoOk(null);
+            setErro("Erro ao validar: " + String(e && e.message ? e.message : e));
+          })
+          .then(function () { setAValidar(false); });
       } catch (e) {
-        setErrosValidacao(["JSON inválido: " + String(e && e.message ? e.message : e)]);
+        setAValidar(false);
+        setValidacaoOk(null);
         setErro("JSON inválido: " + String(e && e.message ? e.message : e));
       }
+    }
+
+    // Resume o que a validacao aceitou, para o aviso verde dizer algo medido
+    // e nao apenas "ok". Conta perfis e rotas do proprio JSON validado.
+    function mensagemValido(cfg) {
+      const perfis = (cfg && cfg.perfis) || {};
+      const nomes = Object.keys(perfis);
+      let rotas = 0;
+      let tarefas = 0;
+      nomes.forEach(function (n) {
+        const p = perfis[n] || {};
+        rotas += Array.isArray(p.catalogo) ? p.catalogo.length : 0;
+        tarefas += p.tarefas && typeof p.tarefas === "object" ? Object.keys(p.tarefas).length : 0;
+      });
+      return "Validado com sucesso — " + nomes.length + " perfil(es), " +
+        rotas + " rota(s), " + tarefas + " tarefa(s), 0 erros";
     }
 
     function salvarConfig() {
@@ -321,6 +350,7 @@
             setMostrarEditor(false);
             setConfigJSON("");
             setErrosValidacao([]);
+            setValidacaoOk("Configuração gravada com sucesso — o gestor já a lê");
             carregar();
           })
           .catch(function (e) { setErro("Erro ao salvar: " + String(e && e.message ? e.message : e)); });
@@ -333,6 +363,7 @@
       setMostrarEditor(false);
       setConfigJSON("");
       setErrosValidacao([]);
+      setValidacaoOk(null);
     }
 
     if (!estado && !erro) {
@@ -388,6 +419,13 @@
 
       erro ? h("div", { className: "vmm-erro" }, "erro: " + erro) : null,
 
+      // Aviso de sucesso fora do editor: sobrevive ao fecho depois de gravar.
+      (validacaoOk && !mostrarEditor) ? h(
+        "div",
+        { className: "vmm-ok", role: "status", "aria-live": "polite" },
+        "✓ " + validacaoOk
+      ) : null,
+
       mostrarEditor && h(
         Card,
         { className: "vmm-card-editor" },
@@ -405,7 +443,12 @@
             { className: "vmm-editor-corpo" },
             h("textarea", {
               value: configJSON,
-              onChange: function (e) { setConfigJSON(e.target.value); },
+              onChange: function (e) {
+                setConfigJSON(e.target.value);
+                // o texto mudou: o "validado" anterior deixa de ser verdade
+                setValidacaoOk(null);
+                setErrosValidacao([]);
+              },
               className: "vmm-editor-textarea",
               style: { width: "100%", height: "350px", fontFamily: "monospace", fontSize: "12px", lineHeight: "1.5", padding: "8px", border: "1px solid var(--border)", borderRadius: "4px", resize: "vertical" }
             }),
@@ -413,12 +456,24 @@
               "div",
               { className: "vmm-editor-erros" },
               errosValidacao.map(function (e, i) { return h("div", { key: i, className: "vmm-erro-item" }, "• " + e); })
+            ),
+            validacaoOk && h(
+              "div",
+              { className: "vmm-editor-ok", role: "status", "aria-live": "polite" },
+              "✓ " + validacaoOk
             )
           ),
           h(
             "div",
             { className: "vmm-editor-accoes" },
-            h(Button, { size: "sm", variant: "outline", onClick: validarConfig }, "Validar"),
+            h(Button, {
+              size: "sm",
+              variant: validacaoOk ? "default" : "outline",
+              onClick: validarConfig,
+              disabled: aValidar,
+              className: validacaoOk ? "vmm-btn-ok" : undefined,
+              title: "Validar a configuração contra o schema, sem gravar"
+            }, aValidar ? "A validar…" : (validacaoOk ? "✓ Validado" : "Validar")),
             h(Button, { size: "sm", variant: "default", onClick: salvarConfig, disabled: aGravar }, aGravar ? "A gravar…" : "Salvar"),
             h(Button, { size: "sm", variant: "ghost", onClick: fecharEditor }, "Cancelar")
           )
