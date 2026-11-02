@@ -451,9 +451,16 @@ def validar_post(corpo: Any = Body(default=None)) -> dict[str, Any]:
 
 
 def _perfil_servido() -> Optional[str]:
-    """Perfil que este processo serve, quando o host o expoe; ``None`` se nao souber."""
-    for var in ("HERMES_HOME", "HERMES_HOME_NAME"):
-        valor = (os.environ.get(var) or "").strip()
-        if valor:
-            return valor
+    """Perfil que este processo serve, quando o host o expoe; ``None`` se nao souber.
+
+    `HERMES_PROFILE` e a via publica. `HERMES_HOME` e um **caminho**
+    (`/opt/data`), nao um nome — so vale quando aponta para
+    `.../profiles/<nome>`, senao devolvia-se um directoria como se fosse perfil.
+    """
+    nome = (os.environ.get("HERMES_PROFILE") or "").strip()
+    if nome:
+        return nome
+    casa = (os.environ.get("HERMES_HOME") or "").strip().rstrip("/")
+    if casa and os.path.basename(os.path.dirname(casa)) == "profiles":
+        return os.path.basename(casa)
     return None
