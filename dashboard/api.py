@@ -264,8 +264,21 @@ def config_get() -> dict[str, Any]:
     return cfg
 
 @router.post("/config")
-def config_post(corpo: dict[str, Any]) -> dict[str, Any]:
+def config_post(corpo: Any) -> dict[str, Any]:
     """Substitui a config toda via gestor.gravar — mesma semantica que `vmm` CLI, validacao e backup."""
+    # Defesa extra: normalizar entrada
+    if corpo is not None:
+        if isinstance(corpo, str):
+            try:
+                corpo = json.loads(corpo)
+            except (json.JSONDecodeError, ValueError):
+                raise HTTPException(status_code=400, detail="JSON inválido: não é um objecto")
+        elif isinstance(corpo, list):
+            corpo = {"catalogo": corpo} if corpo else None
+        elif not isinstance(corpo, dict):
+            raise HTTPException(status_code=400, detail="JSON inválido: não é um objecto")
+    if not corpo:
+        raise HTTPException(status_code=400, detail="JSON inválido: não é um objecto")
     try:
         # gestor.gravar retorna o caminho do ficheiro, mas queremos devolver o config lido depois da gravacao.
         # A funcao gravar no plugin ja escreve e valida, entao podemos recarregar para garantir.
@@ -276,9 +289,21 @@ def config_post(corpo: dict[str, Any]) -> dict[str, Any]:
     return cfg
 
 @router.post("/validar")
-def validar_post(corpo: dict[str, Any]) -> dict[str, Any]:
+def validar_post(corpo: Any) -> dict[str, Any]:
     """Valida a config sem a escrever; devolve o config normalizado e uma lista de erros."""
     cfg, erros = gestor.carregar()
+    # Defesa extra: FastAPI pode passar list, str, int, etc. se o JSON não for objecto.
+    # Tentamos normalizar para dict antes de validar.
+    if corpo is not None:
+        if isinstance(corpo, str):
+            try:
+                corpo = json.loads(corpo)
+            except (json.JSONDecodeError, ValueError):
+                corpo = None
+        elif isinstance(corpo, list):
+            corpo = {"catalogo": corpo} if corpo else None
+        elif not isinstance(corpo, dict):
+            corpo = None
     if corpo:
         cfg, erros = gestor.validar(corpo)
     return {"config": cfg, "erros": erros}

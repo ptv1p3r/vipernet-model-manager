@@ -33,15 +33,18 @@
 
   function pedir(caminho, opcoes) {
     var opts = Object.assign({}, opcoes || {});
-    // Se o body for objeto e nao string, serializa para o fallback fetch.
-    // O SDK.fetchJSON espera body como objeto e serializa ele proprio.
+    // Se o body for objecto e não string, serializa para o fallback fetch.
+    // O SDK.fetchJSON espera body como objecto e serializa ele próprio.
     if (opts.body && typeof opts.body === "object" && !(opts.body instanceof FormData) && !(opts.body instanceof URLSearchParams)) {
       if (!SDK.fetchJSON) {
         opts.body = JSON.stringify(opts.body);
       }
+    } else if (opts.body && typeof opts.body !== "string") {
+      // Body não é objecto nem string (ex.: number, boolean) - converte para string
+      opts.body = String(opts.body);
     }
     if (SDK.fetchJSON) return SDK.fetchJSON(BASE + caminho, opts);
-    // Fallback minimo: o host injeta o token de sessao no header em modo loopback.
+    // Fallback mínimo: o host injeta o token de sessão no header em modo loopback.
     const tok = window.__HERMES_SESSION_TOKEN__;
     const headers = { "Content-Type": "application/json" };
     if (tok) headers["X-Hermes-Session-Token"] = tok;
@@ -286,6 +289,10 @@
       setErrosValidacao([]);
       try {
         const cfg = JSON.parse(configJSON);
+        // Garantia extra: o corpo deve ser um objecto (não array, não string)
+        if (cfg === null || typeof cfg !== "object" || Array.isArray(cfg)) {
+          throw new Error("O JSON deve ser um objecto (não array, não null, não string)");
+        }
         pedir("/validar", { method: "POST", body: cfg })
           .then(function (r) {
             if (r && r.erros && r.erros.length) {
@@ -305,6 +312,10 @@
     function salvarConfig() {
       try {
         const cfg = JSON.parse(configJSON);
+        // Garantia extra: o corpo deve ser um objecto (não array, não string)
+        if (cfg === null || typeof cfg !== "object" || Array.isArray(cfg)) {
+          throw new Error("O JSON deve ser um objecto (não array, não null, não string)");
+        }
         pedir("/config", { method: "POST", body: cfg })
           .then(function () {
             setMostrarEditor(false);
