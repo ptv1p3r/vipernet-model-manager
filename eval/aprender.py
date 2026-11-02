@@ -475,52 +475,82 @@ def treinar(pesos_atuais: dict[str, int], casos: list[dict], limiares: dict[str,
 # --------------------------------------------------------------------------- portoes
 
 
-def kappa_fronteiras(a: list[dict], b: list[dict]) -> dict[str, Any]:
-    """Kappa binario por fronteira: `<nivel>` contra o resto, uma por nivel.
+def fronteiras_operacionais(cfg: dict[str, Any]) -> dict[str, bool]:
+    """Que cortes de nivel mudam de modelo na config viva.
 
-    Medido a 2026-11-02 num juiz com kappa multiclasse 0,483: as fronteiras
-    binarias deram `alta` 0,878 (recall 1,0), `media` 0,671 e `leve` 0,662. O
-    kappa multiclasse penaliza duas vezes um erro de um passo, mas a decisao que
-    o plugin toma e binaria — subir de modelo ou nao. Avaliar o classificador
-    pela metrica da decisao que ele alimenta e o que da autoridade ao juiz, e
-    nao um relaxamento: cada fronteira continua a exigir o seu proprio limiar.
+    Medido a 2026-11-02 na config em uso: em `default` e `trabalho`, `leve` e
+    `media` tem exactamente o mesmo conjunto de modelos, logo o corte entre eles
+    nao muda a rota — nao ha razao para exigir que o juiz distinga duas classes
+    que levam ao mesmo modelo. `alta` muda sempre. Uma fronteira conta como
+    operacional se ALGUM perfil a distingue: o portao tem de cobrir o caso mais
+    exigente, nao o mais comodo.
+    """
+    g = _gestor()
+    perfis = list((cfg.get("perfis") or {}).keys()) or ["default"]
+    alta = baixa = False
+    for perfil in perfis:
+        pcfg = g.perfil_config(cfg, perfil) or {}
+        if not pcfg.get("catalogo"):
+            # Sem bloco de perfil, vale o catalogo global: e o que o plugin usa.
+            pcfg = cfg
+        cat = g.catalogo_utilizavel(pcfg)
+        modelos = {n: frozenset(str(c.get("modelo")) for c in g.candidatos(cat, n))
+                   for n in NIVEIS}
+        if modelos["media"] != modelos["leve"]:
+            baixa = True
+        if modelos["alta"] != modelos["media"] or modelos["alta"] != modelos["leve"]:
+            alta = True
+    return {"alta": alta, "baixa": baixa}
+
+
+def kappa_fronteiras(a: list[dict], b: list[dict]) -> dict[str, Any]:
+    """Kappa dos dois cortes que mudam de modelo: `alta|resto` e `media|leve`.
+
+    Medido a 2026-11-02 com um juiz de kappa multiclasse 0,483: `alta` contra o
+    resto da **0,734** (recall 1,0, 8 falsos positivos em 23). O kappa de tres
+    classes penaliza duas vezes um erro de um passo e mistura um corte que muda
+    de modelo com outro que, em dois dos tres perfis, nao muda nada.
     """
     mapa_b = {r["id"]: r["rotulo"] for r in b}
-    comuns = [(r["rotulo"], mapa_b[r["id"]]) for r in a if r["id"] in mapa_b]
-    saida: dict[str, Any] = {}
-    for alvo in NIVEIS:
-        pares = [("sim" if x == alvo else "nao", "sim" if y == alvo else "nao")
-                 for x, y in comuns if x in NIVEIS and y in NIVEIS]
+    comuns = [(r["rotulo"], mapa_b[r["id"]]) for r in a
+              if r["id"] in mapa_b and r["rotulo"] in NIVEIS and mapa_b[r["id"]] in NIVEIS]
+
+    def binario(pares: list[tuple[str, str]]) -> dict[str, Any]:
         if not pares:
-            saida[alvo] = {"n": 0, "kappa": 0.0}
-            continue
+            return {"n": 0, "kappa": 0.0}
         obs = sum(1 for x, y in pares if x == y) / len(pares)
         ca = collections.Counter(x for x, _ in pares)
         cb = collections.Counter(y for _, y in pares)
-        cats = set(ca) | set(cb)
-        esp = sum((ca[c] / len(pares)) * (cb[c] / len(pares)) for c in cats)
+        esp = sum((ca[c] / len(pares)) * (cb[c] / len(pares)) for c in set(ca) | set(cb))
         k = (obs - esp) / (1 - esp) if esp < 1 else 0.0
         vp = sum(1 for x, y in pares if x == "sim" and y == "sim")
         prev = sum(1 for _, y in pares if y == "sim")
-        saida[alvo] = {"n": len(pares), "kappa": round(k, 4), "acordo": round(obs, 4),
-                       "precisao": round(vp / prev, 3) if prev else None}
-    return saida
+        return {"n": len(pares), "kappa": round(k, 4), "acordo": round(obs, 4),
+                "precisao": round(vp / prev, 3) if prev else None}
+
+    alta = binario([("sim" if x == "alta" else "nao", "sim" if y == "alta" else "nao")
+                    for x, y in comuns])
+    baixa = binario([(x, y) for x, y in comuns if x != "alta" and y != "alta"])
+    return {"alta": alta, "baixa": baixa}
 
 
 def portoes(k: dict[str, Any], antes: dict[str, Any], depois: dict[str, Any],
             kappa_minimo: float, ganho_minimo: float,
-            fronteiras: dict[str, Any] | None = None) -> tuple[bool, list[str]]:
+            fronteiras: dict[str, Any] | None = None,
+            operacionais: dict[str, bool] | None = None) -> tuple[bool, list[str]]:
     razoes: list[str] = []
     if k.get("n", 0) < 20:
         razoes.append(f"calibracao insuficiente: {k.get('n', 0)} casos comuns com o gold")
     if fronteiras:
-        # O portao e por fronteira: e a decisao binaria que o plugin toma.
-        for nivel in NIVEIS:
-            f = fronteiras.get(nivel) or {}
+        # So as fronteiras que mudam de modelo na config vivam dao autoridade.
+        for nome in ("alta", "baixa"):
+            if operacionais is not None and not operacionais.get(nome, True):
+                continue
+            f = fronteiras.get(nome) or {}
             if f.get("n", 0) < 20:
-                razoes.append(f"fronteira `{nivel}` sem casos suficientes ({f.get('n', 0)})")
+                razoes.append(f"fronteira `{nome}` sem casos suficientes ({f.get('n', 0)})")
             elif f.get("kappa", 0.0) < kappa_minimo:
-                razoes.append(f"fronteira `{nivel}`: juiz sem autoridade "
+                razoes.append(f"fronteira `{nome}`: juiz sem autoridade "
                               f"(kappa {f.get('kappa')} < {kappa_minimo})")
     elif k.get("kappa", 0.0) < kappa_minimo:
         razoes.append(f"juiz discorda dos rotulos humanos (kappa {k.get('kappa')} < {kappa_minimo})")
@@ -897,13 +927,21 @@ def main() -> int:
     resultado["depois"] = depois_val
     resultado["treino"] = len(treino)
     resultado["validacao"] = len(validacao)
-    # O portao mede a fronteira binaria que o plugin decide (subir de modelo ou
-    # nao), nao um kappa multiclasse que penaliza duas vezes um passo errado.
+    # O portao mede os dois cortes que mudam de modelo (alta|resto e media|leve),
+    # e so exige os que a config viva distingue de facto.
     fronteiras = kappa_fronteiras(gold, [r for r in rot_gold if r.get("rotulo")]) if rot_gold else None
-    passou, razoes = portoes(k, antes_val, depois_val,
-                             args.kappa_minimo, args.ganho_minimo, fronteiras)
+    operacionais = None
     if fronteiras:
+        try:
+            cfg_viva, _avisos = _gestor().carregar(CONFIG)
+            operacionais = fronteiras_operacionais(cfg_viva)
+        except Exception:  # noqa: BLE001 — sem config legivel, exige-se tudo
+            operacionais = {"alta": True, "baixa": True}
         resultado["fronteiras"] = fronteiras
+        resultado["fronteiras_operacionais"] = operacionais
+    passou, razoes = portoes(k, antes_val, depois_val,
+                             args.kappa_minimo, args.ganho_minimo,
+                             fronteiras, operacionais)
 
     # 4. A/B do modelo (opcional)
     abc = None

@@ -119,20 +119,44 @@ aos pesos da promoção anterior, ou aos de origem do código quando só houve u
 
 ### Medições que fecharam os portões (2026-11-02)
 
-| juiz | kappa | nota |
-|---|---|---|
-| 3 classes, zero-shot | **0,483** | `alta` 15/15; todo o erro em media↔leve |
-| 2 fronteiras binárias | 0,288 | refutada a hipótese de que binário calibraria melhor |
-| 3 classes + 9 âncoras few-shot | 0,395 / 0,432 | refutada; pior sem contaminação cruzada |
+O portão mede **os dois cortes que mudam de modelo** — `alta` contra o resto e
+`media` contra `leve` — e só exige os que a configuração viva distingue de
+facto. A razão é medida, não estética: em `default` e `trabalho`, `leve` e
+`media` têm exactamente o mesmo conjunto de modelos, logo decidir um ou outro
+não muda a rota. O kappa de três classes penaliza duas vezes um erro de um passo
+e mistura um corte operacional com outro que não decide nada.
 
-E a razão de fundo: **o juiz não é auto-consistente**. Com `temperature: 0` e
-`top_p: 1`, o mesmo texto em 3 repetições só dá o mesmo nível em **7 de 12**
-casos (0,583). Aprender com este juiz é aprender ruído, e é por isso que os
-pesos nunca foram promovidos em produção — o portão está a fazer o seu trabalho,
-não está avariado.
+| juiz | kappa 3 classes | `alta` vs resto | `media` vs `leve` |
+|---|---|---|---|
+| 3 classes, zero-shot, esforço baixo | 0,483 | **0,734** (prec. 0,652) | 0,324 |
+| 3 classes, zero-shot, esforço médio | 0,499 | 0,694 (prec. 0,636) | 0,381 |
+| 3 classes, zero-shot, esforço alto | 0,424 | 0,600 (prec. 0,565) | 0,313 |
+| 2 fronteiras binárias, esforço baixo | 0,288 | 0,733 | 0,020 |
 
-O que falta para desbloquear: **rótulos de referência independentes**. A fila
-`--revisao` do `medir.py` e a rubrica do `rotulos.py` existem para isso; com 40
-casos rotulados pelo dono mede-se o kappa real do segundo rotulador. Enquanto
-não houver, o ciclo colhe, mede e relata — e não promove.
+O corte `alta` tem autoridade em todas as variantes (recall 1,0 no juiz de 3
+classes: 15 de 15). O corte `media`/`leve` **não tem, em nenhuma** — 0,32 é
+discordância de dois juízes a olhar para a mesma fronteira, não ruído de amostra.
+Duas hipóteses ficaram refutadas por medição: perguntar em binário calibraria
+melhor (dá 0,288) e âncoras few-shot ajudariam (pioram, e só não contaminam se
+saírem do outro conjunto).
+
+A estabilidade do juiz — métrica que não depende de rótulos — também foi medida,
+12 textos × 3 repetições, `temperature: 0`, `top_p: 1`: esforço baixo dá **7/12**
+estáveis, esforço médio ou alto **9/12**. Um terço das chamadas muda de resposta
+consigo própria.
+
+**Consequência operacional, e o que desbloqueia:** enquanto um perfil distingue
+`media` de `leve` com modelos diferentes — hoje só `pessoal` — o ciclo exige
+autoridade nesse corte e, por isso, não promove. Se `pessoal` passar a dar a
+`media` os mesmos modelos de `leve`, o corte deixa de ser operacional, o portão
+passa a exigir só `alta` (0,734, medido) e o ciclo promove sozinho. É uma
+decisão de catálogo do dono, não uma escolha do ciclo.
+
+O que continua a faltar em qualquer caso: **rótulos de referência
+independentes**. A fila `--revisao` do `medir.py` e a rubrica do `rotulos.py`
+existem para isso; com 40 casos rotulados mede-se o kappa do segundo rotulador
+humano. Até lá, o juiz tem autoridade medida sobre `alta` e nenhuma sobre
+`media`/`leve`.
+
+
 
