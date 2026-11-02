@@ -33,22 +33,22 @@
 
   function pedir(caminho, opcoes) {
     var opts = Object.assign({}, opcoes || {});
-    // Se o body for objecto e não string, serializa para o fallback fetch.
-    // O SDK.fetchJSON espera body como objecto e serializa ele próprio.
-    if (opts.body && typeof opts.body === "object" && !(opts.body instanceof FormData) && !(opts.body instanceof URLSearchParams)) {
-      if (!SDK.fetchJSON) {
-        opts.body = JSON.stringify(opts.body);
-      }
-    } else if (opts.body && typeof opts.body !== "string") {
-      // Body não é objecto nem string (ex.: number, boolean) - converte para string
-      opts.body = String(opts.body);
+    // O SDK.fetchJSON entrega o init tal e qual ao fetch(): um body objecto vira a
+    // string "[object Object]" (text/plain) e o servidor responde 422 "Input should
+    // be a valid dictionary". Serializa-se aqui e marca-se o Content-Type — o mesmo
+    // padrao do painel kanban.
+    if (opts.body !== undefined && opts.body !== null) {
+      if (typeof opts.body !== "string") opts.body = JSON.stringify(opts.body);
+      opts.headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
     }
     if (SDK.fetchJSON) return SDK.fetchJSON(BASE + caminho, opts);
-    // Fallback mínimo: o host injeta o token de sessão no header em modo loopback.
+    // Fallback minimo: o host injecta o token de sessão no header em modo loopback.
     const tok = window.__HERMES_SESSION_TOKEN__;
-    const headers = { "Content-Type": "application/json" };
+    const headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
     if (tok) headers["X-Hermes-Session-Token"] = tok;
-    return fetch(BASE + caminho, Object.assign({ credentials: "include", headers: headers }, opts))
+    const resto = Object.assign({}, opts);
+    delete resto.headers;
+    return fetch(BASE + caminho, Object.assign({ credentials: "include", headers: headers }, resto))
       .then(function (r) {
         if (!r.ok) throw new Error(r.status + ": " + r.statusText);
         return r.json();
