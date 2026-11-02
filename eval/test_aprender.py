@@ -11,6 +11,7 @@ conteudo e rotulou tudo `None`).
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import time
@@ -318,6 +319,123 @@ class TestVariantes(unittest.TestCase):
         d, erros = modelo.normalizar({"provider": "p", "modelo": "m", "prompt_variante": "v3"})
         self.assertEqual(erros, [])
         self.assertEqual(d["prompt_variante"], "v3")
+
+
+class TestPromocaoEReversao(unittest.TestCase):
+    """O caminho que muda comportamento — e por isso o que mais tem de ser provado.
+
+    Medido a 2026-11-02: `promover` e `reverter` nao tinham um unico teste com
+    escrita real, so um caso de `reverter` sem historico. O ciclo podia "passar
+    os portoes" e gravar lixo sem que nada acusasse.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+        self._config_antigo = A.CONFIG
+        self._aprendiz_antigo = A.APRENDIZ
+        self._cursor_antigo = A.CURSOR
+        self._hist_antigo = A.HISTORICO
+        self._rel_antigo = A.RELATORIOS
+        self._vmm_dir = os.environ.get("VMM_DIR")
+        A.CONFIG = self.dir / "config.json"
+        A.APRENDIZ = self.dir / "aprendiz"
+        A.CURSOR = A.APRENDIZ / "cursor.json"
+        A.HISTORICO = A.APRENDIZ / "historico.jsonl"
+        A.RELATORIOS = A.APRENDIZ / "relatorios"
+        A.APRENDIZ.mkdir(parents=True, exist_ok=True)
+        A.RELATORIOS.mkdir(parents=True, exist_ok=True)
+        os.environ["VMM_DIR"] = str(self.dir)
+        import gestor
+        self.gestor = gestor
+        self.gestor.gravar(json.loads(json.dumps(self.gestor.SEED)))
+
+    def tearDown(self):
+        A.CONFIG = self._config_antigo
+        A.APRENDIZ = self._aprendiz_antigo
+        A.CURSOR = self._cursor_antigo
+        A.HISTORICO = self._hist_antigo
+        A.RELATORIOS = self._rel_antigo
+        if self._vmm_dir is None:
+            os.environ.pop("VMM_DIR", None)
+        else:
+            os.environ["VMM_DIR"] = self._vmm_dir
+        self._tmp.cleanup()
+
+    def _promover(self, pesos, variante=None):
+        return A.promover(pesos, {"ts": "2026-11-02T00:00:00+00:00", "passou": True}, variante)
+
+    def _hist(self, registos):
+        with A.HISTORICO.open("w", encoding="utf-8") as f:
+            for r in registos:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    def test_promover_grava_pesos_e_meta(self):
+        antes = json.loads(A.CONFIG.read_text(encoding="utf-8"))
+        self.assertNotIn("pesos", antes.get("analise") or {})
+        r = self._promover({"trabalho": 4, "dominio": 2})
+        self.assertTrue(r["ok"], r)
+        depois = json.loads(A.CONFIG.read_text(encoding="utf-8"))
+        self.assertEqual(depois["analise"]["pesos"], {"trabalho": 4, "dominio": 2})
+        self.assertTrue(depois["analise"]["aprendiz"]["passou"])
+
+    def test_promover_grava_variante_no_classificador(self):
+        cfg = json.loads(A.CONFIG.read_text(encoding="utf-8"))
+        cfg["analise"]["classificador"] = {"activo": False, "provider": "deepseek",
+                                           "modelo": "deepseek-flash"}
+        self.gestor.gravar(cfg)
+        r = self._promover({"trabalho": 4}, variante="v2")
+        self.assertTrue(r["ok"], r)
+        depois = json.loads(A.CONFIG.read_text(encoding="utf-8"))
+        self.assertEqual(depois["analise"]["classificador"]["prompt_variante"], "v2")
+
+    def test_promover_recusa_pesos_invalidos_e_nao_grava(self):
+        antes = A.CONFIG.read_text(encoding="utf-8")
+        r = self._promover({"trabalho": "muito"})
+        self.assertFalse(r["ok"])
+        self.assertTrue(r.get("erros"))
+        self.assertEqual(A.CONFIG.read_text(encoding="utf-8"), antes)
+
+    def test_reverter_sem_promocao_falha(self):
+        r = A.reverter()
+        self.assertFalse(r["ok"])
+        self.assertIn("nunca houve promocao", r["erro"])
+
+    def test_reverter_uma_promocao_volta_ao_origem(self):
+        self._promover({"trabalho": 4})
+        self._hist([{"estado": "promovido", "pesos": {"trabalho": 4}}])
+        r = A.reverter()
+        self.assertTrue(r["ok"], r)
+        self.assertTrue(r["para_origem"])
+        depois = json.loads(A.CONFIG.read_text(encoding="utf-8"))
+        self.assertNotIn("pesos", depois["analise"])
+        self.assertNotIn("aprendiz", depois["analise"])
+
+    def test_reverter_duas_promocoes_volta_a_penultima(self):
+        self._promover({"trabalho": 5})
+        self._hist([{"estado": "promovido", "pesos": {"trabalho": 3}},
+                    {"estado": "promovido", "pesos": {"trabalho": 5}}])
+        r = A.reverter()
+        self.assertTrue(r["ok"], r)
+        self.assertFalse(r["para_origem"])
+        depois = json.loads(A.CONFIG.read_text(encoding="utf-8"))
+        self.assertEqual(depois["analise"]["pesos"], {"trabalho": 3})
+
+    def test_reverter_valida_antes_de_gravar(self):
+        self._promover({"trabalho": 4})
+        antes = A.CONFIG.read_text(encoding="utf-8")
+        self._hist([{"estado": "promovido", "pesos": {"trabalho": "lixo"}},
+                    {"estado": "promovido", "pesos": {"trabalho": 4}}])
+        # anterior = {"trabalho": "lixo"} -> a validacao tem de travar a escrita
+        r = A.reverter()
+        self.assertFalse(r["ok"])
+        self.assertEqual(A.CONFIG.read_text(encoding="utf-8"), antes)
+
+    def test_historico_ilegivel_nao_estoura(self):
+        A.HISTORICO.write_text("nao e json\n{\"estado\": \"relatorio\"}\n", encoding="utf-8")
+        r = A.reverter()
+        self.assertFalse(r["ok"])
+        self.assertIn("nunca houve promocao", r["erro"])
 
 
 if __name__ == "__main__":

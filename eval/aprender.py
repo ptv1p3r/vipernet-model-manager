@@ -54,7 +54,12 @@ REPO = EVAL.parent
 RAIZ = Path("/opt/data")
 DADOS = RAIZ / "plugin-data/vipernet-model-manager"
 LEDGER = DADOS / "uso.jsonl"
-CONFIG = DADOS / "config.json"
+#: Ficheiro de config do plugin. Injectável por ambiente para os testes e o
+#: `--self-test` poderem exercer a promoção e a reversão sem tocar na config
+#: viva: medido a 2026-11-02, sem isto o caminho `promover()`/`reverter()` nunca
+#: era exercido por nenhum teste com escrita real.
+CONFIG = Path(os.environ.get("VMM_CONFIG") or (DADOS / "config.json"))
+
 #: Directorio de dados do ciclo. Sobrepõe-se por ambiente para os testes e o
 #: `--self-test` poderem correr o ciclo inteiro sem escrever no historico real.
 APRENDIZ = Path(os.environ.get("VMM_APRENDIZ_DIR") or (DADOS / "aprendiz"))
@@ -637,7 +642,17 @@ def promover(pesos: dict[str, int], meta: dict[str, Any], variante: str | None =
 
 
 def reverter() -> dict[str, Any]:
-    """Volta aos pesos do ciclo anterior, lendo o historico."""
+    """Desfaz a última promoção, lendo o historico.
+
+    Três casos distintos, e cada um tem de ter saida:
+      - duas ou mais promocoes: volta aos pesos da penultima;
+      - uma so promocao: nao ha "anterior", volta aos pesos de origem do
+        codigo (remove a chave `pesos` da config) — sem isto a primeira
+        promocao nunca se podia desfazer, que e o caso mais provavel;
+      - nenhuma: nao ha nada a desfazer.
+    Valida antes de gravar: um historico corrompido nao pode entrar na config
+    viva, e `promover` ja validava enquanto `reverter` nao.
+    """
     linhas = []
     if HISTORICO.exists():
         for linha in HISTORICO.read_text(encoding="utf-8").splitlines():
@@ -649,19 +664,23 @@ def reverter() -> dict[str, Any]:
             except json.JSONDecodeError:
                 continue
     promovidos = [x for x in linhas if x.get("estado") == "promovido"]
-    if len(promovidos) < 2:
-        return {"ok": False, "erro": "nao ha ciclo anterior para restaurar"}
-    anterior = promovidos[-2].get("pesos")
+    if not promovidos:
+        return {"ok": False, "erro": "nunca houve promocao para desfazer"}
+    anterior = promovidos[-2].get("pesos") if len(promovidos) >= 2 else None
     cfg = _config()
     if not isinstance(cfg.get("analise"), dict):
         cfg["analise"] = {}
     if anterior:
-        cfg["analise"]["pesos"] = anterior
+        cfg["analise"]["pesos"] = dict(anterior)
     else:
         cfg["analise"].pop("pesos", None)
     cfg["analise"].pop("aprendiz", None)
+    erros = _gestor().validar(cfg) if hasattr(_gestor(), "validar") else []
+    if erros:
+        return {"ok": False, "erros": erros, "origem": "historico"}
     caminho = _gestor().gravar(cfg)
-    return {"ok": True, "config": str(caminho), "pesos": anterior}
+    return {"ok": True, "config": str(caminho), "pesos": anterior,
+            "para_origem": anterior is None}
 
 
 # --------------------------------------------------------------------------- relatorio
