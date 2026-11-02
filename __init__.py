@@ -28,6 +28,7 @@ Regras de desenho:
 """
 from __future__ import annotations
 
+import copy
 import importlib
 import importlib.util
 import json
@@ -473,6 +474,90 @@ def _mensagens(pedido: dict[str, Any]) -> list[Any]:
     return []
 
 
+#: Esforco de raciocinio por rota. `agent.reasoning_config` e estado do agente,
+#: nao do turno: sem guardar o valor de origem, uma rota com esforco contaminava
+#: todas as seguintes (o `switch_model` volta a resolver do `config.yaml`, mas
+#: nao restaura um valor que ja nao esteja la).
+_esforco_base: dict[str, Any] = {}
+_ESFORCO_AUSENTE = object()
+#: Campos de raciocinio que o payload pode ja trazer da rota anterior. Ao
+#: aplicar esforco saem todos: a forma do provider antigo (o `reasoning` do
+#: OpenRouter) e recusada pelo novo (o deepseek quer `thinking` + `reasoning_effort`).
+_CAMPOS_ESFORCO_TOPO = ("reasoning_effort", "verbosity")
+_CAMPOS_ESFORCO_EXTRA = ("reasoning", "thinking")
+
+
+def _aplicar_esforco(agente: Any, entrada: dict[str, Any], sessao: str) -> str:
+    """Escreve o esforco da rota no agente; devolve o valor aplicado ('' = nenhum).
+
+    Chamar **depois** de `switch_model`: a troca volta a resolver
+    `reasoning_config` do `config.yaml` e apagaria o valor que aqui se pusesse.
+    """
+    chave = f"{sessao}\x1f{id(agente)}"
+    esforco, _ = gestor.normalizar_esforco(entrada.get("esforco"))
+    with _lock:
+        if len(_esforco_base) > 500:
+            _esforco_base.clear()
+        base = _esforco_base.get(chave, _ESFORCO_AUSENTE)
+    if esforco:
+        wire = gestor.esforco_wire(esforco)
+        if not wire:
+            return ""
+        with _lock:
+            if base is _ESFORCO_AUSENTE:
+                try:
+                    _esforco_base[chave] = copy.deepcopy(
+                        getattr(agente, "reasoning_config", None))
+                except Exception:  # noqa: BLE001
+                    _esforco_base[chave] = None
+        try:
+            agente.reasoning_config = {"enabled": True, "effort": wire}
+        except Exception:  # noqa: BLE001 — agente sem o atributo: fail-open
+            _falha("esforco: agente recusou reasoning_config")
+            return ""
+        return esforco
+    if base is not _ESFORCO_AUSENTE:
+        try:
+            agente.reasoning_config = base
+        except Exception:  # noqa: BLE001
+            pass
+        with _lock:
+            _esforco_base.pop(chave, None)
+    return ""
+
+
+def _pedido_com_esforco(pedido: dict[str, Any], entrada: dict[str, Any],
+                        rota: dict[str, Any], sessao: str = "") -> tuple[dict[str, Any], str]:
+    """Payload deste turno com o esforco na forma do provider de destino.
+
+    O `api_kwargs` ja foi construido antes da middleware com a rota anterior,
+    logo mudar o agente so vale para o turno seguinte: sem esta escrita, o
+    primeiro turno de uma rota nova saia com o esforco antigo.
+    """
+    esforco, _ = gestor.normalizar_esforco(entrada.get("esforco"))
+    if not esforco:
+        return pedido, ""
+    provider = str(rota.get("provider") or entrada.get("provider") or "")
+    extra, topo = gestor.extras_esforco(provider, entrada.get("modelo", ""),
+                                        esforco, session_id=sessao)
+    if not (extra or topo):
+        return pedido, ""
+    novo = dict(pedido)
+    for chave in _CAMPOS_ESFORCO_TOPO:
+        novo.pop(chave, None)
+    corpo_extra = novo.get("extra_body")
+    corpo_extra = dict(corpo_extra) if isinstance(corpo_extra, dict) else {}
+    for chave in _CAMPOS_ESFORCO_EXTRA:
+        corpo_extra.pop(chave, None)
+    corpo_extra.update(extra)
+    if corpo_extra:
+        novo["extra_body"] = corpo_extra
+    elif "extra_body" in novo:
+        novo.pop("extra_body", None)
+    novo.update(topo)
+    return novo, esforco
+
+
 def _trocar(agente: Any, entrada: dict[str, Any], rota: dict[str, Any],
             perfil: str, sessao: str) -> dict[str, Any]:
     alvo_provider = rota["provider"] or entrada["provider"].lower()
@@ -639,18 +724,29 @@ def middleware_llm_request(
                            "acesso": entrada.get("acesso", ""),
                            "de": atual}, registar=registar)
                 return None
+            pedido, esforco_fio = _pedido_com_esforco(
+                {**request, "model": entrada["modelo"]}, entrada, rota, session_id)
             _registar({**base, "evento": "troca_so_modelo", "de": atual["modelo"],
                        "para": entrada["modelo"], "entrada": entrada["id"],
                        "acesso": entrada.get("acesso", ""),
+                       "esforco": esforco_fio or "nao_aplicado",
                        "ms": round((time.monotonic() - inicio) * 1000, 1)}, registar=registar)
-            return {"request": {**request, "model": entrada["modelo"]}, "source": NOME,
+            return {"request": pedido, "source": NOME,
                     "reason": f"{perfil}:complexidade={nivel}->{entrada['modelo']}"}
         destino = {"provider": (getattr(agente, "provider", "") or "").lower(),
                    "modelo": getattr(agente, "model", "") or ""}
         if destino["provider"] == rota["provider"].lower() and destino["modelo"] == entrada["modelo"]:
+            # A rota ja e a do turno, mas o esforco pode nao ser: aplica-se (e
+            # repoe-se quando a entrada nao declara nenhum).
+            esforco_agente = _aplicar_esforco(agente, entrada, session_id)
+            pedido, esforco_fio = _pedido_com_esforco(request, entrada, rota, session_id)
             _registar({**base, "evento": "sem_troca", "rota": destino,
                        "entrada": entrada["id"], "acesso": entrada.get("acesso", ""),
+                       "esforco": esforco_agente or "nao_declarado",
                        "ms": round((time.monotonic() - inicio) * 1000, 1)}, registar=registar)
+            if esforco_fio:
+                return {"request": pedido, "source": NOME,
+                        "reason": f"{perfil}:complexidade={nivel}:esforco={esforco_fio}"}
             return None
         try:
             aplicado = _trocar(agente, entrada, rota, perfil, session_id)
@@ -663,12 +759,18 @@ def middleware_llm_request(
                        "de": destino, "erro": f"{type(exc).__name__}: {exc}"[:300]},
                       registar=registar)
             return None
+        # Depois da troca: o `switch_model` re-resolve `reasoning_config` do
+        # `config.yaml` e apagaria um valor posto antes.
+        esforco_agente = _aplicar_esforco(agente, entrada, session_id)
+        pedido, esforco_fio = _pedido_com_esforco(
+            {**request, "model": entrada["modelo"]}, entrada, rota, session_id)
         _registar({**base, "evento": "troca", "entrada": entrada["id"], "de": destino,
                    "acesso": entrada.get("acesso", ""),
                    "para": aplicado, "fonte_credencial": rota.get("source", ""),
+                   "esforco": esforco_agente or "nao_declarado",
                    "ms": round((time.monotonic() - inicio) * 1000, 1)}, registar=registar)
-        if entrada["modelo"] != request.get("model"):
-            return {"request": {**request, "model": entrada["modelo"]}, "source": NOME,
+        if entrada["modelo"] != request.get("model") or esforco_fio:
+            return {"request": pedido, "source": NOME,
                     "reason": f"{perfil}:complexidade={nivel}->{aplicado['provider']}:{entrada['modelo']}"}
         return None
     except Exception:

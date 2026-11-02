@@ -51,7 +51,23 @@ PADRAO: dict[str, Any] = {
     "cache_ttl_s": 600,
     "janela_mensagens": 8,
     "max_chars": 4000,
+    "esforco": "",
 }
+
+
+def _gestor():
+    """`gestor` carregado a pedido: o gestor importa este modulo (limites e
+    decisao do classificador), logo a importacao no topo seria um ciclo."""
+    import sys as _sys
+
+    modulo = _sys.modules.get("vmm_gestor")
+    if modulo is not None:
+        return modulo
+    if __package__:
+        from . import gestor as modulo  # type: ignore[import-not-found]
+    else:
+        import gestor as modulo  # type: ignore[import-not-found,no-redef]
+    return modulo
 
 # Limites duros: um `timeout_s` de 300 na config nao pode parar um turno 5 min.
 _TIMEOUT_MIN, _TIMEOUT_MAX = 1.0, 30.0
@@ -117,6 +133,17 @@ def normalizar(bruto: Any, prefixo: str = "analise.classificador") -> tuple[dict
     saida["janela_mensagens"] = int(_num(bruto.get("janela_mensagens"), 1, 60,
                                          PADRAO["janela_mensagens"]))
     saida["max_chars"] = int(_num(bruto.get("max_chars"), 200, 40000, PADRAO["max_chars"]))
+    # Esforco do modelo classificador. Vazio = nao declarado (o pedido sai como
+    # sairia sem esta funcionalidade). A validacao do vocabulario e a do
+    # catalogo — uma so casa, mesmo para os dois lados.
+    saida["esforco"] = ""
+    bruto_esforco = bruto.get("esforco")
+    if bruto_esforco not in (None, ""):
+        esforco, erro_e = _gestor().normalizar_esforco(bruto_esforco)
+        if erro_e:
+            erros.append(f"{prefixo}: {erro_e}")
+        elif esforco:
+            saida["esforco"] = esforco
     return saida, erros
 
 
@@ -322,6 +349,14 @@ def classificar(
             "temperature": 0,
             "stream": False,
         }
+        # Esforco do classificador na forma plana: este pedido e HTTP directo,
+        # nao passa pelo SDK, logo nao ha `extra_body` — os campos entram no
+        # corpo como o provider os espera (deepseek: `thinking` +
+        # `reasoning_effort`; OpenRouter: `reasoning`).
+        extra_e, topo_e = _gestor().extras_esforco(
+            provider, modelo, definicao.get("esforco"), session_id=perfil)
+        corpo.update(extra_e)
+        corpo.update(topo_e)
         resposta = _pedir(rota, definicao, corpo)
         nivel, lido = _extrair_nivel(resposta["json"])
     except (urllib.error.HTTPError) as exc:

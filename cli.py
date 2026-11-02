@@ -8,7 +8,8 @@ Uso:
   vmm perfil add NOME [--copiar-de X]
   vmm perfil rm NOME
   vmm rota list [PERFIL] [--json]
-  vmm rota add PERFIL PROVIDER MODELO --complexidade leve,media [--id ID] [--acesso api|subscricao]
+  vmm rota add PERFIL PROVIDER MODELO --complexidade leve,media [--id ID] [--acesso api|subscricao] [--esforco baixo|medio|alto]
+  vmm rota esforco PERFIL ID baixo|medio|alto|-
   vmm rota rm PERFIL ID
   vmm simular PERFIL "texto"          classifica o texto e mostra a rota escolhida
   vmm verificar [PERFIL]              resolve credenciais de cada rota (sem as imprimir)
@@ -128,7 +129,7 @@ def cmd_classificador(args) -> int:
 
     if args.cmd == "ver" or args.cmd is None:
         am = g._analise_modelo()  # noqa: SLF001 - irmao do mesmo plugin
-        linhas = [["perfil", "classificador", "provider", "modelo", "origem"]]
+        linhas = [["perfil", "classificador", "provider", "modelo", "esforco", "origem"]]
         for nome, p in sorted(perfis.items()):
             # `perfil_config` e quem aplica a heranca global -> perfil; ler o
             # perfil cru respondia "desligado" a um perfil que herda um global
@@ -141,12 +142,14 @@ def cmd_classificador(args) -> int:
             cru = (p.get("analise") or {}) if isinstance(p.get("analise"), dict) else {}
             herdou = "proprio" if "classificador" in cru else "herdado"
             if definicao:
-                linhas.append([nome, "ligado", definicao["provider"], definicao["modelo"], herdou])
+                linhas.append([nome, "ligado", definicao["provider"], definicao["modelo"],
+                               definicao.get("esforco") or "-", herdou])
             else:
                 bruto = analise.get("classificador") or {}
                 declarado = bool(bruto.get("provider") and bruto.get("modelo"))
                 linhas.append([nome, "desligado", str(bruto.get("provider") or "-"),
                                str(bruto.get("modelo") or "-"),
+                               str(bruto.get("esforco") or "-"),
                                herdou if declarado else "heuristica"])
         print(_tabela(linhas))
         global_c = (cfg.get("analise") or {}).get("classificador") or {}
@@ -176,6 +179,14 @@ def cmd_classificador(args) -> int:
                 bloco["provider"] = args.provider
             if args.modelo:
                 bloco["modelo"] = args.modelo
+            if getattr(args, "esforco", None) is not None:
+                if str(args.esforco).strip() in ("", "-", "nenhum"):
+                    bloco.pop("esforco", None)
+                else:
+                    esforco_c, erro_c = g.normalizar_esforco(args.esforco)
+                    if erro_c:
+                        return _erro(erro_c, 2)
+                    bloco["esforco"] = esforco_c
             if not (bloco.get("provider") and bloco.get("modelo")):
                 return _erro("ligar exige --provider e --modelo", 2)
         try:
@@ -183,7 +194,8 @@ def cmd_classificador(args) -> int:
         except ValueError as exc:
             return _erro(f"config recusada: {exc}")
         print(f"{alvo}: classificador {'ligado' if args.cmd == 'on' else 'desligado'}"
-              + (f" ({bloco.get('provider')}/{bloco.get('modelo')})"
+              + (f" ({bloco.get('provider')}/{bloco.get('modelo')}"
+                 f", esforco={bloco.get('esforco') or 'nao declarado'})"
                  if args.cmd == "on" else ""))
         if args.cmd == "off" and args.perfil is None:
             print("o perfil que quiser desligar um global ligado declara "
@@ -265,11 +277,12 @@ def cmd_rota_list(args) -> int:
         print(f"[{nome}] estrategia={p.get('estrategia')} "
               f"rodizio={(p.get('rodizio') or {}).get('por')} "
               f"activo={'sim' if p.get('activo', True) else 'NAO'}")
-        linhas = [["id", "provider", "modelo", "acesso", "complexidade"]]
+        linhas = [["id", "provider", "modelo", "acesso", "complexidade", "esforco"]]
         for r in p.get("catalogo") or []:
             linhas.append([r.get("id", ""), r.get("provider", ""), r.get("modelo", ""),
                            r.get("acesso", "?"),
-                           ",".join(r.get("complexidade") or [])])
+                           ",".join(r.get("complexidade") or []),
+                           r.get("esforco") or "-"])
         print(_tabela(linhas))
         print()
     return 0
@@ -299,13 +312,45 @@ def cmd_rota_add(args) -> int:
                "provider": args.provider, "modelo": args.modelo,
                "complexidade": niveis,
                "acesso": args.acesso or g.acesso_por_provider(args.provider)}
+    if getattr(args, "esforco", None):
+        esforco, erro_e = g.normalizar_esforco(args.esforco)
+        if erro_e:
+            return _erro(erro_e, 2)
+        entrada["esforco"] = esforco
     p.setdefault("catalogo", []).append(entrada)
     try:
         g.gravar(cfg)
     except ValueError as exc:
         return _erro(f"config recusada: {exc}")
     print(f"rota '{entrada['id']}' acrescentada a {args.perfil} para {','.join(niveis)}"
-          f" (acesso={entrada['acesso']})")
+          f" (acesso={entrada['acesso']}"
+          + (f", esforco={entrada['esforco']})" if entrada.get("esforco") else ")"))
+    return 0
+
+
+def cmd_rota_esforco(args) -> int:
+    """Define (ou limpa com '-') o esforco de uma rota existente."""
+    cfg, _ = _cfg()
+    p = (cfg.get("perfis") or {}).get(args.perfil)
+    if not isinstance(p, dict):
+        return _erro(f"perfil '{args.perfil}' nao existe", 3)
+    alvo = next((r for r in (p.get("catalogo") or []) if r.get("id") == args.id), None)
+    if alvo is None:
+        return _erro(f"rota '{args.id}' nao existe em {args.perfil}", 3)
+    if str(args.valor).strip() in ("-", "nenhum", "limpar"):
+        alvo.pop("esforco", None)
+        novo = "nao declarado"
+    else:
+        esforco, erro_e = g.normalizar_esforco(args.valor)
+        if erro_e:
+            return _erro(erro_e, 2)
+        alvo["esforco"] = esforco
+        novo = esforco
+    try:
+        g.gravar(cfg)
+    except ValueError as exc:
+        return _erro(f"config recusada: {exc}")
+    print(f"rota '{args.id}' de {args.perfil}: esforco={novo}")
     return 0
 
 
@@ -496,6 +541,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--perfil", help="actua so neste perfil (por omissao: global)")
     s.add_argument("--provider", help="provider do modelo classificador")
     s.add_argument("--modelo", help="modelo que classifica leve/media/alta")
+    s.add_argument("--esforco",
+                   help="esforco do classificador: baixo|medio|alto ('-' limpa)")
     s.set_defaults(func=cmd_classificador)
 
     s = sub.add_parser("perfis", help="perfis geridos e existentes")
@@ -527,7 +574,14 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--acesso", choices=["api", "subscricao"],
                    help="rota de acesso; por omissao infere do provider "
                         "(openai-codex=subscricao, restantes=api)")
+    a.add_argument("--esforco", choices=["baixo", "medio", "alto"],
+                   help="esforco de raciocinio da rota (omisso: nao declarado)")
     a.set_defaults(func=cmd_rota_add)
+    a = sr.add_parser("esforco", help="mudar o esforco de uma rota existente")
+    a.add_argument("perfil")
+    a.add_argument("id")
+    a.add_argument("valor", help="baixo|medio|alto, ou '-' para nao declarar")
+    a.set_defaults(func=cmd_rota_esforco)
     a = sr.add_parser("rm")
     a.add_argument("perfil")
     a.add_argument("id")

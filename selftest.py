@@ -1155,6 +1155,139 @@ def testes_heranca_classificador() -> None:
         os.environ.pop("VMM_DIR", None)
 
 
+def testes_esforco() -> None:
+    """Esforco baixo/medio/alto: vocabulario, forma no fio e reposicao.
+
+    O esforco nao tem uma forma unica no fio e o `api_kwargs` de cada turno e
+    construido antes da middleware. O que se prova: (a) o vocabulario e um so e
+    e validado no catalogo e no classificador; (b) a forma sai do perfil do
+    provider de destino, nao de campos inventados; (c) o payload deste turno
+    sai corrigido, sem a forma do provider anterior; (d) o `reasoning_config`
+    do agente volta ao valor de origem quando a rota seguinte nao declara
+    esforco; (e) o classificador tambem leva o esforco no corpo.
+    """
+    print("\n== esforco de raciocinio: baixo, medio, alto ==")
+    plugin = _mod("vmm_plugin_e", AQUI / "__init__.py")
+
+    check("esforco: vocabulario do dono", g.normalizar_esforco("alto") == ("alto", ""))
+    check("esforco: sinonimo ingles da escada", g.normalizar_esforco("HIGH") == ("alto", ""))
+    check("esforco: acento aceite", g.normalizar_esforco("médio") == ("medio", ""))
+    check("esforco: vazio e 'nao declarado' e nao e erro", g.normalizar_esforco("") == ("", ""))
+    valor_e, erro_e = g.normalizar_esforco("urgente")
+    check("esforco: valor invalido recusado com o vocabulario",
+          valor_e == "" and "baixo" in erro_e, erro_e)
+    check("esforco: mapeamento para a escada do Hermes",
+          [g.esforco_wire(v) for v in ("baixo", "medio", "alto")] == ["low", "medium", "high"])
+
+    base = _cfg_base()
+    base["perfis"]["pessoal"]["catalogo"][0]["esforco"] = "alto"
+    limpo, erros = g.validar(base)
+    catalogo = (limpo["perfis"]["pessoal"]["catalogo"] if not erros else []) or []
+    check("esforco: aceite e normalizado no catalogo",
+          bool(catalogo) and catalogo[0].get("esforco") == "alto" and not erros, str(erros))
+    check("esforco: rota sem esforco nao ganha a chave",
+          len(catalogo) > 1 and "esforco" not in catalogo[1])
+    mau = _cfg_base()
+    mau["perfis"]["pessoal"]["catalogo"][0]["esforco"] = "extremo"
+    _, erros_mau = g.validar(mau)
+    check("esforco: valor invalido recusado no catalogo",
+          any("esforco invalido" in e for e in erros_mau), str(erros_mau))
+
+    extra, topo = g.extras_esforco("deepseek", "deepseek-flash", "alto")
+    check("esforco: deepseek leva thinking + reasoning_effort",
+          extra.get("thinking") == {"type": "enabled"} and topo.get("reasoning_effort") == "high",
+          f"{extra} {topo}")
+    check("esforco: modelo sem raciocinio nao ganha campos",
+          g.extras_esforco("deepseek", "deepseek-v3", "alto") == ({}, {}))
+    extra_or, _ = g.extras_esforco("openrouter", "openai/gpt-6.1-sol", "baixo")
+    check("esforco: openrouter leva reasoning em extra_body",
+          (extra_or.get("reasoning") or {}).get("effort") == "low", str(extra_or))
+    check("esforco: provider desconhecido nao inventa forma",
+          g.extras_esforco("nao-existe", "x", "alto") == ({}, {}))
+
+    entrada = {"id": "flash", "provider": "deepseek", "modelo": "deepseek-flash",
+               "esforco": "alto"}
+    rota = {"provider": "deepseek"}
+    pedido = {"model": "deepseek-flash", "temperature": 0.2, "reasoning_effort": "low",
+              "extra_body": {"reasoning": {"effort": "low"},
+                             "provider": {"order": ["x"]}}}
+    novo, aplicado = plugin._pedido_com_esforco(pedido, entrada, rota, "s-esf-1")
+    check("esforco: payload deste turno ganha a forma do destino",
+          aplicado == "alto"
+          and (novo.get("extra_body") or {}).get("thinking") == {"type": "enabled"}
+          and novo.get("reasoning_effort") == "high", str(novo))
+    check("esforco: forma do provider anterior sai do payload",
+          "reasoning" not in (novo.get("extra_body") or {}))
+    check("esforco: restantes campos preservados",
+          (novo.get("extra_body") or {}).get("provider") == {"order": ["x"]}
+          and novo.get("temperature") == 0.2)
+    intacto, nada = plugin._pedido_com_esforco(
+        {"model": "m"}, {"provider": "deepseek", "modelo": "deepseek-v3",
+                         "esforco": "alto"}, rota, "s-esf-1")
+    check("esforco: sem forma conhecida o pedido fica intacto",
+          nada == "" and intacto == {"model": "m"})
+
+    class Agente:
+        def __init__(self) -> None:
+            self.reasoning_config = {"enabled": True, "effort": "medium"}
+
+    agente = Agente()
+    primeiro = plugin._aplicar_esforco(agente, entrada, "s-esf-2")
+    check("esforco: agente recebe o esforco da rota",
+          primeiro == "alto"
+          and agente.reasoning_config == {"enabled": True, "effort": "high"},
+          str(agente.reasoning_config))
+    segundo = plugin._aplicar_esforco(
+        agente, {"provider": "deepseek", "modelo": "deepseek-flash"}, "s-esf-2")
+    check("esforco: rota seguinte sem esforco repoe o valor de origem",
+          segundo == "" and agente.reasoning_config == {"enabled": True, "effort": "medium"},
+          str(agente.reasoning_config))
+
+    # O classificador monta o corpo a mao (HTTP directo, sem SDK): o esforco
+    # tem de entrar plano, senao `extra_body` ia literal para o fio.
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    capturado: list[dict] = []
+
+    class Servidor(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            tamanho = int(self.headers.get("Content-Length") or 0)
+            capturado.append(json.loads(self.rfile.read(tamanho) or b"{}"))
+            bruto = json.dumps({"choices": [{"message": {"content": "media"}}]}).encode()
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(bruto)))
+                self.end_headers()
+                self.wfile.write(bruto)
+            except (BrokenPipeError, ConnectionResetError):
+                return
+
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+            return
+
+    servidor = ThreadingHTTPServer(("127.0.0.1", 0), Servidor)
+    threading.Thread(target=servidor.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{servidor.server_address[1]}"
+        resultado = g._analise_modelo().classificar(
+            [{"role": "user", "content": "mexe no plugin e diz o que falta"}],
+            dict(g._analise_modelo().PADRAO, provider="deepseek",
+                 modelo="deepseek-flash", esforco="alto"),
+            lambda p, m: {"base_url": url, "api_key": "teste"},
+            perfil="esf")
+        corpo = capturado[-1] if capturado else {}
+        check("esforco: classificador leva o esforco plano no corpo",
+              corpo.get("thinking") == {"type": "enabled"}
+              and corpo.get("reasoning_effort") == "high"
+              and "extra_body" not in corpo, str(corpo))
+        check("esforco: classificador classifica com o corpo alterado",
+              (resultado or {}).get("nivel") == "media", str(resultado))
+    finally:
+        servidor.shutdown()
+
+
 def main() -> int:
     testes_gestor()
     testes_plugin()
@@ -1162,6 +1295,7 @@ def main() -> int:
     testes_classificador()
     testes_sem_copia_do_global()
     testes_heranca_classificador()
+    testes_esforco()
     testes_cli()
     testes_verificar()
     falhas = [n for n, ok, _ in _RESULTADOS if not ok]

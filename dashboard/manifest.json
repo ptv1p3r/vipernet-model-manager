@@ -3,7 +3,7 @@
   "label": "Model Manager",
   "description": "Gestor de provider+modelo por perfil: interruptor, catalogo por complexidade, associacoes de tarefa e o registo do que foi servido a cada turno (modelo, provider, perfil, nivel, origem).",
   "icon": "Router",
-  "version": "3.5.1",
+  "version": "3.6.0",
   "tab": {
     "path": "/model-manager",
     "position": "end"

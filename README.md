@@ -251,6 +251,45 @@ Adicionar a rota de subscrição sem autenticar o canal não a ativa: a entrada
 existe, mas `resolver_rota` falha e a middleware salta-a (registo em
 `sem_rota`).
 
+## Esforço de raciocínio por rota (3.6)
+
+Cada entrada do catálogo pode declarar `esforco`: `baixo`, `medio` ou `alto`
+(a escada do Hermes — `low`/`medium`/`high` — também é aceite, porque o JSON é
+editado por três vias e recusar o inglês seria uma armadilha, não uma
+validação). O campo é **opcional e não tem valor por omissão**: ausente quer
+dizer «não declaro nada», não «médio», para que uma rota que não precisa não
+arraste o esforço de outra.
+
+```json
+{"id": "flash", "provider": "deepseek", "modelo": "deepseek-flash",
+ "complexidade": ["leve", "media"], "acesso": "api", "esforco": "baixo"}
+```
+
+Como é aplicado — e porque não é uma linha só:
+
+- **No agente**, em `agent.reasoning_config` (`{"enabled": true, "effort": …}`),
+  que é o que governa os turnos seguintes. Chamado **depois** de
+  `switch_model`, porque a troca volta a resolver o valor do `config.yaml` e
+  apagaria o que fosse posto antes. O valor de origem fica guardado e é
+  **reposto** quando a rota seguinte não declara esforço — o agente é o mesmo
+  objecto de turno para turno, e sem essa reposição uma rota contaminava todas
+  as seguintes.
+- **No payload do próprio turno**: o `api_kwargs` é construído **antes** da
+  middleware, logo mudar o agente só valeria para o turno seguinte. A escrita
+  usa o perfil do provider de destino — o mesmo objecto que o Hermes usa para
+  construir o pedido —, pelo que a forma é a do fio certo:
+  `thinking` + `reasoning_effort` no deepseek, `reasoning` no OpenRouter, e
+  **nada** num modelo sem raciocínio (medido: `deepseek-v3` devolve `({}, {})`).
+  Os campos de raciocínio do provider anterior são removidos do payload; sem
+  isso, um turno que viesse do OpenRouter levava um `reasoning` que o deepseek
+  recusa.
+- **No classificador** o esforço entra plano no corpo (é HTTP directo, sem SDK,
+  logo `extra_body` não existe ali).
+
+Testado por `selftest.py` (21 verificações novas): vocabulário, validação no
+catálogo, forma por provider, limpeza do payload, reposição do valor de origem
+e o corpo do classificador.
+
 ## Tarefas por perfil (3.2)
 
 No mesmo JSON, `perfis.<perfil>.tarefas` define como reconhecer cada tarefa;

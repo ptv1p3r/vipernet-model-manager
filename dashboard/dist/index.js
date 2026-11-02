@@ -171,7 +171,8 @@
               h("th", null, "provider"),
               h("th", null, "complexidade"),
               h("th", null, "tarefas"),
-              h("th", null, "acesso")
+              h("th", null, "acesso"),
+              h("th", null, "esforço")
             )
           ),
           h(
@@ -189,7 +190,10 @@
                 h("td", null, (m.tarefas || []).length
                   ? (m.tarefas || []).map(function (t) { return h(Chip, { key: t, tone: "outline" }, t); })
                   : h("span", { className: "vmm-mudo" }, "—")),
-                h("td", null, h(Chip, { tone: m.acesso === "subscricao" ? "outline" : "secondary" }, m.acesso || "api"))
+                h("td", null, h(Chip, { tone: m.acesso === "subscricao" ? "outline" : "secondary" }, m.acesso || "api")),
+                h("td", null, m.esforco
+                  ? h(Chip, { tone: "outline" }, m.esforco)
+                  : h("span", { className: "vmm-mudo" }, "—"))
               );
             })
           )
@@ -324,18 +328,22 @@
       const actual = blocoDe(cfg, perfil) || {};
       if (modo === "herdar") return aplicar(perfil, null);
       if (modo === "desligado") {
-        return aplicar(perfil, {
+        const desligado = {
           activo: false,
           provider: actual.provider || "",
           modelo: actual.modelo || "",
-        });
+        };
+        if (actual.esforco) desligado.esforco = actual.esforco;
+        return aplicar(perfil, desligado);
       }
       const primeiro = pares[0] || { provider: "", modelo: "" };
-      aplicar(perfil, {
+      const ligado = {
         activo: true,
         provider: actual.provider || primeiro.provider,
         modelo: actual.modelo || primeiro.modelo,
-      });
+      };
+      if (actual.esforco) ligado.esforco = actual.esforco;
+      aplicar(perfil, ligado);
     }
 
     function mudarCampo(perfil, campo, valor) {
@@ -345,7 +353,12 @@
         provider: actual.provider || "",
         modelo: actual.modelo || "",
       };
-      novo[campo] = valor;
+      // O esforco acompanha o bloco: nao se perde ao mudar provider ou modelo,
+      // e sai do JSON quando volta a "nao declarado" — um campo vazio deixado
+      // la era validado como valor invalido.
+      if (actual.esforco) novo.esforco = actual.esforco;
+      if (campo === "esforco" && !valor) delete novo.esforco;
+      else novo[campo] = valor;
       aplicar(perfil, novo);
     }
 
@@ -391,7 +404,16 @@
             placeholder: "modelo",
             value: bloco.modelo || "",
             onChange: function (e) { mudarCampo(perfil, "modelo", e.target.value); },
-          }) : null
+          }) : null,
+          proprio ? h("select", {
+            className: "vmm-select",
+            value: bloco.esforco || "",
+            onChange: function (e) { mudarCampo(perfil, "esforco", e.target.value); },
+          },
+            [["", "esforço: não declarado"], ["baixo", "esforço: baixo"],
+             ["medio", "esforço: médio"], ["alto", "esforço: alto"]]
+              .map(function (o) { return h("option", { key: o[0], value: o[0] }, o[1]); })
+          ) : null
         );
       }),
       h("datalist", { id: "vmm-modelos" },
