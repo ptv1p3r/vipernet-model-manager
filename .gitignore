@@ -3,3 +3,5 @@ __pycache__/
 /config.json
 /uso.jsonl
 /uso.err
+/eval/reports/
+/eval/*.lock

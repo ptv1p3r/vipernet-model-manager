@@ -96,7 +96,9 @@ PROMPT = (
     "media - explicar um conceito, comparar duas opcoes, rever algo pequeno, "
     "um comando com contexto;\n"
     "alta - desenhar ou decidir arquitetura, diagnosticar avaria com evidencia, "
-    "implementar ou refactorizar codigo, plano com janela e rollback, auditoria."
+    "implementar ou refactorizar codigo, plano com janela e rollback, auditoria.\n"
+    "Classifica o trabalho pedido, nunca a forma: registo informal, giria, "
+    "abreviaturas ou erros ortograficos nao mudam o nivel."
 )
 
 #: Lote: as mesmas regras, N pedidos num so pedido. Medido no mercury-3 a
@@ -433,6 +435,7 @@ def _corpo(provider: str, modelo: str, corpo_texto: str, definicao: dict[str, An
         ],
         "max_tokens": int(definicao["max_tokens"]) if orcamento is None else int(orcamento),
         "temperature": 0,
+        "top_p": 1,
         "stream": False,
     }
     if formato_json is None:

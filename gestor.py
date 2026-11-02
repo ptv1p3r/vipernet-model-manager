@@ -226,6 +226,105 @@ def caminho_erros() -> Path:
 # --------------------------------------------------------------------------- io
 
 
+MODALIDADES = ("texto", "imagem", "audio", "ficheiro")
+
+# Limites declarados por rota (todos opcionais). Ausente NAO e zero nem
+# infinito: e "nao declarado", e uma rota que nao declara nada continua a ser
+# utilizavel — declarar e o que da a garantia, nao declarar nao proibe. So
+# `json_nativo: false` e uma proibicao explicita.
+_LIMITES_INTERNOS = ("contexto_max", "latencia_p95_ms")
+
+
+def normalizar_limites(entrada: dict[str, Any], indice: int, erros: list[str]) -> dict[str, Any]:
+    """Valida e normaliza os limites de uma rota (janela, modalidades, json, latencia)."""
+    saida: dict[str, Any] = {}
+    for chave in _LIMITES_INTERNOS:
+        if chave not in entrada or entrada.get(chave) in (None, ""):
+            continue
+        bruto = entrada.get(chave)
+        if bruto is None or bruto == "":
+            continue
+        texto = str(bruto).strip()
+        try:
+            valor = int(texto)
+        except (TypeError, ValueError):
+            try:
+                valor = int(float(texto))
+            except (TypeError, ValueError):
+                erros.append(f"catalogo[{indice}].{chave} deve ser inteiro positivo (recebido {bruto!r})")
+                continue
+        if valor <= 0:
+            erros.append(f"catalogo[{indice}].{chave} deve ser positivo (recebido {valor})")
+            continue
+        saida[chave] = valor
+    if "modalidades" in entrada and entrada.get("modalidades") is not None:
+        bruto_mods = entrada.get("modalidades")
+        if isinstance(bruto_mods, str):
+            bruto_mods = [bruto_mods]
+        if not isinstance(bruto_mods, list):
+            erros.append(f"catalogo[{indice}].modalidades deve ser lista ({', '.join(MODALIDADES)})")
+        else:
+            mods = list(dict.fromkeys(str(m).strip().lower() for m in bruto_mods if str(m).strip()))
+            invalidas = [m for m in mods if m not in MODALIDADES]
+            if invalidas:
+                erros.append(f"catalogo[{indice}].modalidades invalidas: "
+                             f"{', '.join(invalidas)} (use {', '.join(MODALIDADES)})")
+            elif mods:
+                saida["modalidades"] = mods
+    if "json_nativo" in entrada and entrada.get("json_nativo") is not None:
+        valor = entrada.get("json_nativo")
+        if not isinstance(valor, bool):
+            erros.append(f"catalogo[{indice}].json_nativo deve ser booleano (recebido {valor!r})")
+        else:
+            saida["json_nativo"] = valor
+    return saida
+
+
+def teto_latencia(pcfg: dict[str, Any] | None) -> int:
+    """Teto de latencia declarado pelo perfil, em ms. 0 = sem teto.
+
+    Le-se tolerante de proposito: um valor mal escrito nao pode desligar a
+    triagem toda nem rebentar o turno. Fica 0 (sem teto) e o `validar` avisa.
+    """
+    bruto = (pcfg or {}).get("latencia_max_ms")
+    if bruto in (None, ""):
+        return 0
+    try:
+        return max(0, int(str(bruto).strip()))
+    except (TypeError, ValueError):
+        try:
+            return max(0, int(float(str(bruto).strip())))
+        except (TypeError, ValueError):
+            return 0
+
+
+def rota_serve(entrada: dict[str, Any], needs: dict[str, Any] | None) -> str:
+    """'' se a rota serve o pedido; razao curta se nao serve ('' tambem sem needs).
+
+    E um filtro de *impossibilidade*, nao de preferencia: so recusa o que a rota
+    declarou nao conseguir. Sem `needs` devolve '' e a selecao fica como antes.
+    """
+    if not needs:
+        return ""
+    tokens = int(needs.get("tokens_entrada") or 0)
+    contexto = entrada.get("contexto_max")
+    if contexto and tokens > contexto:
+        return f"contexto {tokens}>{contexto}"
+    pedidas = set(needs.get("modalidades") or ())
+    declaradas = entrada.get("modalidades")
+    if pedidas and declaradas is not None:
+        faltam = pedidas - set(declaradas)
+        if faltam:
+            return "sem modalidade: " + ",".join(sorted(faltam))
+    if needs.get("json") and entrada.get("json_nativo") is False:
+        return "sem json nativo"
+    latencia = entrada.get("latencia_p95_ms")
+    teto = int(needs.get("latencia_max_ms") or 0)
+    if latencia and teto and latencia > teto:
+        return f"latencia {latencia}>{teto}"
+    return ""
+
+
 def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str, Any] | None:
     if not isinstance(entrada, dict):
         erros.append(f"catalogo[{indice}] nao e um objecto")
@@ -292,6 +391,7 @@ def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str
         saida["tarefas"] = list(dict.fromkeys(t.strip() for t in tarefas))
     if entrada.get("desligado"):
         saida["desligado"] = True
+    saida.update(normalizar_limites(entrada, indice, erros))
     for chave in ("nota",):
         if entrada.get(chave):
             saida[chave] = str(entrada[chave])
@@ -347,6 +447,12 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         if por not in POR:
             erros.append(f"perfis.{nome}.rodizio.por invalido: {por}")
             por = "sessao"
+        # `teto_latencia` e tolerante em tempo de execucao (0 = sem teto), mas
+        # um valor declarado e invalido tem de aparecer no editor, senao o
+        # utilizador grava um teto que nao existe e nunca sabe por que.
+        if pcfg.get("latencia_max_ms") not in (None, "") and teto_latencia(pcfg) <= 0:
+            erros.append(f"perfis.{nome}.latencia_max_ms deve ser inteiro positivo "
+                         f"(recebido {pcfg.get('latencia_max_ms')!r})")
         # O perfil grava SO o que declara: a heranca faz-se na leitura
         # (`perfil_config`). Gravar uma copia do global fixava o perfil ao valor
         # do dia em que foi gravado — um global que mudasse depois deixava de
@@ -422,9 +528,13 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
             "activo": bool(pcfg.get("activo", True)),
             "estrategia": estrategia,
             "rodizio": {"por": por},
+            # Teto de latencia do perfil: so se grava quando declarado, pela
+            # mesma razao que a `analise` — ausencia e "sem teto", e um valor
+            # herdado do global fixaria o perfil ao numero do dia.
+            **(lambda t: {"latencia_max_ms": t} if t else {})(teto_latencia(pcfg)),
             # Sem nada declarado nao se grava `analise` vazia: a ausencia da
             # chave e o que significa "herda tudo do global".
-            **({"analise": panalise} if panalise else {}),
+            **(lambda a: {"analise": a} if a else {})(panalise),
             "catalogo": catalogo,
         }
     return saida, erros
@@ -664,12 +774,26 @@ def perfil_atual(agente: Any = None) -> str:
             home = None
     if home is not None:
         return nome_do_perfil(home)
+    # Uma so casa para o perfil: `seams.nome_perfil()` (env -> seam -> default).
     try:
-        from hermes_cli.profiles import get_active_profile_name
-
-        return str(get_active_profile_name() or "default")
-    except Exception:
-        return "default"
+        from . import seams as _seams  # type: ignore[import-not-found]
+        return _seams.nome_perfil()
+    except Exception:  # noqa: BLE001 — gestor carregado standalone, sem pacote
+        import importlib.util as _ilu2
+        _cache = globals().get("_SEAMS_G")
+        if _cache is None:
+            try:
+                _spec = _ilu2.spec_from_file_location(
+                    "vmm_seams_g", Path(__file__).with_name("seams.py"))
+                _cache = _ilu2.module_from_spec(_spec)  # type: ignore[arg-type]
+                _spec.loader.exec_module(_cache)  # type: ignore[union-attr]
+                globals()["_SEAMS_G"] = _cache
+            except Exception:  # noqa: BLE001
+                return "default"
+        try:
+            return _cache.nome_perfil()
+        except Exception:  # noqa: BLE001
+            return "default"
 
 
 # O bloco por omissao do classificador vem de `analise_modelo.PADRAO` — uma so

@@ -1,0 +1,18 @@
+{"id":"v1a","grupo":"diagnostico","texto":"Diagnostica a falha de autenticacao no proxy e identifica a causa raiz.","esperado":"alta","categoria":"claro"}
+{"id":"v1b","grupo":"diagnostico","texto":"O proxy esta a recusar credenciais. Descobre porque, se faz favor.","esperado":"alta","categoria":"claro"}
+{"id":"v1c","grupo":"diagnostico","texto":"proxy ta a rejeitar as credenciais, tem k ver isso","esperado":"alta","categoria":"typo"}
+{"id":"v2a","grupo":"arquitetura","texto":"Preciso de uma analise de arquitetura com TSD, riscos e plano de migracao.","esperado":"alta","categoria":"claro"}
+{"id":"v2b","grupo":"arquitetura","texto":"faz me o TSD disto, com os riscos e como migrar","esperado":"alta","categoria":"giria"}
+{"id":"v2c","grupo":"arquitetura","texto":"gostaria que preparasse a analise arquitetural, incluindo o desenho tecnico e a migracao","esperado":"alta","categoria":"claro"}
+{"id":"v3a","grupo":"consulta","texto":"Qual e a diferenca entre um registo A e um CNAME?","esperado":"leve","categoria":"claro"}
+{"id":"v3b","grupo":"consulta","texto":"diz-me la a diferenca entre A e CNAME","esperado":"leve","categoria":"giria"}
+{"id":"v3c","grupo":"consulta","texto":"poderia explicar-me, por favor, a distincao entre esses dois tipos de registo DNS?","esperado":"leve","categoria":"claro"}
+{"id":"v4a","grupo":"implementacao","texto":"Implementa o suporte a multiplos perfis no plugin, com testes.","esperado":"alta","categoria":"claro"}
+{"id":"v4b","grupo":"implementacao","texto":"mete isso a funcionar com varios perfis e testa","esperado":"alta","categoria":"giria"}
+{"id":"v4c","grupo":"implementacao","texto":"seria possivel acrescentar suporte a varios perfis, acompanhado de testes?","esperado":"alta","categoria":"claro"}
+{"id":"v5a","grupo":"manutencao","texto":"Corrige a gralha no README.","esperado":"leve","categoria":"claro"}
+{"id":"v5b","grupo":"manutencao","texto":"ha um erro tipografico no README, corrige","esperado":"leve","categoria":"claro"}
+{"id":"v5c","grupo":"manutencao","texto":"o readme tem uma gralha, da la um jeito","esperado":"leve","categoria":"giria"}
+{"id":"v6a","grupo":"auditoria","texto":"Audita a instalacao do Home Assistant e lista as exposicoes de risco.","esperado":"alta","categoria":"claro"}
+{"id":"v6b","grupo":"auditoria","texto":"ve o que esta exposto no HA e diz o que e perigoso","esperado":"alta","categoria":"claro"}
+{"id":"v6c","grupo":"auditoria","texto":"precisava de saber o que temos exposto e se ha risco de seguranca","esperado":"alta","categoria":"claro"}

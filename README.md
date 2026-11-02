@@ -385,6 +385,64 @@ Uma armadilha que já custou uma sessão: o prompt **tem de conter a palavra
 `400 Invalid request: Prompt must contain the word 'json'` — medido. Está
 travado por teste.
 
+## Triagem do pedido: janela, modalidade, JSON e latência (3.11)
+
+A análise de complexidade diz **quanto raciocínio** o turno pede. Não diz se o
+modelo escolhido *consegue* servir o turno. Um `leve` com 200 páginas anexadas
+continua a ser `leve` na pontuação e não cabe em nenhuma janela de 32k; um
+pedido com uma fotografia não se resolve num modelo só de texto.
+
+A triagem é um filtro de **impossibilidade**, aplicado antes de se tentar a
+credencial: cada rota pode declarar o que consegue, e o que ela declarou não
+conseguir nunca é tentado. Uma rota que não declara nada é permissiva — declarar
+é o que dá a garantia, não declarar não proíbe. A única proibição explícita é
+`json_nativo: false`.
+
+| campo da rota | tipo | efeito |
+|---|---|---|
+| `contexto_max` | inteiro > 0 | recusa quando a estimativa de entrada excede a janela |
+| `modalidades` | lista de `texto`, `imagem`, `audio`, `ficheiro` | recusa quando o pedido traz uma modalidade que não está na lista |
+| `json_nativo` | booleano | `false` recusa pedidos com `response_format` json |
+| `latencia_p95_ms` | inteiro > 0 | recusa quando excede `latencia_max_ms` do perfil |
+
+O que o pedido exige é medido em `analise.necessidades()`:
+
+- **tokens de entrada** — estimativa de 4 caracteres por token sobre todas as
+  mensagens; serve para decidir se cabe, não para faturar;
+- **modalidades** — detetadas nas partes de `content` (`image_url` → imagem,
+  `input_audio` → áudio, `file`/`document` → ficheiro);
+- **JSON** — só quando o pedido traz `response_format` de tipo `json_object` ou
+  `json_schema`. Falar de JSON não é exigir JSON, e o teste fixa esse negativo.
+
+Três consequências, todas com teste:
+
+1. **Texto grande sobe o nível.** Passando `contexto_grande_tokens` (24 000 por
+   omissão), um `leve` é promovido a `media` e o ledger regista
+   `triagem: contexto Ntok`. Não é "mais complexo" — é maior do que cabe.
+2. **Descer de nível não resolve capacidade.** Se a rota do nível não cabe,
+   `degradar_nivel` desce e volta a filtrar; se nada no nível couber, e só
+   então, `escolher_por_janela` procura em todo o catálogo a rota viável com
+   maior `contexto_max` e o ledger regista `escolhido_por_janela`. Um nível
+   *vazio* (sem rota, ou sem credencial) **não** dispara este recurso: aí a
+   resposta certa é não trocar, e o `selftest` trava isso.
+3. **A recusa fica registada.** A rota preterida aparece no evento `troca` como
+   `preteridas: ["id:inviavel:<razão>"]` — `contexto 128003>32000`,
+   `sem modalidade: imagem`, `sem json nativo`, `latencia 3000>1500` — em vez
+   de desaparecer; no evento `sem_rota` a mesma lista chama-se `falhadas`.
+
+```json
+{"id": "janela-grande", "provider": "openrouter", "modelo": "openai/gpt-6.1-sol",
+ "complexidade": ["alta"], "contexto_max": 1000000,
+ "modalidades": ["texto", "imagem"], "json_nativo": true, "latencia_p95_ms": 2500}
+```
+
+**O que não está feito, e não se afirma:** ordenar por custo (a ordem do
+catálogo já é a preferência do dono; reordenar em silêncio sobrepunha-se a uma
+decisão explícita), medir TTFT (só existe `latencia_p95_ms` declarada, não
+medida), e reaproveitar decisões para perguntas *semelhantes* (o cache do
+classificador é por texto normalizado e `cache_ttl_s`; semelhança difusa
+arriscava reutilizar a classificação errada).
+
 ## Tarefas por perfil (3.2)
 
 No mesmo JSON, `perfis.<perfil>.tarefas` define como reconhecer cada tarefa;
@@ -513,23 +571,106 @@ processos diferentes.
 - Histerese e rodízio vivem em memória do processo: um restart do gateway
   reinicia a contagem (o catálogo e os interruptores não).
 
+## Avaliação medida (e não acreditada)
+
+O plugin decide qual modelo serve cada turno; por isso o classificador é medido
+como qualquer outro componente com consequências: contra um referencial, com
+parâmetros fixos e com números datados. Ver `eval/README.md` para as sete
+regras e `eval/medir.py` para a implementação.
+
+```sh
+P=/opt/hermes/.venv/bin/python
+$P eval/medir.py --runners heuristica            # sem rede
+$P eval/medir.py --repeticoes 3                  # + determinismo + variantes
+$P eval/medir.py --gold eval/gold2.jsonl         # conjunto de teste cego
+$P eval/medir.py --revisao                       # CSV para confirmação humana
+```
+
+Dois conjuntos, papéis diferentes: `gold.jsonl` (60 casos, usado durante o
+desenvolvimento — é **regressão**) e `gold2.jsonl` (31 casos, escrito depois e
+**nunca usado para afinar** — é o teste cego). O banco recusa `--afinar` com
+qualquer um dos dois.
+
+Resultado do teste cego de 2026-11-02 (3 repetições, temperatura 0, top_p 1):
+
+| runner | acerto | macro-F1 | p50 | p95 | sem nível |
+|---|---|---|---|---|---|
+| heurística | 67,7% | 0,686 | 0 ms | 0 ms | 0 |
+| `inception/mercury-3` | 67,7% | 0,586 | 902 ms | 1506 ms | 0 |
+
+O que estes números dizem, sem maquilhagem:
+
+- O **100%** que o corpus de treino dava não generaliza. Em dados novos ambos
+  ficam por dois terços.
+- O **modelo não bate a heurística** em acerto e é pior em macro-F1. A sua
+  vantagem é de forma, não de substância: resiste melhor a mudanças de registo.
+- Ambos **sub-chamam `media`** (cobertura 0,36 na heurística e 0,18 no modelo):
+  o nível intermédio é onde os dois se perdem, e é o mais frequente no uso real.
+- A heurística é **fortemente sensível à forma**: o mesmo conteúdo técnico em
+  registos diferentes dá 17% de consistência, contra 67–100% do modelo. Um
+  router que muda de modelo por causa do tom da frase é um router pior.
+- O `mercury-3` é um LM de difusão: com `temperature: 0` **não é
+  determinístico** — concordância 0,86–0,91 em 3 repetições e 7–9 casos
+  instáveis. Para um classificador isso conta e está declarado.
+
+Por isso o **default continua a ser a heurística**: é gratuita, determinística e
+tem o mesmo acerto. O classificador por modelo é opt-in, e a razão para o ligar
+não é acerto — é robustez ao registo. Corrigir a cobertura de `media` é trabalho
+seguinte, e tem de ser feito num conjunto de desenvolvimento e validado num
+**terceiro** conjunto cego, não nestes dois.
+
+## Prontidão para o catálogo público
+
+Regras verificadas à data desta versão, com a evidência onde ela existe:
+
+- **Só superfícies públicas**, e uma exceção declarada. O plugin usa middleware,
+  `ctx.register_*`, `agent.switch_model`, `agent.reasoning_config` e o SDK do
+  dashboard. Depende de **uma** superfície não pública —
+  `resolve_runtime_provider`, para trocar o modelo do agente vivo — isolada em
+  `seams.py`, com a regra 9 do catálogo citada e a indicação do sítio único a
+  mudar quando existir seam público. As outras duas que existiam saíram:
+  `get_active_profile_name` foi substituída por `HERMES_PROFILE`, e
+  `reload_gateway_plugins` desapareceu com o comando `vmm recarregar`
+  (recarregar plugins é operação do anfitrião). Não há patch a código do Hermes
+  nem a markup do Desktop em runtime.
+- **Validação local no commit que se publica**:
+  `hermes plugins validate /opt/data/plugins/vipernet-model-manager` → rc 0.
+- **`requires_hermes`** declarado em `plugin.yaml` (`>=0.22.0`), nunca mais
+  recente do que a release instalada.
+- **Sem segredos**: o plugin não lê credenciais; usa o resolver do Hermes. A
+  config não guarda chaves. Nada de `subprocess`, `eval`, `exec` nem escrita
+  fora de `/opt/data/plugin-data/vipernet-model-manager/`.
+- **Efeitos declarados** (o que o plugin faz na rede e no disco, para quem vai
+  ler o código antes de o instalar): faz pedidos HTTPS **aos providers que o
+  dono configurou** — é a razão de existir, e o classificador opcional faz um
+  pedido por turno quando está ligado; escreve `config.json`, `uso.jsonl` e
+  `uso.err` em `plugin-data`; o painel serve rotas HTTP no *plugin host*. Não
+  abre sockets próprios, não recolhe telemetria, não envia nada para fora além
+  dessas chamadas aos providers.
+- **Versionamento**: `plugin.yaml` e `dashboard/manifest.json` acompanham o
+  código que publicam; o painel mostra `versao` lida do manifest, não uma
+  constante escrita à mão.
+
+Uma ressalva honesta antes de submeter: o catálogo pede repositório em GitHub
+ou GitLab, e este vive num Gitea interno. Publicar lá exige um espelho público
+e uma decisão do dono sobre o que vai com ele (o `config.json` de produção não
+vai; o `config.example.json` vai).
+
 ## Auto-teste
 
 ```sh
 P=/opt/hermes/.venv/bin/python
-$P /opt/data/plugins/vipernet-model-manager/selftest.py            # 137
+$P /opt/data/plugins/vipernet-model-manager/selftest.py            # 187
 $P /opt/data/plugins/vipernet-model-manager/test_analise.py        # 40
 $P /opt/data/plugins/vipernet-model-manager/test_tarefas.py        # 16
-$P /opt/data/plugins/vipernet-model-manager/test_classificador.py  # 37
-$P /opt/data/plugins/vipernet-model-manager/dashboard/selftest.py  # 69 (exige fastapi)
-node /opt/data/plugins/vipernet-model-manager/dashboard/test_logica.js  # 15
+$P /opt/data/plugins/vipernet-model-manager/test_classificador.py  # 55
+$P /opt/data/plugins/vipernet-model-manager/test_eval.py           # 32
+$P /opt/data/plugins/vipernet-model-manager/test_triagem.py        # 48
+$P /opt/data/plugins/vipernet-model-manager/dashboard/selftest.py  # 79 (exige fastapi)
+node /opt/data/plugins/vipernet-model-manager/dashboard/test_logica.js  # 35
 ```
 
-143 verificações no selftest, 37 no classificador por modelo (servidor HTTP
-local a serio, sem mocks), 69 no painel — incluindo a lógica pura do editor
-corrida em node — e 16 de tarefas: validação do esquema
-(incluindo o `acesso` e os casos negativos), semântica de perfil não
-gerido/desligado, complexidade por modelo, rodízio, histerese, troca com
-credencial do perfil, salto de rota sem credencial, resposta com provider/
-modelo efectivos e correlação, `verificar` a resolver no contexto do perfil,
-e o CLI a escrever config que o plugin volta a ler.
+187 verificações no selftest, 55 no classificador por modelo (servidor HTTP
+local a sério, sem mocks), 32 no banco de avaliação (métricas, percentis,
+congelamento do gold, recusa de afinar, consistência entre registos), 79 no
+painel — incluindo a lógica pura do editor corrida em node — e 16 de tarefas.

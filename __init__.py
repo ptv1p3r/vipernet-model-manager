@@ -266,17 +266,10 @@ def resolver_rota(perfil: str, provider: str, modelo: str) -> dict[str, Any]:
             if "erro" in guardado:
                 raise RuntimeError(guardado["erro"])
             return dict(guardado["rota"])
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from . import seams as _seams
 
     try:
-        rt = resolve_runtime_provider(requested=provider, target_model=modelo)
-        rota = {
-            "provider": (rt.get("provider") or provider).strip().lower(),
-            "api_key": rt.get("api_key") or "",
-            "base_url": rt.get("base_url") or "",
-            "api_mode": rt.get("api_mode") or "",
-            "source": rt.get("source") or "",
-        }
+        rota = _seams.resolver_provider(provider, modelo)
         if not rota["api_key"]:
             raise RuntimeError(f"provider {provider} sem credencial no perfil {perfil}")
     except Exception as exc:
@@ -305,18 +298,35 @@ def escolher(pcfg: dict[str, Any], nivel: str, *, perfil: str, sessao: str) -> d
 
 
 def escolher_com_rota(pcfg: dict[str, Any], nivel: str, *, perfil: str,
-                      sessao: str, tarefa: str | None = None) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str]]:
+                      sessao: str, tarefa: str | None = None,
+                      needs: dict[str, Any] | None = None) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str]]:
     """Primeira entrada utilizavel do nivel, na ordem da estrategia; devolve as falhadas.
 
     A ordem e construida **uma vez** e percorrida: repetir `escolher()` a cada
     falha prendia o turno para sempre quando a estrategia e `prioridade` — a
     mesma entrada voltava a sair e o ciclo dava a volta sem tentar a seguinte.
+
+    `needs` (janela, modalidades, JSON, latencia) filtra antes de tentar
+    credenciais: uma rota que declarou nao caber nao se tenta, e a razao fica
+    no registo como `inviavel` em vez de `sem_rota`.
     """
     catalogo = gestor.catalogo_utilizavel(pcfg)
     lista = ([e for e in catalogo if tarefa in e.get("tarefas", [])] if tarefa
              else gestor.candidatos(catalogo, nivel))
     if not lista:
         return None, None, []
+    falhadas: list[str] = []
+    if needs:
+        viaveis = []
+        for entrada_n in lista:
+            motivo = gestor.rota_serve(entrada_n, needs)
+            if motivo:
+                falhadas.append(f"{entrada_n['id']}:inviavel:{motivo}")
+            else:
+                viaveis.append(entrada_n)
+        if not viaveis:
+            return None, None, falhadas
+        lista = viaveis
     if str(pcfg.get("estrategia") or "rodizio") == "rodizio" and len(lista) > 1:
         por = str((pcfg.get("rodizio") or {}).get("por") or "sessao")
         chave = gestor.chave_rodizio(perfil, sessao, nivel)
@@ -326,7 +336,6 @@ def escolher_com_rota(pcfg: dict[str, Any], nivel: str, *, perfil: str,
         ordenada = lista[indice % len(lista):] + lista[:indice % len(lista)]
     else:
         ordenada = list(lista)
-    falhadas: list[str] = []
     for entrada in ordenada:
         chave = (perfil, entrada["provider"].lower(), entrada["modelo"])
         with _lock:
@@ -380,7 +389,7 @@ def ajustar_por_resultado(sessao: str, nivel: str) -> tuple[str, str]:
 
 
 def degradar_nivel(pcfg: dict[str, Any], nivel: str, *, perfil: str,
-                   sessao: str) -> tuple[str | None, dict[str, Any] | None,
+                   sessao: str, needs: dict[str, Any] | None = None) -> tuple[str | None, dict[str, Any] | None,
                                       dict[str, Any] | None, list[str]]:
     """C: desce um nivel quando o decidido nao tem rota utilizavel.
 
@@ -393,11 +402,40 @@ def degradar_nivel(pcfg: dict[str, Any], nivel: str, *, perfil: str,
     while i >= 0:
         abaixo = NIVEIS[i]
         entrada, rota, falhadas = escolher_com_rota(
-            pcfg, abaixo, perfil=perfil, sessao=sessao)
+            pcfg, abaixo, perfil=perfil, sessao=sessao, needs=needs)
         if entrada is not None and rota is not None:
             return abaixo, entrada, rota, falhadas
         i -= 1
     return None, None, None, []
+
+
+def escolher_por_janela(pcfg: dict[str, Any], needs: dict[str, Any] | None, *,
+                        perfil: str = "", sessao: str = "") -> tuple[dict[str, Any] | None,
+                                                                    dict[str, Any] | None, list[str]]:
+    """Ultimo recurso: a rota viavel com a maior janela declarada.
+
+    Descer de nivel nao resolve um pedido que nao cabe: se o texto ocupa mais do
+    que qualquer janela do nivel, o nivel nao e o problema. Procura-se entao em
+    todo o catalogo, o que tambem serve quando as rotas do nivel nao tem
+    credencial e outra tem.
+    """
+    catalogo = gestor.catalogo_utilizavel(pcfg)
+    viaveis, falhadas = [], []
+    for entrada in catalogo:
+        motivo = gestor.rota_serve(entrada, needs)
+        if motivo:
+            falhadas.append(f"{entrada['id']}:inviavel:{motivo}")
+        else:
+            viaveis.append(entrada)
+    if not viaveis:
+        return None, None, falhadas
+    viaveis.sort(key=lambda e: int(e.get("contexto_max") or 0), reverse=True)
+    for entrada in viaveis:
+        try:
+            return entrada, resolver_rota(perfil, entrada["provider"], entrada["modelo"]), falhadas
+        except Exception as exc:
+            falhadas.append(f"{entrada['id']}:{type(exc).__name__}")
+    return None, None, falhadas
 
 
 def herdar_se_indeciso(perfil: str, sessao: str, nivel: str,
@@ -712,24 +750,51 @@ def middleware_llm_request(
         if not gestor.catalogo_utilizavel(pcfg):
             _registar({**base, "evento": "sem_catalogo"}, registar=registar)
             return None
+        # Triagem do pedido: o que ele *exige* sobrepoe-se a pontuacao. Texto
+        # grande nao e "mais complexo", mas um `leve` que nao cabe na janela
+        # nao serve por muito leve que seja — e uma imagem nao se resolve com
+        # um modelo que nao a aceita.
+        needs = _analise_mod.necessidades(
+            _mensagens(request), request,
+            limiar_contexto=int(analise.get("contexto_grande_tokens") or 24000))
+        needs["latencia_max_ms"] = gestor.teto_latencia(pcfg)
+        if needs.get("contexto_grande") and nivel == "leve":
+            nivel = "media"
+            base["nivel"] = nivel
+            base["triagem"] = f"contexto {needs['tokens_entrada']}tok"
+        if needs.get("modalidades") or needs.get("json"):
+            base["exige"] = {k: needs[k] for k in ("modalidades", "json") if needs.get(k)}
         entrada, rota, falhadas = escolher_com_rota(
-            pcfg, nivel, perfil=perfil, sessao=session_id, tarefa=associada)
+            pcfg, nivel, perfil=perfil, sessao=session_id, tarefa=associada, needs=needs)
         if associada and (entrada is None or rota is None):
             base["origem"] = "analise_fallback_tarefa"
             base["falhadas_tarefa"] = falhadas
             entrada, rota, falhadas = escolher_com_rota(
-                pcfg, nivel, perfil=perfil, sessao=session_id)
+                pcfg, nivel, perfil=perfil, sessao=session_id, needs=needs)
         if entrada is None or rota is None:
             # C: sem rota no nivel decidido, desce um nivel em vez de nao decidir.
             if not associada:
                 nivel_ef, entrada_ef, rota_ef, falhadas_ef = degradar_nivel(
-                    pcfg, nivel, perfil=perfil, sessao=session_id)
+                    pcfg, nivel, perfil=perfil, sessao=session_id, needs=needs)
                 if entrada_ef is not None and rota_ef is not None:
                     base["degradado_de"] = nivel
                     base["nivel_efetivo"] = nivel_ef
                     base["falhadas_nivel"] = falhadas
                     nivel = nivel_ef
                     entrada, rota, falhadas = entrada_ef, rota_ef, falhadas_ef
+            if entrada is None or rota is None:
+                # Ultimo recurso, e so quando o problema e **capacidade**: uma
+                # rota que nao cabe nao se resolve descendo de nivel, mas um
+                # nivel sem rota (ou sem credencial) resolve-se ficando sem
+                # troca — ir buscar outra rota qualquer seria decidir por fora
+                # da complexidade.
+                if any(":inviavel:" in f for f in falhadas):
+                    entrada_j, rota_j, falhadas_j = escolher_por_janela(
+                        pcfg, needs, perfil=perfil, sessao=session_id)
+                    if entrada_j is not None and rota_j is not None:
+                        base["escolhido_por_janela"] = entrada_j["id"]
+                        entrada, rota = entrada_j, rota_j
+                        falhadas = falhadas + falhadas_j
             if entrada is None or rota is None:
                 _registar({**base, "evento": "sem_rota", "falhadas": falhadas}, registar=registar)
                 return None
@@ -791,6 +856,7 @@ def middleware_llm_request(
                    "acesso": entrada.get("acesso", ""),
                    "para": aplicado, "fonte_credencial": rota.get("source", ""),
                    "esforco": esforco_agente or "nao_declarado",
+                   **({"preteridas": list(dict.fromkeys(falhadas))} if falhadas else {}),
                    "ms": round((time.monotonic() - inicio) * 1000, 1)}, registar=registar)
         if entrada["modelo"] != request.get("model") or esforco_fio:
             return {"request": pedido, "source": NOME,

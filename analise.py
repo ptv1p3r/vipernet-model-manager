@@ -164,6 +164,22 @@ _AVARIA = re.compile(
     r"est[aá] a falhar|parou de|deixou de|deixaram de|passou a falhar|d[aá] (?:este |um )?erro|est[aá] mal)",
     re.IGNORECASE,
 )
+# Avaria em registo coloquial. O dicionario tecnico falha onde o dono escreve
+# depressa: "ta tudo bugado", "isto quebrou", "deu barraca", "nao ta a
+# funcionar". Medido no gold de 2026-11-02: 0/6 em giria com o padrao tecnico,
+# porque `n[aã]o funciona\b` nao apanha o gerundio nem a forma sem acentos.
+_AVARIA_COLOQUIAL = re.compile(
+    r"(\b(?:t[aá]|est[aá]|esta)\s+(?:a\s+)?(?:dar\s+)?(?:erro|raia|barraca)|\bdeu\s+barraca|"
+    r"\bbugad\w*|\bquebr(?:ou|aram|ado|ada)\b|\bencrav\w*|\bmarad\w*|\bpifou\b|"
+    r"\bdeu\s+o\s+berro\b|\bnum\s+t[aá]\b|\bn[aã]o\s+t[aá]\b|"
+    r"n[aã]o\s+(?:est[aá]|esta|ta)\s+(?:a\s+)?funcion\w*|\bfuncionando\b|\bareia\b)",
+    re.IGNORECASE,
+)
+# Trabalho levado a producao, tambem em registo coloquial: "meter isso a
+# bombar" e um deploy, nao uma avaria — sem isto ficava sem sinal nenhum.
+_PRODUCAO_COLOQUIAL = re.compile(
+    r"(meter\s+(?:isso\s+|isto\s+)?a\s+bombar|p[oô]r\s+(?:isso\s+|isto\s+)?a\s+(?:correr|bombar)|"
+    r"lan[cç]ar\s+(?:em|para)\s+produ[cç][aã]o|virar\s+(?:para|em)\s+produ)", re.IGNORECASE)
 # Falha de servico: o objeto e um processo que devia estar a correr.
 _SERVICO_AVARIADO = re.compile(
     r"\b(container\w*|contentor\w*|servi[cç]o\w*|docker\w*|systemd\w*|"
@@ -474,6 +490,13 @@ def _pontuar_texto(texto: str, pesos: dict[str, int], ferramentas_escrita: int,
         if _SERVICO_AVARIADO.search(texto):
             score += pesos["avaria_de_servico"]
             sinais.append("avaria_de_servico")
+    elif _AVARIA_COLOQUIAL.search(texto):
+        # Mesmo peso da avaria tecnica: o registo nao muda o trabalho que da.
+        score += pesos["erro_avaria"]
+        sinais.append("avaria_coloquial")
+    if _PRODUCAO_COLOQUIAL.search(texto):
+        score += pesos["trabalho"]
+        sinais.append("producao_coloquial")
 
     # Amplitude.
     if _CODIGO.search(texto):
@@ -674,3 +697,73 @@ def decidir(mensagens: list[Any], *, limiares: dict[str, Any] | None = None,
             "score": ponto["score"], "sinais": ponto["sinais"],
             "caracteres": ponto["caracteres"], "turnos": ponto["turnos"],
             "ferramentas": ponto["ferramentas"], "herdado_de": ponto["herdado_de"]}
+
+
+# --------------------------------------------------------------------------- necessidades do pedido
+#
+# A decisao por complexidade diz *quanto* raciocinio o turno pede. Isto diz o
+# que o turno **exige** e que nenhuma pontuacao exprime: janela que o texto
+# ocupa, modalidades que o pedido traz e formato que a resposta tem de ter.
+# E um filtro de impossibilidade: recusa rotas que declararam nao conseguir,
+# nunca promove uma rota por preferencia.
+
+TOKENS_POR_IMAGEM = 1200   # estimativa conservadora; serve para filtrar janela, nao para faturar
+CHARS_POR_TOKEN = 4
+
+
+def _texto_e_modalidade(conteudo: Any) -> tuple[int, set[str]]:
+    """Caracteres e modalidades de um `content` (string ou lista de partes)."""
+    if isinstance(conteudo, str):
+        return len(conteudo), set()
+    caracteres = 0
+    modalidades: set[str] = set()
+    if not isinstance(conteudo, (list, tuple)):
+        return len(str(conteudo or "")), modalidades
+    for parte in conteudo:
+        if not isinstance(parte, dict):
+            caracteres += len(str(parte))
+            continue
+        tipo = str(parte.get("type") or "").lower()
+        if "image" in tipo:
+            modalidades.add("imagem")
+            caracteres += TOKENS_POR_IMAGEM * CHARS_POR_TOKEN
+        elif "audio" in tipo:
+            modalidades.add("audio")
+        elif tipo in {"file", "document", "pdf", "input_file"}:
+            modalidades.add("ficheiro")
+        texto = parte.get("text")
+        if isinstance(texto, str):
+            caracteres += len(texto)
+        elif isinstance(parte.get("image_url"), (str, dict)):
+            modalidades.add("imagem")
+    return caracteres, modalidades
+
+
+def necessidades(mensagens: Any, pedido: Any = None, *,
+                 limiar_contexto: int = 24000) -> dict[str, Any]:
+    """O que o pedido exige: tokens de entrada, modalidades e JSON.
+
+    `tokens_entrada` e estimativa grosseira (4 caracteres por token) — chega
+    para decidir se um texto de 200 paginas cabe numa janela, e nao serve para
+    contabilidade. `json` so e verdadeiro quando o pedido declara
+    `response_format` de tipo json: e o unico sinal de que a resposta *tem* de
+    ser JSON, nao de que o utilizador falou de JSON.
+    """
+    caracteres = 0
+    modalidades: set[str] = set()
+    for mensagem in mensagens or ():
+        if isinstance(mensagem, dict):
+            c, m = _texto_e_modalidade(mensagem.get("content"))
+        else:
+            c, m = len(str(mensagem)), set()
+        caracteres += c
+        modalidades |= m
+    tokens = caracteres // CHARS_POR_TOKEN
+    formato = pedido.get("response_format") if isinstance(pedido, dict) else None
+    tipo = str((formato or {}).get("type") or "").lower() if isinstance(formato, dict) else ""
+    return {
+        "tokens_entrada": tokens,
+        "modalidades": sorted(modalidades),
+        "json": tipo in {"json_object", "json_schema"},
+        "contexto_grande": tokens >= int(limiar_contexto or 0),
+    }
