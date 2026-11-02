@@ -194,6 +194,50 @@ class Regras(unittest.TestCase):
         d = a.decidir(m("<b>implementa</b> o parser com testes <script>x</script>"))
         self.assertEqual(d["nivel"], "alta")
 
+    # --- regra dos dois sinais (v3) -------------------------------------
+
+    def test_dois_sinais_nao_somam_media(self):
+        """Dois sinais fracos não somam um nível pago: `testa o plugin`."""
+        d = a.decidir(m("testa o plugin"),
+                      limiares={"media_sinais": 2, "alta": 6})
+        self.assertEqual(d["nivel"], "leve", d)
+
+    def test_dois_sinais_independentes_dao_media(self):
+        d = a.decidir(m("no /opt/data/x.py a função não devolve nada"),
+                      limiares={"media_sinais": 2, "alta": 6})
+        self.assertEqual(d["nivel"], "media", d)
+
+    def test_dois_sinais_nao_apagam_alta(self):
+        d = a.decidir(m("implementa o parser com testes"),
+                      limiares={"media_sinais": 2, "alta": 6})
+        self.assertEqual(d["nivel"], "alta", d)
+
+    def test_sinais_de_amplitude_nao_contam(self):
+        """Volume e forma não são evidência de dificuldade."""
+        self.assertEqual(a.sinais_independentes(
+            ["texto_longo=1", "texto_muito_longo=1"]), [])
+
+    def test_verificacao_nao_conta_como_analise(self):
+        """`testa o plugin` é confirmação, não análise."""
+        self.assertEqual(a.sinais_independentes(["analise=testa"]), [])
+
+    def test_sinais_sem_repeticao(self):
+        self.assertEqual(len(a.sinais_independentes(
+            ["analise=2", "analise=2", "dominio_tecnico=1"])), 2)
+
+    def test_sem_media_sinais_mantem_comportamento_antigo(self):
+        """Sem a regra, sinais fracos voltam a somar — mas verificar nunca e analisar.
+
+        A v4 exclui verbos de verificacao no proprio `_ANALISE`, por isso
+        "testa o plugin" fica leve mesmo sem `media_sinais`. A prova da
+        compatibilidade usa um caso sem verbo de verificacao.
+        """
+        d = a.decidir(m("analisa o ficheiro /opt/data/x.py"),
+                      limiares={"media": 3, "alta": 6})
+        self.assertEqual(d["nivel"], "media", d)
+        # e verificar continua a nao comprar um nivel pago, com ou sem a regra
+        self.assertEqual(a.decidir(m("testa o plugin"))["nivel"], "leve")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
