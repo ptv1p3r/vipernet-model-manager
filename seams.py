@@ -81,3 +81,19 @@ def seam_erro() -> str:
     """Motivo pelo qual o seam nao esta disponivel (vazio se esta)."""
     _runtime_provider()
     return _RT_ERRO
+
+
+# ---------------------------------------------------------------------------
+# 2. Nome do perfil (so CLI: no gateway o perfil vem do agente vivo)
+# ---------------------------------------------------------------------------
+
+def nome_perfil() -> str:
+    """Perfil servido: `HERMES_PROFILE`, senao `default`.
+
+    Superficie publica — e uma variavel de ambiente, nao um modulo interno. No
+    gateway o perfil chega por `gestor.perfil_atual(agente)`; este caminho
+    serve o `vmm`, onde nao ha agente a quem perguntar.
+    """
+    import os
+
+    return (os.environ.get("HERMES_PROFILE") or "").strip() or "default"

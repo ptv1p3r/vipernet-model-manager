@@ -9,12 +9,14 @@
       "media": 3,
       "alta": 7
     },
-    "descer_apos": 2
+    "descer_apos": 2,
+    "contexto_grande_tokens": 24000
   },
   "perfis": {
     "default": {
       "activo": true,
       "estrategia": "prioridade",
+      "latencia_max_ms": 4000,
       "rodizio": {
         "por": "sessao"
       },
@@ -34,7 +36,11 @@
           "provider": "openrouter",
           "modelo": "openai/gpt-6.1-sol",
           "complexidade": "media",
-          "acesso": "api"
+          "acesso": "api",
+          "contexto_max": 1000000,
+          "modalidades": ["texto", "imagem"],
+          "json_nativo": true,
+          "latencia_p95_ms": 2500
         },
         {
           "id": "gpt-sol-sub",

@@ -115,6 +115,20 @@ def testes_limites() -> None:
     check("limites: contexto_max em texto vira inteiro",
           c2["perfis"]["default"]["catalogo"][0].get("contexto_max") == 128000)
 
+    # Ida e volta pelo `validar`: o que o editor grava tem de sobreviver.
+    c3 = cfg([{"provider": "deepseek", "modelo": "v", "complexidade": ["leve"]}],
+             latencia_max_ms=1500)
+    check("limites: latencia_max_ms do perfil sobrevive ao validar",
+          c3["perfis"]["default"].get("latencia_max_ms") == 1500,
+          str(c3["perfis"]["default"]))
+    c4 = cfg([{"provider": "deepseek", "modelo": "u", "complexidade": ["leve"]}])
+    check("limites: perfil sem latencia nao ganha a chave",
+          "latencia_max_ms" not in c4["perfis"]["default"], str(c4["perfis"]["default"]))
+    _, erros_lat = g.validar({"perfis": {"default": {
+        "latencia_max_ms": "depressa",
+        "catalogo": [{"provider": "deepseek", "modelo": "t", "complexidade": ["leve"]}]}}})
+    check("limites: latencia_max_ms invalido e erro visivel", bool(erros_lat), str(erros_lat))
+
 
 # ------------------------------------------------------------------- serve ou nao
 

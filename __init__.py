@@ -856,6 +856,7 @@ def middleware_llm_request(
                    "acesso": entrada.get("acesso", ""),
                    "para": aplicado, "fonte_credencial": rota.get("source", ""),
                    "esforco": esforco_agente or "nao_declarado",
+                   **({"preteridas": list(dict.fromkeys(falhadas))} if falhadas else {}),
                    "ms": round((time.monotonic() - inicio) * 1000, 1)}, registar=registar)
         if entrada["modelo"] != request.get("model") or esforco_fio:
             return {"request": pedido, "source": NOME,

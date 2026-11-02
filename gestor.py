@@ -447,6 +447,12 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         if por not in POR:
             erros.append(f"perfis.{nome}.rodizio.por invalido: {por}")
             por = "sessao"
+        # `teto_latencia` e tolerante em tempo de execucao (0 = sem teto), mas
+        # um valor declarado e invalido tem de aparecer no editor, senao o
+        # utilizador grava um teto que nao existe e nunca sabe por que.
+        if pcfg.get("latencia_max_ms") not in (None, "") and teto_latencia(pcfg) <= 0:
+            erros.append(f"perfis.{nome}.latencia_max_ms deve ser inteiro positivo "
+                         f"(recebido {pcfg.get('latencia_max_ms')!r})")
         # O perfil grava SO o que declara: a heranca faz-se na leitura
         # (`perfil_config`). Gravar uma copia do global fixava o perfil ao valor
         # do dia em que foi gravado — um global que mudasse depois deixava de
@@ -522,9 +528,13 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
             "activo": bool(pcfg.get("activo", True)),
             "estrategia": estrategia,
             "rodizio": {"por": por},
+            # Teto de latencia do perfil: so se grava quando declarado, pela
+            # mesma razao que a `analise` — ausencia e "sem teto", e um valor
+            # herdado do global fixaria o perfil ao numero do dia.
+            **(lambda t: {"latencia_max_ms": t} if t else {})(teto_latencia(pcfg)),
             # Sem nada declarado nao se grava `analise` vazia: a ausencia da
             # chave e o que significa "herda tudo do global".
-            **({"analise": panalise} if panalise else {}),
+            **(lambda a: {"analise": a} if a else {})(panalise),
             "catalogo": catalogo,
         }
     return saida, erros

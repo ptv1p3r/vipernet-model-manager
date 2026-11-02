@@ -425,9 +425,10 @@ Três consequências, todas com teste:
    maior `contexto_max` e o ledger regista `escolhido_por_janela`. Um nível
    *vazio* (sem rota, ou sem credencial) **não** dispara este recurso: aí a
    resposta certa é não trocar, e o `selftest` trava isso.
-3. **A recusa fica registada.** A rota preterida aparece em `falhadas` como
-   `id:inviavel:<razão>` — `contexto 300000>128000`, `sem modalidade: imagem`,
-   `sem json nativo`, `latencia 3000>1500` — em vez de desaparecer.
+3. **A recusa fica registada.** A rota preterida aparece no evento `troca` como
+   `preteridas: ["id:inviavel:<razão>"]` — `contexto 128003>32000`,
+   `sem modalidade: imagem`, `sem json nativo`, `latencia 3000>1500` — em vez
+   de desaparecer; no evento `sem_rota` a mesma lista chama-se `falhadas`.
 
 ```json
 {"id": "janela-grande", "provider": "openrouter", "modelo": "openai/gpt-6.1-sol",
@@ -639,6 +640,13 @@ Regras verificadas à data desta versão, com a evidência onde ela existe:
 - **Sem segredos**: o plugin não lê credenciais; usa o resolver do Hermes. A
   config não guarda chaves. Nada de `subprocess`, `eval`, `exec` nem escrita
   fora de `/opt/data/plugin-data/vipernet-model-manager/`.
+- **Efeitos declarados** (o que o plugin faz na rede e no disco, para quem vai
+  ler o código antes de o instalar): faz pedidos HTTPS **aos providers que o
+  dono configurou** — é a razão de existir, e o classificador opcional faz um
+  pedido por turno quando está ligado; escreve `config.json`, `uso.jsonl` e
+  `uso.err` em `plugin-data`; o painel serve rotas HTTP no *plugin host*. Não
+  abre sockets próprios, não recolhe telemetria, não envia nada para fora além
+  dessas chamadas aos providers.
 - **Versionamento**: `plugin.yaml` e `dashboard/manifest.json` acompanham o
   código que publicam; o painel mostra `versao` lida do manifest, não uma
   constante escrita à mão.
@@ -657,6 +665,7 @@ $P /opt/data/plugins/vipernet-model-manager/test_analise.py        # 40
 $P /opt/data/plugins/vipernet-model-manager/test_tarefas.py        # 16
 $P /opt/data/plugins/vipernet-model-manager/test_classificador.py  # 55
 $P /opt/data/plugins/vipernet-model-manager/test_eval.py           # 32
+$P /opt/data/plugins/vipernet-model-manager/test_triagem.py        # 48
 $P /opt/data/plugins/vipernet-model-manager/dashboard/selftest.py  # 79 (exige fastapi)
 node /opt/data/plugins/vipernet-model-manager/dashboard/test_logica.js  # 35
 ```
