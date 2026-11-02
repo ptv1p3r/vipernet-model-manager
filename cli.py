@@ -114,6 +114,85 @@ def cmd_on_off(args) -> int:
     return 0
 
 
+def cmd_classificador(args) -> int:
+    """Le e escreve a definicao do classificador por modelo (global e por perfil).
+
+    Sem argumentos mostra o que esta efectivamente em vigor em cada perfil —
+    que e a pergunta verdadeira, porque um perfil herda o global e um perfil
+    que declare o seu substitui-o por inteiro.
+    """
+    cfg, erros = _cfg()
+    for erro in erros:
+        print(f"aviso: {erro}", file=sys.stderr)
+    perfis = cfg.get("perfis") or {}
+
+    if args.cmd == "ver" or args.cmd is None:
+        am = g._analise_modelo()  # noqa: SLF001 - irmao do mesmo plugin
+        linhas = [["perfil", "classificador", "provider", "modelo", "origem"]]
+        for nome, p in sorted(perfis.items()):
+            # `perfil_config` e quem aplica a heranca global -> perfil; ler o
+            # perfil cru respondia "desligado" a um perfil que herda um global
+            # ligado. A pergunta e sempre a definicao efectiva.
+            try:
+                analise = (g.perfil_config(cfg, nome) or {}).get("analise") or {}
+            except Exception:  # noqa: BLE001 - config invalida nao trava o CLI
+                analise = p.get("analise") or {}
+            definicao = am.efectiva(analise)
+            cru = (p.get("analise") or {}) if isinstance(p.get("analise"), dict) else {}
+            herdou = "proprio" if "classificador" in cru else "herdado"
+            if definicao:
+                linhas.append([nome, "ligado", definicao["provider"], definicao["modelo"], herdou])
+            else:
+                bruto = analise.get("classificador") or {}
+                declarado = bool(bruto.get("provider") and bruto.get("modelo"))
+                linhas.append([nome, "desligado", str(bruto.get("provider") or "-"),
+                               str(bruto.get("modelo") or "-"),
+                               herdou if declarado else "heuristica"])
+        print(_tabela(linhas))
+        global_c = (cfg.get("analise") or {}).get("classificador") or {}
+        estado = "ligado" if global_c.get("activo") else "desligado"
+        print(f"\nglobal: {estado} · {global_c.get('provider') or '-'}"
+              f"/{global_c.get('modelo') or '-'}")
+        if not (global_c.get("provider") and global_c.get("modelo")):
+            print("sem classificador definido: a complexidade e decidida pela heuristica.")
+        return 1 if erros else 0
+
+    alvo = "global"
+    if args.cmd in ("on", "off"):
+        if args.perfil:
+            p = perfis.get(args.perfil)
+            if not isinstance(p, dict):
+                return _erro(f"perfil '{args.perfil}' nao esta na config (vmm perfis)", 3)
+            p.setdefault("analise", {})["classificador"] = dict(
+                p.get("analise", {}).get("classificador") or {})
+            bloco = p["analise"]["classificador"]
+            alvo = f"perfil {args.perfil}"
+        else:
+            cfg.setdefault("analise", {}).setdefault("classificador", {})
+            bloco = cfg["analise"]["classificador"]
+        bloco["activo"] = args.cmd == "on"
+        if args.cmd == "on":
+            if args.provider:
+                bloco["provider"] = args.provider
+            if args.modelo:
+                bloco["modelo"] = args.modelo
+            if not (bloco.get("provider") and bloco.get("modelo")):
+                return _erro("ligar exige --provider e --modelo", 2)
+        try:
+            g.gravar(cfg)
+        except ValueError as exc:
+            return _erro(f"config recusada: {exc}")
+        print(f"{alvo}: classificador {'ligado' if args.cmd == 'on' else 'desligado'}"
+              + (f" ({bloco.get('provider')}/{bloco.get('modelo')})"
+                 if args.cmd == "on" else ""))
+        if args.cmd == "off" and args.perfil is None:
+            print("o perfil que quiser desligar um global ligado declara "
+                  "{'activo': false} no seu bloco.")
+        return 0
+
+    return _erro(f"comando desconhecido: {args.cmd}", 2)
+
+
 def cmd_perfis(args) -> int:
     cfg, _ = _cfg()
     perfis = cfg.get("perfis") or {}
@@ -411,6 +490,13 @@ def build_parser() -> argparse.ArgumentParser:
         s = sub.add_parser(nome, help=f"{nome} o plugin")
         s.add_argument("--perfil")
         s.set_defaults(func=cmd_on_off)
+
+    s = sub.add_parser("classificador", help="modelo que decide a complexidade")
+    s.add_argument("cmd", nargs="?", choices=["ver", "on", "off"], default="ver")
+    s.add_argument("--perfil", help="actua so neste perfil (por omissao: global)")
+    s.add_argument("--provider", help="provider do modelo classificador")
+    s.add_argument("--modelo", help="modelo que classifica leve/media/alta")
+    s.set_defaults(func=cmd_classificador)
 
     s = sub.add_parser("perfis", help="perfis geridos e existentes")
     s.set_defaults(func=cmd_perfis)

@@ -29,9 +29,11 @@ Regras de desenho:
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import json
 import logging
 import os
+import sys
 import threading
 import time
 import traceback
@@ -41,6 +43,7 @@ from typing import Any
 try:  # carregado como pacote do Hermes
     from . import gestor
     from . import analise as _analise_mod
+    from . import analise_modelo as _analise_modelo_mod
 except Exception:  # import directo (selftest / CLI fora do Hermes)
     import importlib.util as _ilu
 
@@ -49,11 +52,16 @@ except Exception:  # import directo (selftest / CLI fora do Hermes)
     def _mod(nome: str):
         spec = _ilu.spec_from_file_location(f"vmm_{nome}", _aqui / f"{nome}.py")
         mod = _ilu.module_from_spec(spec)  # type: ignore[arg-type]
+        # Registar em sys.modules: sem isso `importlib.reload` (o hot reload do
+        # analisador) falha com "module not in sys.modules" e o plugin fica
+        # preso a versao carregada no arranque.
+        sys.modules.setdefault(spec.name, mod)  # type: ignore[union-attr]
         spec.loader.exec_module(mod)  # type: ignore[union-attr]
         return mod
 
     gestor = _mod("gestor")
     _analise_mod = _mod("analise")
+    _analise_modelo_mod = _mod("analise_modelo")
 
 NIVEIS = _analise_mod.NIVEIS
 
@@ -70,9 +78,14 @@ def _recarregar_analise_se_mudou() -> None:
     congela a funcao em memoria: um classificador novo so entrava com restart
     do gateway, o que corta as sessoes vivas. Aqui o modulo e relido quando o
     mtime muda, para que a melhoria entre no turno seguinte.
+
+    Nao se usa `importlib.reload`: ele exige que um finder consiga reencontrar
+    o modulo a partir de `sys.path`, e estes modulos vem de um directoria que
+    nao esta no `sys.path` — reload falhava com `spec not found` e deixava o
+    analisador preso no arranque. Reexecuta-se o spec original.
     Fail-open: se a recarga falhar, mantem-se a versao em memoria e regista-se.
     """
-    global NIVEIS
+    global NIVEIS, _analise_mod
     try:
         mtime = _FICHEIRO_ANALISE.stat().st_mtime_ns
     except OSError:
@@ -80,8 +93,14 @@ def _recarregar_analise_se_mudou() -> None:
     if mtime == _MTIME_ANALISE[0]:
         return
     try:
-        importlib.reload(_analise_mod)
-        NIVEIS = _analise_mod.NIVEIS
+        spec = _analise_mod.__spec__
+        if spec is None or spec.loader is None:
+            raise ImportError("analise sem spec carregavel")
+        novo = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = novo
+        spec.loader.exec_module(novo)
+        _analise_mod = novo
+        NIVEIS = novo.NIVEIS
         _MTIME_ANALISE[0] = mtime
         logger.info("analisador recarregado (analise.py mudou)")
     except Exception:  # noqa: BLE001 - nunca partir um turno por causa disto
@@ -525,11 +544,34 @@ def middleware_llm_request(
         tarefa = _analise_mod.detectar_tarefa(_mensagens(request), pcfg.get("tarefas") or {})
         associada = tarefa if any(tarefa in e.get("tarefas", [])
                                  for e in gestor.catalogo_utilizavel(pcfg)) else None
+        # Classificador por modelo: entra quando o turno nao tem ordem explicita
+        # (`complexidade: alta` na mensagem), quando nenhuma tarefa manda no
+        # turno (a tarefa e a prioridade) e quando o perfil o tem ligado com
+        # rota declarada. Falha -> heuristica, com rasto no ledger.
+        classificador: dict[str, Any] | None = None
+        classificador_erro = ""
+        if not associada and decisao.get("origem") != "marcador":
+            definicao = _analise_modelo_mod.efectiva(analise)
+            if definicao is not None:
+                resultado_m = _analise_modelo_mod.classificar(
+                    _mensagens(request), definicao,
+                    lambda p, m: resolver_rota(perfil, p, m), perfil=perfil)
+                tudo = dict(resultado_m or {})
+                classificador = tudo.get("classificador")
+                if tudo.get("erro"):
+                    classificador_erro = str(tudo["erro"])
+                elif tudo.get("nivel"):
+                    decisao = {**decisao, "nivel": tudo["nivel"], "origem": "modelo",
+                               "score": None}
         nivel = decisao["nivel"] or ("leve" if associada else "")
         base = {"perfil": perfil, "sessao": session_id, "nivel": nivel,
                 "origem": "tarefa" if associada else decisao["origem"],
                 "tarefa": tarefa, "score": decisao.get("score"),
                 "sinais": decisao.get("sinais")}
+        if classificador:
+            base["classificador"] = classificador
+        if classificador_erro:
+            base["classificador_erro"] = classificador_erro
         _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
                          origem=base["origem"], acesso="", entrada="")
         if not nivel:
@@ -541,8 +583,13 @@ def middleware_llm_request(
                 _historico.pop(f"{perfil}\x1f{session_id}", None)
         else:
             # D: zona morta do limiar -> herda o nivel anterior em vez de oscilar.
-            nivel, motivo_d = herdar_se_indeciso(
-                perfil, session_id, nivel, decisao, analise.get("limiares"))
+            # Nao se aplica a decisao por modelo: a zona morta e um artefacto do
+            # limiar heuristico, e o modelo nao decide por pontuacao.
+            if decisao.get("origem") == "modelo":
+                motivo_d = ""
+            else:
+                nivel, motivo_d = herdar_se_indeciso(
+                    perfil, session_id, nivel, decisao, analise.get("limiares"))
             if motivo_d:
                 base["indecisao"] = motivo_d
             # A: turno anterior truncado no mesmo nivel -> sobe um nivel.

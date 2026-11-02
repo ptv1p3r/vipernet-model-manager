@@ -851,10 +851,209 @@ def testes_verificar() -> None:
                 sys.modules[k] = v
 
 
+def testes_classificador() -> None:
+    """Classificador por modelo: quando manda, quando nao manda, e quando falha.
+
+    Servidor HTTP local a serio — nao ha mock do transporte. O que se prova:
+    o nivel passa a ser o do modelo, o ledger diz que veio do modelo, a tarefa
+    associada continua a ganhar (nao se paga a chamada), e um provider em baixo
+    devolve o turno a heuristica sem o travar.
+    """
+    print("\n== classificador por modelo: global, perfil, fail-open ==")
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    plugin = _mod("vmm_plugin_c", AQUI / "__init__.py")
+
+    estado: dict[str, Any] = {"conteudo": "alta", "codigo": 200, "pedidos": []}
+
+    class Servidor(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            tamanho = int(self.headers.get("Content-Length") or 0)
+            estado["pedidos"].append(json.loads(self.rfile.read(tamanho) or b"{}"))
+            dados = {"choices": [{"message": {"content": estado["conteudo"]}}],
+                     "usage": {"prompt_tokens": 90, "completion_tokens": 1}}
+            bruto = json.dumps(dados).encode()
+            try:
+                self.send_response(int(estado["codigo"]))
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(bruto)))
+                self.end_headers()
+                self.wfile.write(bruto)
+            except (BrokenPipeError, ConnectionResetError):
+                return
+
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+            return
+
+    servidor = ThreadingHTTPServer(("127.0.0.1", 0), Servidor)
+    porta = servidor.server_address[1]
+    threading.Thread(target=servidor.serve_forever, daemon=True).start()
+
+    class FakeAgent:
+        def __init__(self, provider="deepseek", model="deepseek-flash", sid=""):
+            self.provider, self.model, self.session_id = provider, model, sid
+            self.chamadas: list[dict] = []
+
+        def switch_model(self, **kw):
+            self.chamadas.append(kw)
+            self.model = kw.get("new_model")
+            self.provider = kw.get("new_provider")
+
+    def pedido(texto: str, modelo="deepseek-flash") -> dict:
+        return {"model": modelo, "messages": [{"role": "user", "content": texto}]}
+
+    def chamar(agent, texto, sessao, provider="deepseek", model="deepseek-flash"):
+        return plugin.middleware_llm_request(
+            request=pedido(texto, model), session_id=sessao, model=model, provider=provider)
+
+    def linhas() -> list[dict]:
+        caminho = g.caminho_ledger()
+        if not caminho.exists():
+            return []
+        return [json.loads(l) for l in caminho.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+    def ultima(sessao: str) -> dict:
+        achadas = [l for l in linhas() if l.get("sessao") == sessao]
+        return achadas[-1] if achadas else {}
+
+    def cfg_com(classificador: Any, perfil_classificador: Any = "__ausente__") -> dict:
+        cfg = _cfg_base()
+        # pessoal ganha uma rota de alta, para o nivel do modelo ter para onde ir
+        cfg["perfis"]["pessoal"]["catalogo"].append(
+            {"id": "sol", "provider": "openrouter", "modelo": "openai/gpt-6.1-sol",
+             "complexidade": "alta", "tarefas": ["arquitetura"]})
+        cfg["perfis"]["pessoal"]["tarefas"] = {
+            "arquitetura": {"termos": ["analise de arquitetura", "arquitetura"],
+                            "prioridade": 5}}
+        cfg["analise"]["classificador"] = classificador
+        if perfil_classificador != "__ausente__":
+            cfg["perfis"]["pessoal"]["analise"] = {"classificador": perfil_classificador}
+        return cfg
+
+    LIGADO = {"activo": True, "provider": "local", "modelo": "classificador-teste",
+              "timeout_s": 3.0, "cache_ttl_s": 600}
+
+    real_rota = plugin.resolver_rota
+    real_perfil = plugin.gestor.perfil_atual
+    try:
+        def rota(perfil, prov, mod):
+            if prov == "local":
+                return {"provider": "local", "api_key": "k" * 30,
+                        "base_url": f"http://127.0.0.1:{porta}/v1",
+                        "api_mode": "chat", "source": "env:local"}
+            return {"provider": prov.lower(), "api_key": "x" * 40,
+                    "base_url": f"https://{prov}.test/v1", "api_mode": "chat",
+                    "source": f"env:{perfil}"}
+        plugin.resolver_rota = rota
+        plugin.gestor.perfil_atual = lambda agente=None: "pessoal"
+
+        # 1. heuristica diria `leve`; o modelo diz `alta` -> o modelo manda
+        os.environ["VMM_DIR"] = str(_dir_com(cfg_com(LIGADO)))
+        estado["pedidos"].clear()
+        ag = FakeAgent(sid="c1")
+        chamar(ag, "olá, tudo bem?", "c1")
+        l1 = ultima("c1")
+        check("modelo decide contra a heuristica (leve -> alta)",
+              l1.get("nivel") == "alta" and l1.get("origem") == "modelo", str(l1))
+        check("nivel do modelo escolhe a rota de alta",
+              len(ag.chamadas) == 1 and ag.chamadas[0].get("new_model") == "openai/gpt-6.1-sol",
+              str(ag.chamadas))
+        check("ledger regista o classificador usado",
+              (l1.get("classificador") or {}).get("modelo") == "classificador-teste"
+              and (l1.get("classificador") or {}).get("tokens_entrada") == 90, str(l1.get("classificador")))
+        check("chamada de classificacao leva o modelo declarado",
+              estado["pedidos"] and estado["pedidos"][0].get("model") == "classificador-teste",
+              str(estado["pedidos"][:1]))
+
+        # 2. mesma mensagem de novo -> cache, sem segunda chamada ao provider
+        n_antes = len(estado["pedidos"])
+        chamar(FakeAgent(sid="c2"), "olá, tudo bem?", "c2")
+        check("cache evita pagar duas vezes a mesma mensagem",
+              len(estado["pedidos"]) == n_antes, f"{len(estado['pedidos'])} vs {n_antes}")
+
+        # 3. heuristica diria `alta`; o modelo diz `leve` -> desce (e a heuristica
+        #    nao recupera por histerese nem por zona morta). Agente fora do
+        #    catalogo: a troca para uma rota de leve tem de ser visivel.
+        estado["conteudo"] = "leve"
+        ag = FakeAgent(sid="c3", provider="openai", model="gpt-x")
+        chamar(ag, "implementa o refactor do modulo de billing com testes e rollback",
+               "c3", provider="openai", model="gpt-x")
+        l3 = ultima("c3")
+        check("modelo tambem faz descer o nivel (alta -> leve)",
+              l3.get("nivel") == "leve" and l3.get("origem") == "modelo", str(l3))
+        check("rota escolhida e de leve",
+              ag.chamadas and ag.chamadas[0].get("new_model") in
+              {"deepseek-flash", "nvidia/nemotron-3-super-120b-a12b:free"},
+              str(ag.chamadas))
+
+        # 4. provider do classificador em baixo -> heuristica decide, turno segue
+        estado["conteudo"] = "alta"
+        estado["codigo"] = 500
+        cfg = cfg_com(LIGADO)
+        cfg["analise"]["classificador"]["cache_ttl_s"] = 0
+        os.environ["VMM_DIR"] = str(_dir_com(cfg))
+        ag = FakeAgent(sid="c4")
+        chamar(ag, "mensagem que nunca foi classificada antes", "c4")
+        l4 = ultima("c4")
+        check("falha do classificador devolve o turno a heuristica",
+              l4.get("nivel") == "leve" and l4.get("origem") != "modelo", str(l4))
+        check("falha do classificador fica registada com motivo",
+              "HTTP 500" in str(l4.get("classificador_erro")), str(l4.get("classificador_erro")))
+
+        # 5. tarefa associada ganha: nao se paga chamada de classificacao
+        estado["codigo"] = 200
+        cfg = cfg_com(LIGADO)
+        for e in cfg["perfis"]["pessoal"]["catalogo"]:
+            if e["id"] == "sol":
+                e["tarefas"] = ["arquitetura"]
+        os.environ["VMM_DIR"] = str(_dir_com(cfg))
+        estado["pedidos"].clear()
+        ag = FakeAgent(sid="c5")
+        chamar(ag, "a análise de arquitetura do AAD", "c5")
+        l5 = ultima("c5")
+        check("tarefa associada nao chama o classificador",
+              estado["pedidos"] == [], f"{len(estado['pedidos'])} pedidos")
+        check("tarefa associada mantem a prioridade",
+              l5.get("origem") == "tarefa" and ag.chamadas
+              and ag.chamadas[0].get("new_model") == "openai/gpt-6.1-sol", str(l5))
+
+        # 6. perfil desliga o que a config global liga -> heuristica, zero chamadas
+        os.environ["VMM_DIR"] = str(_dir_com(cfg_com(LIGADO, {"activo": False})))
+        estado["pedidos"].clear()
+        ag = FakeAgent(sid="c6")
+        chamar(ag, "olá, tudo bem?", "c6")
+        l6 = ultima("c6")
+        check("perfil desliga o classificador global",
+              estado["pedidos"] == [] and l6.get("origem") != "modelo",
+              f"{len(estado['pedidos'])} pedidos / {l6}")
+        check("desligado no perfil nao regista falha nenhuma",
+              not l6.get("classificador_erro"), str(l6.get("classificador_erro")))
+
+        # 7. classificador ausente (config antiga) -> comportamento de antes
+        cfg = cfg_com(LIGADO)
+        cfg["analise"].pop("classificador", None)
+        os.environ["VMM_DIR"] = str(_dir_com(cfg))
+        estado["pedidos"].clear()
+        ag = FakeAgent(sid="c7")
+        chamar(ag, "olá, tudo bem?", "c7")
+        l7 = ultima("c7")
+        check("sem classificador a heuristica decide como antes",
+              estado["pedidos"] == [] and l7.get("nivel") == "leve"
+              and l7.get("origem") == "analise", str(l7))
+    finally:
+        plugin.resolver_rota = real_rota
+        plugin.gestor.perfil_atual = real_perfil
+        os.environ.pop("VMM_DIR", None)
+        servidor.shutdown()
+        servidor.server_close()
+
+
 def main() -> int:
     testes_gestor()
     testes_plugin()
     testes_realimentacao()
+    testes_classificador()
     testes_cli()
     testes_verificar()
     falhas = [n for n, ok, _ in _RESULTADOS if not ok]

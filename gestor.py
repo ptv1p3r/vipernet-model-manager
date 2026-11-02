@@ -73,7 +73,60 @@ ANALISE_PADRAO: dict[str, Any] = {
     "varredura_max_mensagens": 60,
     "limiares": {"media": 3, "alta": 7},
     "descer_apos": 2,
+    # Classificador por modelo. Desligado por omissao: sem `activo` e sem
+    # provider/modelo, a complexidade continua a ser decidida pela heuristica.
+    # Os limites (timeout, tokens, cache) sao aplicados por
+    # `analise_modelo.normalizar`, que e a unica casa desses numeros.
+    "classificador": {
+        "activo": False,
+        "provider": "",
+        "modelo": "",
+        "timeout_s": 8.0,
+        "max_tokens": 12,
+        "cache_ttl_s": 600,
+        "janela_mensagens": 8,
+        "max_chars": 4000,
+    },
 }
+
+
+def _analise_modelo():
+    """`analise_modelo` carregado como irmao, com ou sem pacote.
+
+    O `gestor` e importado de duas formas (pacote do Hermes e ficheiro solto no
+    selftest/CLI); a importacao relativa so existe na primeira. O modulo irmao
+    e a unica casa dos limites do classificador — valida aqui, decide la.
+
+    Reutiliza o objecto ja carregado (`sys.modules["vmm_analise_modelo"]`) para
+    nao haver duas instancias com dois caches: o plugin e o gestor tem de ver o
+    mesmo cache, senao a mesma mensagem paga duas chamadas.
+    """
+    global _AM
+    if _AM is not None:
+        return _AM
+    import sys as _sys
+
+    existente = _sys.modules.get("vmm_analise_modelo")
+    if existente is not None:
+        _AM = existente
+        return _AM
+    try:
+        from . import analise_modelo as mod  # type: ignore[import-not-found]
+    except Exception:  # noqa: BLE001 - import solto
+        import importlib.util as _ilu
+
+        caminho = Path(__file__).resolve().parent / "analise_modelo.py"
+        spec = _ilu.spec_from_file_location("vmm_analise_modelo", caminho)
+        if spec is None or spec.loader is None:
+            raise
+        mod = _ilu.module_from_spec(spec)
+        _sys.modules["vmm_analise_modelo"] = mod
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    _AM = mod
+    return mod
+
+
+_AM: Any = None
 
 # Semente: os catalogos que o dono declarou (2026-11-02). Cada modelo traz a sua
 # complexidade. Alternancia: `rodizio` com `por: sessao` — a sessao fica na rota
@@ -255,6 +308,10 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         for chave, valor in analise.items():
             if chave == "limiares" and isinstance(valor, dict):
                 saida["analise"]["limiares"].update(valor)
+            elif chave == "classificador":
+                limpo, erros_c = _analise_modelo().normalizar(valor)
+                saida["analise"]["classificador"] = limpo
+                erros.extend(erros_c)
             else:
                 saida["analise"][chave] = valor
     perfis = cfg.get("perfis")
@@ -278,10 +335,32 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
             erros.append(f"perfis.{nome}.rodizio.por invalido: {por}")
             por = "sessao"
         panalise = copy.deepcopy(saida["analise"])
+        declaradas: set[str] = set()
         if isinstance(pcfg.get("analise"), dict):
+            declaradas = set(pcfg["analise"])
+            # O perfil so grava o que declara: a heranca faz-se na leitura
+            # (`perfil_config`). Gravar uma copia do global fixava o perfil ao
+            # valor do dia em que foi gravado — e um global que mudasse depois
+            # deixava de chegar a esse perfil.
+            for herdada in ("classificador", "limiares"):
+                if herdada not in declaradas:
+                    panalise.pop(herdada, None)
             for chave, valor in pcfg["analise"].items():
                 if chave == "limiares" and isinstance(valor, dict):
-                    panalise["limiares"].update(valor)
+                    # So as chaves declaradas: o que falta vem do global.
+                    panalise["limiares"] = dict(valor)
+                elif chave == "classificador":
+                    # Substitui por inteiro (nao funde) o classificador global:
+                    # e o que permite ao perfil desligar o que a config global
+                    # liga, com `{"activo": false}` e nada mais.
+                    limpo, erros_c = _analise_modelo().normalizar(
+                        valor, prefixo=f"perfis.{nome}.analise.classificador")
+                    erros.extend(erros_c)
+                    if limpo == saida["analise"].get("classificador"):
+                        # Igual ao global: nao se grava copia (ver acima).
+                        panalise.pop("classificador", None)
+                    else:
+                        panalise["classificador"] = limpo
                 else:
                     panalise[chave] = valor
         catalogo: list[dict[str, Any]] = []
@@ -498,6 +577,24 @@ def perfil_config(cfg: dict[str, Any], perfil: str) -> dict[str, Any] | None:
         return None
     saida = copy.deepcopy(pcfg)
     saida["origem_config"] = origem
+    # A `analise` global e herdada por qualquer perfil que nao a declare: a
+    # fundicao faz-se aqui, na leitura, e nao apenas na validacao — senao um
+    # perfil guardado antes de o global mudar ficava preso a copia antiga.
+    # Chave a chave: o que o perfil declara ganha; `classificador` substitui
+    # por inteiro (e o que deixa um perfil desligar um global ligado).
+    global_analise = cfg.get("analise")
+    if isinstance(global_analise, dict):
+        analise = dict(copy.deepcopy(global_analise))
+        local = saida.get("analise")
+        if isinstance(local, dict):
+            for chave, valor in local.items():
+                if chave == "limiares" and isinstance(valor, dict):
+                    base = dict(analise.get("limiares") or {})
+                    base.update(valor)
+                    analise["limiares"] = base
+                else:
+                    analise[chave] = copy.deepcopy(valor)
+        saida["analise"] = analise
     return saida
 
 
