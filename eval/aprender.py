@@ -44,6 +44,7 @@ import json
 import os
 import random
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -505,8 +506,33 @@ def separar(casos: list[dict], semente: int, fraccao: float = 0.7) -> tuple[list
 # --------------------------------------------------------------------------- modelo (A/B)
 
 
+def _ritmador(intervalo_s: float):
+    """Devolve um callable que garante um intervalo minimo entre chamadas.
+
+    O provedor do classificador responde `429 too many requests per minute` a
+    rajadas: medido a 5 threads, 24 de 60 casos ficaram sem nivel e o A/B
+    comparou conjuntos diferentes (resultado 0,0 em todas as variantes). Um A/B
+    que mede o rate limit nao mede a qualidade do prompt.
+    """
+    trava = threading.Lock()
+    estado = {"ultimo": 0.0}
+
+    def esperar() -> None:
+        if intervalo_s <= 0:
+            return
+        with trava:
+            agora = time.monotonic()
+            falta = estado["ultimo"] + intervalo_s - agora
+            if falta > 0:
+                time.sleep(falta)
+            estado["ultimo"] = time.monotonic()
+
+    return esperar
+
+
 def abc_modelo(casos: list[dict], definicao: dict[str, Any], resolver,
-               variantes: list[str], repeticoes: int, threads: int) -> dict[str, Any]:
+               variantes: list[str], repeticoes: int, threads: int,
+               intervalo_s: float = 0.0) -> dict[str, Any]:
     """Compara variantes de prompt do classificador no mesmo conjunto rotulado.
 
     Duas regras que evitam resultados bonitos e falsos:
@@ -529,9 +555,19 @@ def abc_modelo(casos: list[dict], definicao: dict[str, Any], resolver,
             out[variante] = {"erro": "variante desconhecida"}
             continue
 
+        esperar = _ritmador(intervalo_s)
+
         def um(caso: dict) -> tuple[str, str]:
+            # Ritmo antes de cada chamada; uma recusa 429 nao e um rotulo, e
+            # espera-se uma vez antes de desistir do caso.
+            esperar()
             r = modelo.classificar([{"role": "user", "content": caso["texto"]}],
                                    definicao, resolver, perfil="abc", prompt=prompt)
+            if not isinstance(r, dict):
+                time.sleep(2.5)
+                esperar()
+                r = modelo.classificar([{"role": "user", "content": caso["texto"]}],
+                                       definicao, resolver, perfil="abc", prompt=prompt)
             if not isinstance(r, dict):
                 return caso["id"], ""
             n = (r.get("nivel") or "").strip().lower()
@@ -663,7 +699,11 @@ def _relatorio(dados: dict[str, Any]) -> str:
                 L.append(f"- {nome}: {v['erro']}")
             else:
                 L.append(f"- {nome}: macro-F1 {v['macro_f1_media']} "
-                         f"({v['macro_f1_min']}–{v['macro_f1_max']}), media F1 {v['media_f1']}")
+                         f"({v['macro_f1_min']}–{v['macro_f1_max']}), media F1 {v['media_f1']}, "
+                         f"comparaveis {v.get('comparaveis')}, falhas {v.get('falhas')}")
+        if any(v.get("comparaveis") == 0 for v in dados["abc"].values() if "macro_f1_media" in v):
+            L.append("\n> Nenhum caso comparavel: as variantes nao responderam ao mesmo conjunto "
+                     "(ver falhas). Um 0,0 aqui e ausencia de dados, nao um resultado.")
     if dados.get("falhas"):
         L.append("\n## Casos que o juiz recusou\n")
         for f in dados["falhas"][:10]:
@@ -691,6 +731,8 @@ def main() -> int:
     ap.add_argument("--so-treinar", default="", help="ficheiro jsonl rotulado: salta juiz e calibracao")
     ap.add_argument("--exportar-fila", type=int, default=0,
                     help="escreve N casos por rotular (cego, sem sugestao) e sai")
+    ap.add_argument("--pausa-abc", type=float, default=1.2,
+                    help="segundos entre chamadas do A/B (o provedor limita por minuto)")
     args = ap.parse_args()
 
     garantir_interpretador()
@@ -801,7 +843,8 @@ def main() -> int:
         abc: dict[str, Any] | None
         try:
             abc = abc_modelo(amostra, definicao_m, _resolver(),
-                             ["v1", "v2", "v3"], args.repeticoes, args.threads)
+                             ["v1", "v2", "v3"], args.repeticoes, args.threads,
+                             intervalo_s=args.pausa_abc)
         except Exception as exc:  # a metade opcional nunca derruba o ciclo
             abc = {"erro": f"{type(exc).__name__}: {exc}"}
         validos: dict[str, dict[str, Any]] = {

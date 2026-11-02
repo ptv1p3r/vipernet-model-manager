@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -254,6 +255,20 @@ class TestAbcModelo(unittest.TestCase):
         r = A.abc_modelo([{"id": "1", "texto": "a", "rotulo": "leve"}], {}, None,
                          ["v9"], 1, 1)
         self.assertEqual(r["v9"]["erro"], "variante desconhecida")
+
+    def test_ritmo_espaca_chamadas(self):
+        esperar = A._ritmador(0.05)
+        inicio = time.monotonic()
+        for _ in range(4):
+            esperar()
+        self.assertGreaterEqual(time.monotonic() - inicio, 0.15)
+
+    def test_sem_ritmo_nao_atrasa(self):
+        esperar = A._ritmador(0)
+        inicio = time.monotonic()
+        for _ in range(50):
+            esperar()
+        self.assertLess(time.monotonic() - inicio, 0.2)
 
     def test_todas_falham_devolve_metricas_vazias(self):
         class Nunca:
