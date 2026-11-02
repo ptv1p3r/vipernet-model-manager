@@ -343,7 +343,7 @@ _PLANEAMENTO = re.compile(
     re.IGNORECASE,
 )
 
-# Amplitude.
+    # Amplitude.
     # Manutencao e planeamento - separados de trabalho e arquitura.
     if _MANUTENCAO.search(texto) and not _TRABALHO.search(texto) and not _ARQUITETURA.search(texto):
         score += pesos["manutencao"]
