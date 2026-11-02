@@ -20,10 +20,10 @@ Esquema (v3):
       "catalogo": [
         {"id": "deepseek-flash", "provider": "deepseek",
          "modelo": "deepseek-flash", "complexidade": ["leve", "media"],
-         "acesso": "api"},
+         "acesso": "api", "esforco": "baixo"},
         {"id": "gpt-sol-sub", "provider": "openai-codex",
          "modelo": "gpt-6.1-sol", "complexidade": ["media"],
-         "acesso": "subscricao"}
+         "acesso": "subscricao", "esforco": "alto"}
       ]
     }
   }
@@ -54,6 +54,7 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,19 @@ NIVEIS = ("leve", "media", "alta")
 ESTRATEGIAS = ("rodizio", "prioridade")
 POR = ("turno", "sessao")
 ACESSOS = ("api", "subscricao")
+
+#: Esforco de raciocinio por rota. Vocabulario do dono (pt-PT); no fio fala a
+#: escada canonica do Hermes (`agent.reasoning_effort`), que depois a adapta a
+#: cada provider. Ausente = a rota nao diz nada e o pedido segue como o agente
+#: o tinha (nao se inventa um valor por omissao).
+ESFORCOS = ("baixo", "medio", "alto")
+ESFORCO_WIRE = {"baixo": "low", "medio": "medium", "alto": "high"}
+_ESFORCO_SINONIMOS = {
+    "baixo": "baixo", "low": "baixo", "minimo": "baixo", "mínimo": "baixo",
+    "minimal": "baixo",
+    "medio": "medio", "médio": "medio", "medium": "medio", "normal": "medio",
+    "alto": "alto", "high": "alto", "maximo": "alto", "máximo": "alto", "max": "alto",
+}
 
 # Unico transporte de subscricao que o plugin conhece (ChatGPT via Codex). Os
 # restantes providers sao rota de API. A inferencia retrocompativel apoia-se nisto.
@@ -262,6 +276,15 @@ def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str
                      f"e uma subscricao; use acesso 'subscricao'")
         return None
     saida["acesso"] = acesso
+    # esforco de raciocinio: opcional e por rota. Ausente nao e "medio" — e
+    # "nao declarado", para que uma rota que nao precise nao arraste o esforco
+    # de outra.
+    esforco, erro_esforco = normalizar_esforco(entrada.get("esforco"))
+    if erro_esforco:
+        erros.append(f"catalogo[{indice}] ({provider}:{modelo}) {erro_esforco}")
+        return None
+    if esforco:
+        saida["esforco"] = esforco
     tarefas = entrada.get("tarefas", [])
     if not isinstance(tarefas, list) or any(not isinstance(t, str) or not t.strip() for t in tarefas):
         erros.append(f"catalogo[{indice}].tarefas deve ser lista de identificadores")
@@ -499,6 +522,93 @@ def acesso_por_provider(provider: str) -> str:
     return "subscricao" if str(provider or "").strip().lower() in _PROVIDERS_SUBSCRICAO else "api"
 
 
+def _perfil_provider(provider: str):
+    """Perfil do provider do Hermes (o objecto que sabe a forma do fio).
+
+    A importacao pode falhar fora da arvore do Hermes (CLI, selftest solto):
+    nesse caso tenta-se a raiz deduzida de `hermes_constants`, que e onde o
+    pacote `providers` vive, em vez de desistir em silencio.
+    """
+    nome = str(provider or "").strip().lower()
+    try:
+        from providers import get_provider_profile
+    except Exception:  # noqa: BLE001
+        raiz = getattr(sys.modules.get("hermes_constants"), "__file__", "")
+        if not raiz:
+            return None
+        pasta = str(Path(raiz).resolve().parent)
+        if pasta not in sys.path:
+            sys.path.insert(0, pasta)
+        from providers import get_provider_profile  # noqa: F811
+    return get_provider_profile(nome)
+
+
+def normalizar_esforco(valor: Any) -> tuple[str, str]:
+    """`(valor, erro)` do vocabulario do dono. Vazio = nao declarado, sem erro.
+
+    Aceita o vocabulario pt-PT e os sinonimos ingleses da escada do Hermes
+    (`low|medium|high`): a config vive em JSON editado por tres vias e recusar
+    `high` por ser ingles seria uma armadilha, nao uma validacao.
+    """
+    bruto = str(valor or "").strip()
+    if not bruto:
+        return "", ""
+    nome = _ESFORCO_SINONIMOS.get(bruto.lower(), "")
+    if not nome:
+        return "", (f"esforco invalido: '{bruto}' (use {', '.join(ESFORCOS)}; "
+                    f"low/medium/high tambem sao aceites)")
+    return nome, ""
+
+
+def esforco_wire(valor: Any) -> str:
+    """Valor do dono -> escada canonica do Hermes (`low|medium|high`), ou ''."""
+    nome, _ = normalizar_esforco(valor)
+    return ESFORCO_WIRE.get(nome, "")
+
+
+def extras_esforco(provider: str, modelo: str, esforco: Any,
+                   *, session_id: str = "") -> tuple[dict[str, Any], dict[str, Any]]:
+    """`(extra_body, top_level)` com a forma que o provider de destino entende.
+
+    O esforco nao tem uma forma unica no fio: o deepseek quer `thinking` em
+    `extra_body` mais `reasoning_effort` no topo; o OpenRouter quer
+    `extra_body.reasoning`. Perguntar ao perfil do provider — o mesmo objecto
+    que o Hermes usa para construir o pedido — evita inventar campos e mantem
+    uma so casa para a forma de cada fio.
+
+    `supports_reasoning=True` porque a configuracao explicita do dono **e** a
+    afirmacao de que a rota aceita o parametro; sem isso o OpenRouter omitia o
+    campo em silencio e o esforco nunca chegava ao fio.
+
+    `({}, {})` quando nao ha esforco, o valor e invalido ou o provider nao tem
+    perfil conhecido: o chamador segue sem tocar no pedido. Nunca levanta.
+    """
+    valor = esforco_wire(esforco)
+    if not valor:
+        return {}, {}
+    try:
+        perfil = _perfil_provider(provider)
+    except Exception:  # noqa: BLE001 — sem Hermes ao lado (CLI, selftest solto)
+        perfil = None
+    if perfil is None:
+        return {}, {}
+    try:
+        extra, topo = perfil.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": valor},
+            supports_reasoning=True,
+            model=str(modelo or ""),
+            session_id=session_id,
+        )
+    except Exception:  # noqa: BLE001
+        return {}, {}
+    extra = dict(extra or {})
+    topo = dict(topo or {})
+    # O perfil tambem pode reescrever o `model` (pins de endpoint do OpenRouter);
+    # isso nao nos pertence — a rota e a do catalogo.
+    topo.pop("model", None)
+    return extra, topo
+
+
 def casa_do_perfil(nome: str) -> Path:
     """Home do perfil pelo nome: `default` e a raiz de lancamento; os restantes
     em `<raiz>/profiles/<nome>`. O inverso de `nome_do_perfil`."""
@@ -597,6 +707,68 @@ def perfil_config(cfg: dict[str, Any], perfil: str) -> dict[str, Any] | None:
                 else:
                     analise[chave] = copy.deepcopy(valor)
         saida["analise"] = analise
+    return saida
+
+
+def classificador_efectivo(cfg: dict[str, Any], perfil: str) -> dict[str, Any]:
+    """O que decide a complexidade neste perfil: um modelo (qual) ou a heuristica.
+
+    Uma casa so para a pergunta que o painel e o CLI fazem — o painel nao
+    reimplementa a heranca nem o "e utilizavel?". `perfil_config` resolve a
+    heranca (global -> perfil); `analise_modelo.normalizar` diz se a definicao
+    serve. Devolve sempre as mesmas chaves, para o consumidor nao ter de saber
+    distinguir "nao existe" de "existe e nao presta":
+
+    - ``modo``: ``"modelo"`` ou ``"heuristica"``.
+    - ``provider``/``modelo``/``esforco``: o que esta em vigor (vazio se heuristica).
+    - ``origem``: ``"proprio"`` (o perfil declara o bloco), ``"herdado"`` (vem do
+      global) ou ``"heuristica"`` (ninguem declarou nada).
+    - ``motivo``: porque e que um bloco declarado nao esta a decidir. Vazio quando
+      o modo e ``modelo``. **Nao se esconde**: um classificador configurado que
+      falha a validacao parece ligado a quem so olha para o `activo`.
+    """
+    pcfg = perfil_config(cfg, perfil) or {}
+    analise = pcfg.get("analise") or {}
+    bruto = analise.get("classificador")
+    definicao, erros = _analise_modelo().normalizar(bruto)
+
+    # O bloco que o perfil declara tem de ser lido do perfil CRU: `perfil_config`
+    # ja fundiu o global, e sem isto todo o perfil parecia "proprio".
+    cru = ((cfg.get("perfis") or {}).get(perfil) or {}).get("analise")
+    declara = isinstance(cru, dict) and "classificador" in cru
+    tem_rota = bool(definicao.get("provider") and definicao.get("modelo"))
+
+    if declara:
+        origem = "proprio"
+    elif tem_rota or definicao.get("activo"):
+        origem = "herdado"
+    else:
+        origem = "heuristica"
+
+    saida: dict[str, Any] = {
+        "modo": "heuristica",
+        "activo": False,
+        "provider": "",
+        "modelo": "",
+        "esforco": "",
+        "origem": origem,
+        "motivo": "",
+    }
+    if definicao.get("activo") and tem_rota and not erros:
+        saida.update(
+            {
+                "modo": "modelo",
+                "activo": True,
+                "provider": definicao["provider"],
+                "modelo": definicao["modelo"],
+                "esforco": definicao.get("esforco") or "",
+            }
+        )
+        return saida
+    if erros:
+        saida["motivo"] = "; ".join(erros)
+    elif tem_rota:
+        saida["motivo"] = "desligado"
     return saida
 
 

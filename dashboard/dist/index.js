@@ -93,6 +93,69 @@
     );
   }
 
+  // ---- indicador modelo/heuristica do cartao -----------------------------
+  // A pergunta do cartao nao e "esta ligado?", e "esta a decidir?". Um
+  // classificador ligado que falha cai na heuristica, e um perfil sem bloco
+  // herda o global sem o mostrar em lado nenhum. Por isso o rotulo diz as duas
+  // coisas: o que devia decidir e a evidencia do ledger de que decidiu.
+  function rotuloAnalise(a) {
+    const vazio = {
+      modo: "heuristica",
+      titulo: "heurística",
+      tom: "secondary",
+      detalhe: "",
+      evidencia: "",
+      alerta: "",
+    };
+    if (!a || typeof a !== "object") return vazio;
+    const c = a.classificador || {};
+    const nomes = {
+      modelo: "modelo",
+      analise: "heurística",
+      tarefa: "tarefa",
+      marcador: "marcador",
+      analise_fallback_tarefa: "tarefa sem rota",
+      reset: "sem decisão",
+    };
+    const origens = a.origens || {};
+    const contagens = [];
+    Object.keys(origens).forEach(function (k) {
+      const n = origens[k] || 0;
+      if (n > 0) contagens.push(n + " " + (nomes[k] || k));
+    });
+    const evidencia = a.respostas > 0
+      ? "últimos " + a.respostas + " turnos: " + contagens.join(" · ")
+      : "";
+    const alertaBruto = c.modo === "modelo" ? (a.erro || "") : "";
+
+    if (c.modo === "modelo") {
+      const onde = c.origem === "proprio" ? "próprio do perfil" : "herdado do global";
+      const extra = [];
+      if (c.esforco) extra.push("esforço " + c.esforco);
+      extra.push(onde);
+      return {
+        modo: "modelo",
+        titulo: "modelo · " + (c.provider || "?") + "/" + (c.modelo || "?"),
+        tom: "default",
+        detalhe: extra.join(" · "),
+        evidencia: evidencia,
+        alerta: alertaBruto ? "o modelo falhou no último turno — caiu na heurística: " + alertaBruto : "",
+      };
+    }
+    const motivo = String(c.motivo || "");
+    let detalhe = "sem modelo definido — decide a heurística";
+    if (motivo === "desligado") detalhe = "classificador desligado — decide a heurística";
+    else if (motivo) detalhe = "classificador sem efeito (" + motivo + ") — decide a heurística";
+    return {
+      modo: "heuristica",
+      titulo: "heurística",
+      tom: "secondary",
+      detalhe: detalhe,
+      evidencia: evidencia,
+      alerta: "",
+    };
+  }
+
   function CartaoPerfil(props) {
     const p = props.dados;
     const nome = props.nome;
@@ -136,6 +199,19 @@
             )
           : h("div", { className: "vmm-mudo" }, "sem turnos registados neste perfil"),
 
+        (function () {
+          const r = rotuloAnalise(p.analise);
+          return h(
+            "div",
+            { className: "vmm-analise vmm-analise-" + r.modo },
+            h("span", { className: "vmm-rotulo" }, "análise da complexidade"),
+            h(Chip, { tone: r.tom }, r.titulo),
+            r.detalhe ? h("span", { className: "vmm-mudo" }, r.detalhe) : null,
+            r.evidencia ? h("span", { className: "vmm-mudo vmm-evidencia" }, r.evidencia) : null,
+            r.alerta ? h("span", { className: "vmm-alerta" }, "⚠ " + r.alerta) : null
+          );
+        })(),
+
         nomesTarefa.length
           ? h(
               "div",
@@ -171,7 +247,8 @@
               h("th", null, "provider"),
               h("th", null, "complexidade"),
               h("th", null, "tarefas"),
-              h("th", null, "acesso")
+              h("th", null, "acesso"),
+              h("th", null, "esforço")
             )
           ),
           h(
@@ -189,7 +266,10 @@
                 h("td", null, (m.tarefas || []).length
                   ? (m.tarefas || []).map(function (t) { return h(Chip, { key: t, tone: "outline" }, t); })
                   : h("span", { className: "vmm-mudo" }, "—")),
-                h("td", null, h(Chip, { tone: m.acesso === "subscricao" ? "outline" : "secondary" }, m.acesso || "api"))
+                h("td", null, h(Chip, { tone: m.acesso === "subscricao" ? "outline" : "secondary" }, m.acesso || "api")),
+                h("td", null, m.esforco
+                  ? h(Chip, { tone: "outline" }, m.esforco)
+                  : h("span", { className: "vmm-mudo" }, "—"))
               );
             })
           )
@@ -324,18 +404,22 @@
       const actual = blocoDe(cfg, perfil) || {};
       if (modo === "herdar") return aplicar(perfil, null);
       if (modo === "desligado") {
-        return aplicar(perfil, {
+        const desligado = {
           activo: false,
           provider: actual.provider || "",
           modelo: actual.modelo || "",
-        });
+        };
+        if (actual.esforco) desligado.esforco = actual.esforco;
+        return aplicar(perfil, desligado);
       }
       const primeiro = pares[0] || { provider: "", modelo: "" };
-      aplicar(perfil, {
+      const ligado = {
         activo: true,
         provider: actual.provider || primeiro.provider,
         modelo: actual.modelo || primeiro.modelo,
-      });
+      };
+      if (actual.esforco) ligado.esforco = actual.esforco;
+      aplicar(perfil, ligado);
     }
 
     function mudarCampo(perfil, campo, valor) {
@@ -345,7 +429,12 @@
         provider: actual.provider || "",
         modelo: actual.modelo || "",
       };
-      novo[campo] = valor;
+      // O esforco acompanha o bloco: nao se perde ao mudar provider ou modelo,
+      // e sai do JSON quando volta a "nao declarado" — um campo vazio deixado
+      // la era validado como valor invalido.
+      if (actual.esforco) novo.esforco = actual.esforco;
+      if (campo === "esforco" && !valor) delete novo.esforco;
+      else novo[campo] = valor;
       aplicar(perfil, novo);
     }
 
@@ -391,7 +480,16 @@
             placeholder: "modelo",
             value: bloco.modelo || "",
             onChange: function (e) { mudarCampo(perfil, "modelo", e.target.value); },
-          }) : null
+          }) : null,
+          proprio ? h("select", {
+            className: "vmm-select",
+            value: bloco.esforco || "",
+            onChange: function (e) { mudarCampo(perfil, "esforco", e.target.value); },
+          },
+            [["", "esforço: não declarado"], ["baixo", "esforço: baixo"],
+             ["medio", "esforço: médio"], ["alto", "esforço: alto"]]
+              .map(function (o) { return h("option", { key: o[0], value: o[0] }, o[1]); })
+          ) : null
         );
       }),
       h("datalist", { id: "vmm-modelos" },
@@ -715,5 +813,6 @@
     window.__VMM_TEST__.blocoDe = blocoDe;
     window.__VMM_TEST__.comBloco = comBloco;
     window.__VMM_TEST__.paresModelo = paresModelo;
+    window.__VMM_TEST__.rotuloAnalise = rotuloAnalise;
   }
 })();

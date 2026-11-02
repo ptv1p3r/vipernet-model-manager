@@ -155,20 +155,47 @@ O plugin traz um painel próprio no dashboard do Hermes, na tab **Model Manager*
 | `dist/index.js` | IIFE que usa `window.__HERMES_PLUGIN_SDK__` e `__HERMES_PLUGINS__.register` |
 | `dist/style.css` | geometria do painel (cores e tipografia vêm do tema do host) |
 
-O painel mostra, por perfil: o interruptor, a estratégia, as associações de tarefa,
-o catálogo com a complexidade de cada modelo e o último modelo servido; em baixo,
-o registo das últimas respostas (quando, perfil, modelo, provider, nível, origem,
-superfície, sessão).
+O painel mostra, por perfil: o interruptor, a estratégia, o **indicador da análise
+de complexidade**, as associações de tarefa, o catálogo com a complexidade e o
+esforço de cada modelo, e o último modelo servido; em baixo, o registo das últimas
+respostas (quando, perfil, modelo, provider, nível, origem, superfície, sessão).
 
-Escreve **só** o interruptor — global ou por perfil — por `gestor.gravar`
-(validação, backup e `os.replace`), com releitura independente antes de responder OK.
-Catálogo, tarefas e log são leitura: mudam-se no `config.json`, não no browser.
+Escreve o interruptor (global ou por perfil) e a configuração inteira (editor JSON,
+`POST /config`, com `POST /validar` antes), sempre por `gestor.gravar` — validação,
+backup e `os.replace`, com releitura independente antes de responder OK. O log é
+leitura.
 
 O host descobre painéis por `<plugins root>/<nome>/dashboard/manifest.json`; a cache
 de descoberta do processo do dashboard **não** se invalida sozinha quando aparece um
 painel novo — depois de instalar, reiniciar o contentor do dashboard (ou forçar
-`/api/dashboard/plugins/rescan`). O plugin do agente não precisa de reinício: a config
-é lida a quente.
+`/api/dashboard/plugins/rescan`). Alterações ao `api.py` também só entram no
+arranque: o router é montado uma vez. A config do agente é lida a quente (TTL 5 s).
+
+### Indicador da análise por cartão (3.7)
+
+Cada cartão de perfil responde a uma pergunta só: **a complexidade deste turno está
+a ser decidida por um modelo — e qual — ou pela heurística?** A barra à esquerda e o
+chip dizem o modo; o texto diz o resto:
+
+| o que se vê | significado |
+|---|---|
+| `modelo · inception/mercury-3` + `esforço baixo · herdado do global` | o perfil não declara bloco e usa o global |
+| `modelo · deepseek/deepseek-flash` + `próprio do perfil` | o perfil declara o seu próprio classificador |
+| `heurística` + `classificador desligado — decide a heurística` | existe bloco, mas `activo: false` |
+| `heurística` + `classificador sem efeito (…) — decide a heurística` | bloco declarado que não passa a validação |
+| `heurística` + `sem modelo definido` | ninguém declarou nada, em nenhum âmbito |
+| `últimos N turnos: 22 modelo · 3 heurística` | evidência do ledger, não da config |
+| `⚠ o modelo falhou no último turno — caiu na heurística: …` | o classificador está ligado mas falhou |
+
+As duas últimas linhas são o que distingue **declarado** de **a decidir**: um
+classificador ligado que erra cai na heurística em silêncio, e a config continuaria a
+dizer "ligado". A contagem vem dos eventos `resposta` do perfil (últimos 25) e o
+motivo do erro do último evento com `classificador_erro`.
+
+Uma só casa para a resposta: `gestor.classificador_efectivo(cfg, perfil)` — usada
+pelo cartão (`/estado`) e pelo `vmm classificador ver`. Resolve a herança e a
+validação; o painel não reimplementa nenhuma das duas.
+
 
 Auto-teste do painel (não toca na config viva):
 
@@ -250,6 +277,49 @@ as converte uma na outra:
 Adicionar a rota de subscrição sem autenticar o canal não a ativa: a entrada
 existe, mas `resolver_rota` falha e a middleware salta-a (registo em
 `sem_rota`).
+
+## Esforço de raciocínio por rota (3.6)
+
+Cada entrada do catálogo pode declarar `esforco`: `baixo`, `medio` ou `alto`
+(a escada do Hermes — `low`/`medium`/`high` — também é aceite, porque o JSON é
+editado por três vias e recusar o inglês seria uma armadilha, não uma
+validação). O campo é **opcional e não tem valor por omissão**: ausente quer
+dizer «não declaro nada», não «médio», para que uma rota que não precisa não
+arraste o esforço de outra.
+
+```json
+{"id": "flash", "provider": "deepseek", "modelo": "deepseek-flash",
+ "complexidade": ["leve", "media"], "acesso": "api", "esforco": "baixo"}
+```
+
+Como é aplicado — e porque não é uma linha só:
+
+- **No agente**, em `agent.reasoning_config` (`{"enabled": true, "effort": …}`),
+  que é o que governa os turnos seguintes. Chamado **depois** de
+  `switch_model`, porque a troca volta a resolver o valor do `config.yaml` e
+  apagaria o que fosse posto antes. O valor de origem fica guardado e é
+  **reposto** quando a rota seguinte não declara esforço — o agente é o mesmo
+  objecto de turno para turno, e sem essa reposição uma rota contaminava todas
+  as seguintes.
+- **No payload do próprio turno**: o `api_kwargs` é construído **antes** da
+  middleware, logo mudar o agente só valeria para o turno seguinte. A escrita
+  usa o perfil do provider de destino — o mesmo objecto que o Hermes usa para
+  construir o pedido —, pelo que a forma é a do fio certo:
+  `thinking` + `reasoning_effort` no deepseek, `reasoning` no OpenRouter, e
+  **nada** num modelo sem raciocínio (medido: `deepseek-v3` devolve `({}, {})`).
+  Os campos de raciocínio do provider anterior são removidos do payload; sem
+  isso, um turno que viesse do OpenRouter levava um `reasoning` que o deepseek
+  recusa.
+- **No classificador** o esforço entra plano no corpo (é HTTP directo, sem SDK,
+  logo `extra_body` não existe ali). Com esforço declarado, o `max_tokens` do
+  classificador tem um **piso de 1200**: o raciocínio sai do mesmo orçamento e
+  os 320 tokens por omissão podem ser todos gastos a pensar — medido, a primeira
+  classificação com `esforco: baixo` falhou com
+  `resposta sem nivel reconhecivel (length 320tok)` e caiu para a heurística.
+
+Testado por `selftest.py` (21 verificações novas): vocabulário, validação no
+catálogo, forma por provider, limpeza do payload, reposição do valor de origem
+e o corpo do classificador.
 
 ## Tarefas por perfil (3.2)
 

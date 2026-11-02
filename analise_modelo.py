@@ -51,7 +51,23 @@ PADRAO: dict[str, Any] = {
     "cache_ttl_s": 600,
     "janela_mensagens": 8,
     "max_chars": 4000,
+    "esforco": "",
 }
+
+
+def _gestor():
+    """`gestor` carregado a pedido: o gestor importa este modulo (limites e
+    decisao do classificador), logo a importacao no topo seria um ciclo."""
+    import sys as _sys
+
+    modulo = _sys.modules.get("vmm_gestor")
+    if modulo is not None:
+        return modulo
+    if __package__:
+        from . import gestor as modulo  # type: ignore[import-not-found]
+    else:
+        import gestor as modulo  # type: ignore[import-not-found,no-redef]
+    return modulo
 
 # Limites duros: um `timeout_s` de 300 na config nao pode parar um turno 5 min.
 _TIMEOUT_MIN, _TIMEOUT_MAX = 1.0, 30.0
@@ -63,6 +79,9 @@ _MAX_TOKENS_MIN, _MAX_TOKENS_MAX = 2, 1024
 _MAX_TOKENS_ANTIGO = 12
 _FALHAS_PARA_SUSPENDER = 3
 _SUSPENSAO_S = 300.0
+#: Piso de `max_tokens` quando o classificador declara esforco: o raciocinio sai
+#: do mesmo orcamento e 320 tokens podem ser todos gastos a pensar.
+_MAX_TOKENS_COM_ESFORCO = 1200
 
 PROMPT = (
     "Classificas a complexidade de um pedido feito a um agente de engenharia.\n"
@@ -117,6 +136,17 @@ def normalizar(bruto: Any, prefixo: str = "analise.classificador") -> tuple[dict
     saida["janela_mensagens"] = int(_num(bruto.get("janela_mensagens"), 1, 60,
                                          PADRAO["janela_mensagens"]))
     saida["max_chars"] = int(_num(bruto.get("max_chars"), 200, 40000, PADRAO["max_chars"]))
+    # Esforco do modelo classificador. Vazio = nao declarado (o pedido sai como
+    # sairia sem esta funcionalidade). A validacao do vocabulario e a do
+    # catalogo — uma so casa, mesmo para os dois lados.
+    saida["esforco"] = ""
+    bruto_esforco = bruto.get("esforco")
+    if bruto_esforco not in (None, ""):
+        esforco, erro_e = _gestor().normalizar_esforco(bruto_esforco)
+        if erro_e:
+            erros.append(f"{prefixo}: {erro_e}")
+        elif esforco:
+            saida["esforco"] = esforco
     return saida, erros
 
 
@@ -267,7 +297,17 @@ def _extrair_nivel(payload: dict[str, Any]) -> tuple[str, str]:
             nivel = achados[-1].lower().replace("é", "e")
             return nivel, "raciocinio:" + raciocinio[-120:]
     if not achado:
-        raise ValueError("resposta sem nivel reconhecivel")
+        # O `finish_reason` e os tokens dizem se o orcamento foi gasto a
+        # raciocinar (`length`) ou se o modelo respondeu outra coisa: sem isso o
+        # ledger diz «sem nivel reconhecivel» e nao se sabe onde olhar.
+        detalhe = ""
+        if isinstance(escolhas, list) and escolhas and isinstance(escolhas[0], dict):
+            detalhe = str(escolhas[0].get("finish_reason") or "")
+        uso = payload.get("usage") if isinstance(payload, dict) else None
+        if isinstance(uso, dict) and uso.get("completion_tokens"):
+            detalhe += f" {uso.get('completion_tokens')}tok"
+        raise ValueError("resposta sem nivel reconhecivel"
+                         + (f" ({detalhe.strip()})" if detalhe.strip() else ""))
     nivel = achado.group(1).lower().replace("é", "e")
     return nivel, conteudo[:120]
 
@@ -322,6 +362,21 @@ def classificar(
             "temperature": 0,
             "stream": False,
         }
+        # Esforco do classificador na forma plana: este pedido e HTTP directo,
+        # nao passa pelo SDK, logo nao ha `extra_body` — os campos entram no
+        # corpo como o provider os espera (deepseek: `thinking` +
+        # `reasoning_effort`; OpenRouter: `reasoning`).
+        extra_e, topo_e = _gestor().extras_esforco(
+            provider, modelo, definicao.get("esforco"), session_id=perfil)
+        corpo.update(extra_e)
+        corpo.update(topo_e)
+        # Raciocinio e resposta partilham o mesmo orcamento de `max_tokens`: com
+        # esforco ligado o modelo pode gastar os 320 tokens a pensar e devolver
+        # `content` vazio (medido a 2026-11-02: `resposta sem nivel reconhecivel`
+        # na primeira classificacao com `esforco: baixo`). Com esforco, o
+        # orcamento tem um piso.
+        if (extra_e or topo_e) and int(corpo["max_tokens"]) < _MAX_TOKENS_COM_ESFORCO:
+            corpo["max_tokens"] = _MAX_TOKENS_COM_ESFORCO
         resposta = _pedir(rota, definicao, corpo)
         nivel, lido = _extrair_nivel(resposta["json"])
     except (urllib.error.HTTPError) as exc:

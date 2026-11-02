@@ -107,6 +107,36 @@
   font-weight: 500;
 }
 
+/* Indicador modelo/heuristica do cartao. A cor diz o modo (barra a esquerda) e
+   o texto diz o resto: quem so ve o cartao tem de saber que o perfil herda, que
+   modelo decide e se ele falhou no ultimo turno. */
+.vmm-analise {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.15rem;
+  padding-left: 0.5rem;
+  border-left: 3px solid hsl(var(--border, 214 32% 91%));
+}
+
+.vmm-analise-modelo {
+  border-left-color: hsl(var(--primary, 221 83% 53%));
+}
+
+.vmm-analise-heuristica {
+  border-left-color: hsl(var(--muted-foreground, 215 16% 47%));
+}
+
+.vmm-evidencia {
+  font-variant-numeric: tabular-nums;
+}
+
+.vmm-alerta {
+  color: hsl(var(--destructive, 0 72% 51%));
+  font-size: 0.75rem;
+}
+
 .vmm-tarefas,
 .vmm-chips {
   display: flex;
