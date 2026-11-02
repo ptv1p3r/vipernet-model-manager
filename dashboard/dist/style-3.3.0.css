@@ -1,0 +1,201 @@
+/* Vipernet Model Manager — painel do dashboard.
+   Cores e tipografia vem do tema do host (variaveis do design system); aqui so a
+   geometria e os estados que o host nao oferece. */
+
+.vmm-pagina {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem 0 2rem;
+}
+
+.vmm-topo {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.vmm-h1 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0 0 0.25rem 0;
+  letter-spacing: -0.01em;
+}
+
+.vmm-sub {
+  font-size: 0.8125rem;
+  color: hsl(var(--muted-foreground, 215 16% 47%));
+  max-width: 62ch;
+  line-height: 1.5;
+}
+
+.vmm-accoes {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.vmm-global {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid hsl(var(--border, 214 32% 91%));
+  border-radius: 0.5rem;
+}
+
+.vmm-grelha {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(28rem, 1fr));
+  gap: 1rem;
+}
+
+.vmm-card {
+  border: 1px solid hsl(var(--border, 214 32% 91%));
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+
+.vmm-card-content {
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.vmm-linha {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.vmm-cabecalho-perfil {
+  border-bottom: 1px solid hsl(var(--border, 214 32% 91%));
+  padding-bottom: 0.625rem;
+}
+
+.vmm-titulo-perfil {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.vmm-titulo-perfil strong {
+  font-size: 0.9375rem;
+  text-transform: lowercase;
+}
+
+.vmm-mudo {
+  color: hsl(var(--muted-foreground, 215 16% 47%));
+  font-size: 0.75rem;
+}
+
+.vmm-ultimo {
+  font-size: 0.75rem;
+  color: hsl(var(--muted-foreground, 215 16% 47%));
+}
+
+.vmm-ultimo strong {
+  color: hsl(var(--foreground, 222 47% 11%));
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 500;
+}
+
+.vmm-tarefas,
+.vmm-chips {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+}
+
+.vmm-rotulo {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: hsl(var(--muted-foreground, 215 16% 47%));
+  margin-right: 0.25rem;
+}
+
+.vmm-chip {
+  font-size: 0.6875rem;
+  padding: 0.0625rem 0.375rem;
+  white-space: nowrap;
+}
+
+.vmm-tabela {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+}
+
+.vmm-tabela th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: hsl(var(--muted-foreground, 215 16% 47%));
+  padding: 0.375rem 0.5rem;
+  border-bottom: 1px solid hsl(var(--border, 214 32% 91%));
+  white-space: nowrap;
+}
+
+.vmm-tabela td {
+  padding: 0.375rem 0.5rem;
+  border-bottom: 1px solid hsl(var(--border, 214 32% 91%) / 0.6);
+  vertical-align: middle;
+}
+
+.vmm-tabela tr:last-child td {
+  border-bottom: 0;
+}
+
+.vmm-tabela td > .vmm-chip {
+  margin-right: 0.25rem;
+}
+
+.vmm-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.6875rem;
+}
+
+.vmm-nowrap { white-space: nowrap; }
+
+.vmm-curto {
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vmm-log {
+  max-height: 32rem;
+  overflow: auto;
+  display: block;
+}
+
+.vmm-pe {
+  font-size: 0.6875rem;
+  text-align: right;
+  word-break: break-all;
+}
+
+.vmm-erro {
+  font-size: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid hsl(var(--destructive, 0 84% 60%) / 0.4);
+  background: hsl(var(--destructive, 0 84% 60%) / 0.08);
+  color: hsl(var(--destructive, 0 84% 60%));
+}
+
+@media (max-width: 720px) {
+  .vmm-grelha { grid-template-columns: 1fr; }
+}
