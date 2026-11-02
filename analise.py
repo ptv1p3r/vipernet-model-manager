@@ -72,8 +72,8 @@ _TRABALHO = re.compile(
 _OBJETO_VIVO = re.compile(
     r"\b(automa[\w]*|instala[\w]*|script[\w]*|servi[\w]*|servico[\w]*|"
     r"container[\w]*|contentor[\w]*|systemd[\w]*|docker[\w]*|"
-    r"home[ -]?assistant|ha\b|proxmox[\w]*|inversor[\w]*|bateria[\w]*|"
-    r"modulo[\w]*|pipeline[\w]*|api\b|dashboard[\w]*)\b",
+    r"home[ -]?assistant|proxmox[\w]*|"
+    r"modulo[\w]*|pipeline[\w]*)\b",
     re.IGNORECASE,
 )
 # Relatorio recorrente: produzir um resumo/relatorio de rotina.
@@ -82,10 +82,15 @@ _RELATORIO = re.compile(
     r"di[aá]rio\w*|semanal\w*|mensal\w*)\b",
     re.IGNORECASE,
 )
+# Verbos que nao dizem nada sobre dificuldade: o peso vem do objeto que os segue.
+_VERBOS_GENERICOS = ("prepar", "gera", "ger", "faz", "fazer", "produz")
+
 # Manutencao pequena: corrigir, adicionar, atualizar, revisao fina.
 _MANUTENCAO = re.compile(
     r"\b(adicion\w*|adiciona\w*|atualiz\w*|atualiza\w*|corrig\w*|corrige\w*|"
-    r"acrescent\w*|acrescenta\w*|revis\w*|melhor\w*|melhora\w*)\b",
+    r"acrescent\w*|acrescenta\w*|revis\w*|melhor\w*|melhora\w*|"
+    r"renome\w*|renomeia\w*|troc\w*|typo\w*|ajust\w*|muda\b|mude\b|"
+    r"poe\b|poem\b|mete\b|da uma olhada|vista de olhos)\b",
     re.IGNORECASE,
 )
 # Planeamento: decidir o futuro, com janela, rollback, proposta.
@@ -105,15 +110,32 @@ _AUDITORIA = re.compile(
     r"\b(audit\w*|auditoria\w*|diagnostic\w*|diagnostica\w*|triag\w*|"
     r"root cause\w*|rca\w*)\b|"
     r"(o que (?:esta|está) mal|porque (?:e que )?falha|porque falhou|"
-    r"o que se passa|encontra o problema|qual (?:e )?o problema)"
+    r"o que se passa|encontra o problema|qual (?:e )?o problema|"
+    r"descobr\w* a causa|descobre a causa|encontra a causa|"
+    r"identific\w* a causa|a causa (?:de|disto|deste)|"
+    r"investig\w*|o que (?:expo|expus)\w*|o que (?:esta|está) expost\w*)"
 )
 # Decidir/desenhar: o caso mais caro, pede raciocinio e alternativas.
 _ARQUITETURA = re.compile(
     r"\b(arquitetur\w*|arquitectur\w*|trade-?off\w*|adr\b|parecer\w*|"
     r"decisao tecnica|decisão técnica|desenho tecnico|desenho técnico|"
-    r"ladd\b|tsd\b|aad\b|abordagem\w*|justifica\w*|justifique\w*|"
+    r"ladd\b|tsd\b|aad\b|abordagem\w*|"
     r"proposta de|avaliar opcoes|avaliar opções|comparar opcoes|comparar opções|"
     r"melhor opcao|melhor opção|viabilidade\w*|blueprint\w*)\b",
+    re.IGNORECASE,
+)
+# "justifica" pede raciocinio, mas nao e prova de desenho: "justifica" sozinho
+# valia 6 (o topo) e mandava "NPM ou Traefik? justifica" para o modelo caro.
+_JUSTIFICACAO = re.compile(
+    r"\b(justific\w*|"
+    r"porque (?:e que )?(?:escolheste|escolheu|usaste|usou|optaste|preferiste|preferiu)|"
+    r"porque (?:essa|aquela|esta) escolha|razao (?:para|de) (?:escolher|usar))\b",
+    re.IGNORECASE,
+)
+# Pedido de explicacao de um conceito: "explica como funciona X". Raciocinio de
+# dificuldade media — nao desenha nada, mas tambem nao e uma saudacao.
+_EXPLICAR = re.compile(
+    r"\b(explica\w*|explicar\w*|como funciona|como se faz|o que significa)\b",
     re.IGNORECASE,
 )
 # Avaria concreta: o modelo tem de raciocinar sobre evidencia.
@@ -124,10 +146,19 @@ _STACK = re.compile(
     re.IGNORECASE,
 )
 _AVARIA = re.compile(
-    r"(\bfalha\b|\bfalhou\b|\bcrash\w*|\brebent\w*|"
+    r"(\bfalha\b|\bfalhou\b|\bcrash\w*|\brebent\w*|\blento\b|\blenta\b|"
+    r"\bengasga\w*|\binst[aá]vel\b|\bpreso\b|\btimeout\b|\bmorreu\b|"
+    r"\bcaiu\b|foi abaixo|est[aá] (?:em baixo|offline)|\boffline\b|"
+    r"est[aá] a demorar|demora (?:muito|demasiado|a responder)|"
     r"n[aã]o (?:funciona|devolve|arranca|responde|recuper\w*|sub\w*|volt\w*|"
     r"sincroniz\w*|lig\w*|carrega\w*|deteta\w*|aparece\w*|abre|passa)\b|"
     r"est[aá] a falhar|parou de|deixou de|deixaram de|passou a falhar|d[aá] (?:este |um )?erro|est[aá] mal)",
+    re.IGNORECASE,
+)
+# Falha de servico: o objeto e um processo que devia estar a correr.
+_SERVICO_AVARIADO = re.compile(
+    r"\b(container\w*|contentor\w*|servi[cç]o\w*|docker\w*|systemd\w*|"
+    r"podman\w*|nginx|portainer|n8n|home[ -]?assistant|daemon\w*)\b",
     re.IGNORECASE,
 )
 # Consulta hipotetica: "como se cria", "o que e", "qual e" — pergunta, nao pedido
@@ -154,6 +185,10 @@ _DOMINIO = re.compile(
     r"bateria|inversor|modbus|zigbee|mqtt|vlan|dns|tls|certificado|"
     r"home assistant|entidades?|sensores?|automa[cç][oõ]es|parser|testes|migra[cç][aã]o|config|logs?|ficheiros?|"
     r"base de dados|query|endpoint|deploy|commit|branch|repo|jira|confluence|"
+    r"lxc|proxmox|portainer|pve\d?|backup\w*|reten[cç][aã]o|snapshot\w*|"
+    r"unraid|zfs|raid|traefik|watchtower|adguard|"
+    r"skills?|vlans?|servi[cç]os?|homelab|seguran[cç]a|exposi[cç][aã]o|"
+    r"consumo|standby|energia|kwh|n8n|sqlite|postgres|firmware|ota\b|"
     r"diagrama|lat[eê]ncia|custo|pre[cç]o|tokens?|desempenho|performance|"
     r"\bpr\b|pull request|diff|patch|merge|commit)\b",
     re.IGNORECASE,
@@ -186,8 +221,11 @@ PESOS = {
     "analise": 2,         # analisar/comparar
     "auditoria": 4,       # auditar/diagnosticar sistema vivo
     "arquitetura": 6,     # decidir/desenhar (o topo)
+    "justificacao": 3,    # "justifica": pede razao (media), nao desenha
+    "explicacao_conceito": 2,  # "explica como funciona X"
     "erro_stack": 5,      # avaria com evidencia (traceback, excecao)
     "erro_avaria": 3,     # sintoma sem evidencia
+    "avaria_de_servico": 3,  # sintoma sobre um servico que devia estar a correr
     "codigo": 2,          # bloco de codigo
     "caminho": 1,         # ficheiro concreto
     "dominio": 1,         # termos tecnicos (1, +1 se >=3 distintos)
@@ -345,15 +383,29 @@ def _pontuar_texto(texto: str, pesos: dict[str, int], ferramentas_escrita: int,
         sinais.append("texto_medio")
 
     # Categorias de intencao: cada uma contribui no maximo uma vez.
-    if _ARQUITETURA.search(texto):
+    tem_arquitetura = bool(_ARQUITETURA.search(texto))
+    if tem_arquitetura:
         score += pesos["arquitetura"]
         sinais.append("arquitetura_decisao")
+    elif _JUSTIFICACAO.search(texto):
+        # Pedir justificacao soma, mas nao promove sozinho a `alta`.
+        score += pesos["justificacao"]
+        sinais.append("justificacao_pedida")
+    elif _EXPLICAR.search(texto):
+        # Explicar um conceito: raciocinio de dificuldade media.
+        score += pesos["explicacao_conceito"]
+        sinais.append("explicacao_conceito")
     if _AUDITORIA.search(texto):
         score += pesos["auditoria"]
         sinais.append("auditoria_diagnostico")
     # "como se cria", "o que e" — pergunta, nao pedido de producao.
     consulta = bool(_CONSULTA.search(texto))
     verbo_trabalho = None if consulta else _primeiro_verbo(_TRABALHO, texto)
+    # "prepara/gera o resumo semanal" e produzir um relatorio, nao engenharia: o
+    # verbo e generico e herda o peso do objeto (relatorio = 3, nao trabalho = 5).
+    if (verbo_trabalho and verbo_trabalho.startswith(_VERBOS_GENERICOS)
+            and _RELATORIO.search(texto)):
+        verbo_trabalho = None
     if verbo_trabalho:
         score += pesos["trabalho"]
         sinais.append(f"trabalho_producao={verbo_trabalho}")
@@ -371,6 +423,11 @@ def _pontuar_texto(texto: str, pesos: dict[str, int], ferramentas_escrita: int,
     elif _AVARIA.search(texto):
         score += pesos["erro_avaria"]
         sinais.append("avaria_sem_evidencia")
+        # Falha de um servico (nao arranca, caiu) pede diagnostico a serio:
+        # um sintoma sobre um sistema vivo nao e o mesmo que "a luz nao acende".
+        if _SERVICO_AVARIADO.search(texto):
+            score += pesos["avaria_de_servico"]
+            sinais.append("avaria_de_servico")
 
     # Amplitude.
     if _CODIGO.search(texto):
@@ -417,7 +474,7 @@ def _pontuar_texto(texto: str, pesos: dict[str, int], ferramentas_escrita: int,
     if _PLANEAMENTO.search(texto):
         score += pesos["planeamento"]
         sinais.append("planeamento_futuro")
-    if (_RELATORIO.search(texto) and not _TRABALHO.search(texto)
+    if (_RELATORIO.search(texto) and not verbo_trabalho
             and not _PLANEAMENTO.search(texto)):
         score += pesos["relatorio"]
         sinais.append("relatorio_recorrente")
