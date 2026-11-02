@@ -158,8 +158,24 @@ const rFalhou = T.rotuloAnalise({
   origens: { analise: 3 },
   respostas: 3,
   erro: "resposta sem nivel reconhecel (length 320tok)",
+  rasto: { provider: "inception", modelo: "mercury-3", falhou: "ValueError", lido: null },
 });
-check("rotuloAnalise: modelo que falhou avisa e mostra o erro", /falhou/.test(rFalhou.alerta) && /length 320tok/.test(rFalhou.alerta), rFalhou.alerta);
+check("rotuloAnalise: falha da ultima leitura avisa e mostra o erro",
+      /falhou no último turno/.test(rFalhou.alerta) && /length 320tok/.test(rFalhou.alerta), rFalhou.alerta);
+
+// O mesmo erro, mas a ultima leitura correu bem: nao se avisa. Um erro antigo
+// nao pode ficar a assombrar um classificador que voltou a acertar.
+const rRecuperado = T.rotuloAnalise({
+  classificador: { modo: "modelo", provider: "inception", modelo: "mercury-3", origem: "herdado" },
+  origens: { modelo: 4 },
+  respostas: 4,
+  erro: "resposta sem nivel reconhecel (length 320tok)",
+  rasto: { provider: "inception", modelo: "mercury-3", lido: "alta", ms: 1620.4, falhou: "" },
+});
+check("rotuloAnalise: erro antigo nao alerta se a ultima leitura acertou",
+      rRecuperado.alerta === "", rRecuperado.alerta);
+check("rotuloAnalise: mostra o que o modelo leu e em quanto tempo",
+      /leu alta em 1620 ms/.test(rRecuperado.detalhe), rRecuperado.detalhe);
 
 const rDesligado = T.rotuloAnalise({
   classificador: { modo: "heuristica", origem: "herdado", motivo: "desligado", provider: "inception", modelo: "mercury-3" },

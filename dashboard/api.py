@@ -204,12 +204,15 @@ def _resumo_por_perfil(
                 # sao anteriores a `resposta` no ficheiro; a primeira ocorrencia que
                 # se ve aqui e a mais recente.
                 if reg["classificador"] is None and isinstance(ev.get("classificador"), dict):
+                    c = ev["classificador"]
                     reg["classificador"] = {
-                        "provider": ev["classificador"].get("provider"),
-                        "modelo": ev["classificador"].get("modelo"),
-                        "lido": ev["classificador"].get("lido"),
-                        "ms": ev["classificador"].get("ms"),
-                        "cache": ev["classificador"].get("cache"),
+                        "provider": c.get("provider"),
+                        "modelo": c.get("modelo"),
+                        "lido": c.get("lido"),
+                        "ms": c.get("ms") if c.get("ms") is not None else ev.get("ms"),
+                        "cache": c.get("cache"),
+                        "tokens_saida": c.get("tokens_saida"),
+                        "falhou": c.get("falhou") or "",
                         "ts": ev.get("ts"),
                     }
                 if not reg["classificador_erro"] and ev.get("classificador_erro"):
