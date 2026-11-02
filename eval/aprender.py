@@ -54,7 +54,9 @@ RAIZ = Path("/opt/data")
 DADOS = RAIZ / "plugin-data/vipernet-model-manager"
 LEDGER = DADOS / "uso.jsonl"
 CONFIG = DADOS / "config.json"
-APRENDIZ = DADOS / "aprendiz"
+#: Directorio de dados do ciclo. Sobrepõe-se por ambiente para os testes e o
+#: `--self-test` poderem correr o ciclo inteiro sem escrever no historico real.
+APRENDIZ = Path(os.environ.get("VMM_APRENDIZ_DIR") or (DADOS / "aprendiz"))
 CURSOR = APRENDIZ / "cursor.json"
 HISTORICO = APRENDIZ / "historico.jsonl"
 RELATORIOS = APRENDIZ / "relatorios"
@@ -486,36 +488,90 @@ def portoes(k: dict[str, Any], antes: dict[str, Any], depois: dict[str, Any],
     return (not razoes), razoes
 
 
+def separar(casos: list[dict], semente: int, fraccao: float = 0.7) -> tuple[list[dict], list[dict]]:
+    """Divide em treino/validacao, deterministico e sem sobreposicao.
+
+    Treinar e avaliar no mesmo conjunto mede a capacidade de decorar: medido
+    num ciclo de 20 casos, a macro-F1 "subia" de 0,44 para 0,70 no proprio
+    conjunto. O portao tem de decidir sobre casos que o treino nunca viu.
+    """
+    ordenados = sorted(casos, key=lambda c: str(c["id"]))
+    random.Random(semente).shuffle(ordenados)
+    corte = max(1, int(len(ordenados) * fraccao))
+    treino, validacao = ordenados[:corte], ordenados[corte:]
+    return treino, (validacao or treino)
+
+
 # --------------------------------------------------------------------------- modelo (A/B)
 
 
 def abc_modelo(casos: list[dict], definicao: dict[str, Any], resolver,
                variantes: list[str], repeticoes: int, threads: int) -> dict[str, Any]:
-    """Compara variantes de prompt do classificador no mesmo conjunto rotulado."""
+    """Compara variantes de prompt do classificador no mesmo conjunto rotulado.
+
+    Duas regras que evitam resultados bonitos e falsos:
+
+    - **`None` e falha, nao rotulo.** `classificar` devolve `None` quando a rota
+      fica suspensa; tratar isso como "sem nivel" e nao como erro fazia o ciclo
+      estourar com `AttributeError` a meio do A/B, depois de pagar as chamadas.
+    - **Comparar no mesmo subconjunto.** Se uma variante falha mais que outra, a
+      macro-F1 de cada uma e calculada sobre conjuntos diferentes e a diferenca
+      mede a taxa de falha, nao a qualidade. A comparacao usa a interseccao dos
+      casos em que *todas* responderam, e reporta quantos ficaram de fora.
+    """
     modelo = _modelo()
     out: dict[str, Any] = {}
+    previsoes: dict[str, list[dict[str, str]]] = {}
+
     for variante in variantes:
         prompt = modelo.PROMPTS.get(variante)
         if prompt is None:
             out[variante] = {"erro": "variante desconhecida"}
             continue
-        execucoes: list[dict[str, Any]] = []
+
+        def um(caso: dict) -> tuple[str, str]:
+            r = modelo.classificar([{"role": "user", "content": caso["texto"]}],
+                                   definicao, resolver, perfil="abc", prompt=prompt)
+            if not isinstance(r, dict):
+                return caso["id"], ""
+            n = (r.get("nivel") or "").strip().lower()
+            return caso["id"], (n if n in NIVEIS else "")
+
+        execucoes: list[dict[str, str]] = []
         for _ in range(max(1, repeticoes)):
-            def um(caso: dict) -> tuple[str, str]:
-                r = modelo.classificar([{"role": "user", "content": caso["texto"]}],
-                                       definicao, resolver, perfil="abc", prompt=prompt)
-                return caso["rotulo"], (r.get("nivel") or "").strip().lower()
             with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, threads)) as ex:
-                pares = list(ex.map(um, casos))
-            m = metricas([(r, p) for r, p in pares if p in NIVEIS])
-            execucoes.append({"macro_f1": m["macro_f1"], "por_classe": m["por_classe"],
-                              "n": m["n"]})
-        macros = [e["macro_f1"] for e in execucoes]
-        out[variante] = {"execucoes": execucoes,
-                         "macro_f1_media": round(sum(macros) / len(macros), 4),
-                         "macro_f1_min": min(macros), "macro_f1_max": max(macros),
-                         "media_f1": round(sum(e["por_classe"]["media"]["f1"] for e in execucoes)
-                                           / len(execucoes), 4)}
+                execucoes.append(dict(ex.map(um, casos)))
+        previsoes[variante] = execucoes
+
+    if not previsoes:
+        return out
+
+    compativeis = list(previsoes)
+    rotulos = {c["id"]: c["rotulo"] for c in casos}
+    for indice in range(max(len(v) for v in previsoes.values())):
+        # casos em que todas as variantes deram nivel nesta execucao
+        comuns = [cid for cid in rotulos
+                  if all(indice < len(previsoes[v]) and previsoes[v][indice].get(cid)
+                         for v in compativeis)]
+        for variante in compativeis:
+            execs = out.setdefault(variante, {}).setdefault("execucoes", [])
+            prev = previsoes[variante][indice]
+            pares = [(rotulos[cid], prev[cid]) for cid in comuns]
+            m = metricas(pares)
+            execs.append({"macro_f1": m["macro_f1"], "por_classe": m["por_classe"],
+                          "n": m["n"], "comparaveis": len(comuns),
+                          "falhas": sum(1 for cid in rotulos if not prev.get(cid))})
+
+    for variante in compativeis:
+        execs = out[variante]["execucoes"]
+        macros = [e["macro_f1"] for e in execs]
+        out[variante].update({
+            "macro_f1_media": round(sum(macros) / len(macros), 4),
+            "macro_f1_min": min(macros), "macro_f1_max": max(macros),
+            "media_f1": round(sum(e["por_classe"]["media"]["f1"] for e in execs) / len(execs), 4),
+            "comparaveis": min(e["comparaveis"] for e in execs),
+            "falhas": max(e["falhas"] for e in execs),
+        })
     return out
 
 
@@ -633,6 +689,8 @@ def main() -> int:
     ap.add_argument("--repeticoes", type=int, default=2)
     ap.add_argument("--reverter", action="store_true", help="restaurar os pesos do ciclo anterior")
     ap.add_argument("--so-treinar", default="", help="ficheiro jsonl rotulado: salta juiz e calibracao")
+    ap.add_argument("--exportar-fila", type=int, default=0,
+                    help="escreve N casos por rotular (cego, sem sugestao) e sai")
     args = ap.parse_args()
 
     garantir_interpretador()
@@ -641,6 +699,27 @@ def main() -> int:
         r = reverter()
         print(json.dumps(r, ensure_ascii=False))
         return 0 if r.get("ok") else 1
+
+    # Fila de rotulagem humana: escrita CEGA (sem a sugestao do juiz). Se o
+    # rotulador humano vir a sugestao, o kappa que se mede a seguir e acordo com
+    # o juiz, nao concordancia entre rotuladores — e a calibracao perde o valor.
+    if args.exportar_fila:
+        casos, colheita = colher(args.exportar_fila, args.semente)
+        if not casos:
+            print(json.dumps({"ok": False, "colheita": colheita}, ensure_ascii=False))
+            return 0
+        APRENDIZ.mkdir(parents=True, exist_ok=True)
+        nome = dt.datetime.now().strftime("fila-%Y%m%dT%H%M%S.jsonl")
+        destino = APRENDIZ / nome
+        with destino.open("w", encoding="utf-8") as f:
+            for c in casos:
+                f.write(json.dumps({"id": c["id"], "texto": c["texto"], "rotulo": ""},
+                                   ensure_ascii=False) + "\n")
+        print(json.dumps({"fila": str(destino), "casos": len(casos),
+                          "como_rotular": "preencher `rotulo` com leve|media|alta; "
+                                          "depois --so-treinar <ficheiro>",
+                          "colheita": colheita}, ensure_ascii=False, indent=1))
+        return 0
 
     APRENDIZ.mkdir(parents=True, exist_ok=True)
     RELATORIOS.mkdir(parents=True, exist_ok=True)
@@ -695,23 +774,15 @@ def main() -> int:
                              ensure_ascii=False))
             return 1
 
-    # 3. treino e avaliacao
-    #
-    # Separacao treino/validacao obrigatoria: treinar e avaliar no mesmo
-    # conjunto mede a capacidade de decorar. Medido num ciclo de 20 casos, a
-    # macro-F1 "subia" de 0,44 para 0,70 no proprio conjunto de treino. O portao
-    # decide sobre a validacao, que o treino nunca ve.
-    ordenados = sorted(casos, key=lambda c: str(c["id"]))
-    random.Random(args.semente).shuffle(ordenados)
-    corte = max(1, int(len(ordenados) * 0.7))
-    treino, validacao = ordenados[:corte], ordenados[corte:]
-    if not validacao:
-        validacao = treino
+    # 3. treino e avaliacao — o portao decide sobre a validacao, nunca sobre o treino
+    treino, validacao = separar(casos, args.semente)
     pesos_novos, resultado = treinar(pesos_atuais, treino, limiares, passes=args.passes)
     antes_val = avaliar_pesos(pesos_atuais, validacao, limiares)
     depois_val = avaliar_pesos(pesos_novos, validacao, limiares)
     resultado["antes"] = antes_val
     resultado["depois"] = depois_val
+    resultado["treino"] = len(treino)
+    resultado["validacao"] = len(validacao)
     passou, razoes = portoes(k, antes_val, depois_val,
                              args.kappa_minimo, args.ganho_minimo)
 
@@ -723,11 +794,23 @@ def main() -> int:
         provider = bloco.get("provider") or args.juiz_provider
         modelo_nome = bloco.get("modelo") or args.juiz_modelo
         definicao_m = _juiz_definicao(provider, modelo_nome)
-        amostra = casos[:min(120, len(casos))]
-        abc = abc_modelo(amostra, definicao_m, _resolver(),
-                         ["v1", "v2", "v3"], args.repeticoes, args.threads)
-        validos = {n: v for n, v in abc.items() if "macro_f1_media" in v}
+        # A/B sobre a validacao, nao sobre o treino: comparar variantes de prompt
+        # em casos que ja serviram para escolher pesos mistura duas causas numa
+        # so diferenca.
+        amostra = validacao[:min(120, len(validacao))]
+        abc: dict[str, Any] | None
+        try:
+            abc = abc_modelo(amostra, definicao_m, _resolver(),
+                             ["v1", "v2", "v3"], args.repeticoes, args.threads)
+        except Exception as exc:  # a metade opcional nunca derruba o ciclo
+            abc = {"erro": f"{type(exc).__name__}: {exc}"}
+        validos: dict[str, dict[str, Any]] = {
+            n: v for n, v in (abc or {}).items() if "macro_f1_media" in v}
         if validos:
+            # Uma variante com muitas falhas nao ganha por comparabilidade: a
+            # escolha exige o mesmo numero de casos respondidos.
+            maior = max(v["comparaveis"] for v in validos.values())
+            validos = {n: v for n, v in validos.items() if v["comparaveis"] >= 0.9 * maior}
             melhor = max(validos, key=lambda n: (validos[n]["macro_f1_media"],
                                                  validos[n]["media_f1"]))
             atual = bloco.get("prompt_variante") or "v1"

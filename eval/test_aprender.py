@@ -122,6 +122,29 @@ class TestTreino(unittest.TestCase):
         self.assertEqual(r["depois"]["n"], 0)
 
 
+class TestSeparacao(unittest.TestCase):
+    def test_disjunta_e_cobre_tudo(self):
+        casos = [{"id": f"{i:03d}", "texto": "t", "rotulo": "leve"} for i in range(50)]
+        treino, validacao = A.separar(casos, 11)
+        ids_t = {c["id"] for c in treino}
+        ids_v = {c["id"] for c in validacao}
+        self.assertEqual(len(treino) + len(validacao), 50)
+        self.assertEqual(ids_t & ids_v, set())
+        self.assertEqual(len(treino), 35)
+
+    def test_deterministica(self):
+        casos = [{"id": f"{i:03d}", "texto": "t", "rotulo": "leve"} for i in range(30)]
+        a = [c["id"] for c in A.separar(casos, 5)[0]]
+        b = [c["id"] for c in A.separar(casos, 5)[0]]
+        self.assertEqual(a, b)
+
+    def test_conjunto_minusculo_nao_ficca_vazio(self):
+        casos = [{"id": "1", "texto": "t", "rotulo": "leve"}]
+        treino, validacao = A.separar(casos, 1)
+        self.assertEqual(len(treino), 1)
+        self.assertEqual(len(validacao), 1)
+
+
 class TestPortoes(unittest.TestCase):
     @staticmethod
     def _m(macro, media_f1, leve_f1=0.5, alta_f1=0.5):
@@ -200,6 +223,53 @@ class TestColheita(unittest.TestCase):
                 self.assertEqual([c["id"] for c in c1], [c["id"] for c in c2])
         finally:
             A._pool, A.CURSOR = original_pool, original_cursor
+
+
+class TestAbcModelo(unittest.TestCase):
+    def test_none_e_falha_e_nao_estoura(self):
+        """Regressao: `classificar` devolve None com a rota suspensa e o A/B morria."""
+
+        class Falso:
+            PROMPTS = {"v1": "json v1", "v2": "json v2"}
+
+            def classificar(self, mensagens, definicao, resolver, perfil="", prompt=""):
+                if mensagens[0]["content"] == "falha":
+                    return None
+                return {"nivel": "leve" if prompt.endswith("v1") else "alta"}
+
+        original = A._modelo
+        A._modelo = lambda: Falso()
+        try:
+            casos = [{"id": "1", "texto": "a", "rotulo": "leve"},
+                     {"id": "2", "texto": "falha", "rotulo": "alta"}]
+            r = A.abc_modelo(casos, {}, None, ["v1", "v2"], 1, 2)
+            for v in ("v1", "v2"):
+                self.assertIn("macro_f1_media", r[v])
+                self.assertEqual(r[v]["falhas"], 1)
+                self.assertEqual(r[v]["comparaveis"], 1)
+        finally:
+            A._modelo = original
+
+    def test_variante_desconhecida_nao_parte(self):
+        r = A.abc_modelo([{"id": "1", "texto": "a", "rotulo": "leve"}], {}, None,
+                         ["v9"], 1, 1)
+        self.assertEqual(r["v9"]["erro"], "variante desconhecida")
+
+    def test_todas_falham_devolve_metricas_vazias(self):
+        class Nunca:
+            PROMPTS = {"v1": "json"}
+
+            def classificar(self, *a, **k):
+                return None
+
+        original = A._modelo
+        A._modelo = lambda: Nunca()
+        try:
+            r = A.abc_modelo([{"id": "1", "texto": "a", "rotulo": "leve"}], {}, None, ["v1"], 1, 1)
+            self.assertEqual(r["v1"]["comparaveis"], 0)
+            self.assertEqual(r["v1"]["macro_f1_media"], 0.0)
+        finally:
+            A._modelo = original
 
 
 class TestReversao(unittest.TestCase):
