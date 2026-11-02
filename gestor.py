@@ -751,6 +751,7 @@ def classificador_efectivo(cfg: dict[str, Any], perfil: str) -> dict[str, Any]:
         "provider": "",
         "modelo": "",
         "esforco": "",
+        "formato_json": "auto",
         "origem": origem,
         "motivo": "",
     }
@@ -762,6 +763,7 @@ def classificador_efectivo(cfg: dict[str, Any], perfil: str) -> dict[str, Any]:
                 "provider": definicao["provider"],
                 "modelo": definicao["modelo"],
                 "esforco": definicao.get("esforco") or "",
+                "formato_json": definicao.get("formato_json") or "auto",
             }
         )
         return saida

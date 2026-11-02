@@ -1163,11 +1163,29 @@ def testes_indicador_analise() -> None:
     defeito que aqui se trava e o mais provavel: mostrar "desligado" a um perfil
     que herda um global ligado, ou "ligado" a um bloco que falha a validacao.
     """
+    am = g._analise_modelo()  # noqa: SLF001 - o modulo que decide a forma
+
+    print("\n== forma da resposta do classificador (json) ==")
+    check("classificador: formato_json existe no padrao", g._analise_modelo().PADRAO.get("formato_json") == "auto",
+          str(g._analise_modelo().PADRAO.get("formato_json")))
+    check("classificador: prompt pede json (o DeepSeek exige a palavra)",
+          "json" in g._analise_modelo().PROMPT.lower() and "json" in g._analise_modelo().PROMPT_LOTE.lower(), "sem a palavra json")
+    d_f, _ = g._analise_modelo().normalizar({"activo": True, "provider": "p", "modelo": "m",
+                            "formato_json": "OFF"})
+    check("classificador: formato_json normalizado", d_f["formato_json"] == "off",
+          str(d_f.get("formato_json")))
+    corpo_f = g._analise_modelo()._corpo("p", "m", "texto", d_f, formato_json=None)
+    check("classificador: formato off nao pede response_format",
+          "response_format" not in corpo_f, str(sorted(corpo_f)))
+    corpo_auto = g._analise_modelo()._corpo("p", "m", "texto", g._analise_modelo().PADRAO)
+    check("classificador: formato auto pede response_format",
+          corpo_auto.get("response_format") == {"type": "json_object"}, str(sorted(corpo_auto)))
+
     print("\n== indicador do cartao: modelo ou heuristica, e o motivo ==")
     LIGADO = {"activo": True, "provider": "inception", "modelo": "mercury-3",
               "esforco": "baixo"}
-    CHAVES = {"modo", "activo", "provider", "modelo", "esforco", "origem", "motivo"}
-
+    CHAVES = {"modo", "activo", "provider", "modelo", "esforco", "formato_json",
+              "origem", "motivo"}
     def cfg(global_c=None, pessoal_c=None, com_global=True):
         base = _cfg_base()
         if com_global:

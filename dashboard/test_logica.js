@@ -145,6 +145,24 @@ check("rotuloAnalise: modelo declara esforco e heranca", rModelo.detalhe === "es
 check("rotuloAnalise: modelo conta a evidencia do ledger", rModelo.evidencia === "últimos 5 turnos: 4 modelo · 1 heurística", rModelo.evidencia);
 check("rotuloAnalise: modelo sem erro nao alerta", rModelo.alerta === "", rModelo.alerta);
 
+// O formato so aparece quando nao e o de fabrica: `auto` e o normal, e um chip
+// a dizer "formato auto" em todos os cartoes era ruido.
+const rFormatoAuto = T.rotuloAnalise({
+  classificador: { modo: "modelo", provider: "inception", modelo: "mercury-3",
+                   esforco: "baixo", formato_json: "auto", origem: "herdado", motivo: "" },
+  origens: { modelo: 1 }, respostas: 1, erro: "",
+});
+check("rotuloAnalise: formato auto nao gasta chip",
+      rFormatoAuto.detalhe === "esforço baixo · herdado do global", rFormatoAuto.detalhe);
+const rFormatoTexto = T.rotuloAnalise({
+  classificador: { modo: "modelo", provider: "inception", modelo: "mercury-3",
+                   esforco: "baixo", formato_json: "off", origem: "proprio", motivo: "" },
+  origens: { modelo: 1 }, respostas: 1, erro: "",
+});
+check("rotuloAnalise: formato declarado aparece no detalhe",
+      rFormatoTexto.detalhe === "esforço baixo · formato off · próprio do perfil",
+      rFormatoTexto.detalhe);
+
 const rProprio = T.rotuloAnalise({
   classificador: { modo: "modelo", provider: "deepseek", modelo: "deepseek-flash", esforco: "", origem: "proprio" },
   origens: {},

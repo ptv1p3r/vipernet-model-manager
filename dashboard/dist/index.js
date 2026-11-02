@@ -158,6 +158,9 @@
       const onde = c.origem === "proprio" ? "próprio do perfil" : "herdado do global";
       const extra = [];
       if (c.esforco) extra.push("esforço " + c.esforco);
+      // O formato so se mostra quando nao e o de fabrica: `auto` e o normal e
+      // nao vale um chip. `texto` e uma escolha, e essa ve-se.
+      if (c.formato_json && c.formato_json !== "auto") extra.push("formato " + c.formato_json);
       extra.push(onde);
       if (rasto.lido) {
         extra.push("leu " + rasto.lido + (rasto.ms ? " em " + Math.round(rasto.ms) + " ms" : ""));
@@ -469,7 +472,13 @@
       // O esforco acompanha o bloco: nao se perde ao mudar provider ou modelo,
       // e sai do JSON quando volta a "nao declarado" — um campo vazio deixado
       // la era validado como valor invalido.
-      if (actual.esforco) novo.esforco = actual.esforco;
+      // Os campos que nao estao no formulario acompanham o bloco: mudar o
+      // provider apagava `timeout_s`/`max_tokens`/`janela_mensagens` que
+      // estivessem no JSON, e o bloco voltava aos valores de fabrica sem aviso.
+      ["esforco", "formato_json", "timeout_s", "max_tokens", "cache_ttl_s",
+       "janela_mensagens", "max_chars"].forEach(function (k) {
+        if (actual[k] !== undefined && actual[k] !== "") novo[k] = actual[k];
+      });
       if (campo === "esforco" && !valor) delete novo.esforco;
       else novo[campo] = valor;
       aplicar(perfil, novo);
@@ -525,6 +534,16 @@
           },
             [["", "esforço: não declarado"], ["baixo", "esforço: baixo"],
              ["medio", "esforço: médio"], ["alto", "esforço: alto"]]
+              .map(function (o) { return h("option", { key: o[0], value: o[0] }, o[1]); })
+          ) : null,
+          proprio ? h("select", {
+            className: "vmm-select",
+            title: "resposta em JSON: auto pede response_format e repete sem ele se o provider recusar",
+            value: bloco.formato_json || "auto",
+            onChange: function (e) { mudarCampo(perfil, "formato_json", e.target.value); },
+          },
+            [["auto", "formato: JSON automático"], ["on", "formato: JSON obrigatório"],
+             ["off", "formato: texto"]]
               .map(function (o) { return h("option", { key: o[0], value: o[0] }, o[1]); })
           ) : null
         );

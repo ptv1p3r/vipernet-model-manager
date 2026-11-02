@@ -482,5 +482,102 @@ class TestCacheNegativo(Base):
         self.assertFalse(r.get("cache_erro"))
 
 
+class TestFormatoJson(Base):
+    """O prompt pede json e o corpo leva `response_format`, com degradacao."""
+
+    def test_o_prompt_contem_a_palavra_json(self):
+        # O DeepSeek recusa `response_format: json_object` com 400 quando o
+        # prompt nao contem a palavra "json" (medido a 2026-11-02). Esta
+        # verificacao guarda essa condicao, que nao e obvia no texto do prompt.
+        self.assertIn("json", am.PROMPT.lower())
+        self.assertIn("json", am.PROMPT_LOTE.lower())
+
+    def test_corpo_pede_response_format_por_omissao(self):
+        corpo = am._corpo("openrouter", "m", "texto", self.definicao())
+        self.assertEqual(corpo["response_format"], {"type": "json_object"})
+
+    def test_formato_off_nao_pede(self):
+        corpo = am._corpo("openrouter", "m", "texto", self.definicao(formato_json="off"))
+        self.assertNotIn("response_format", corpo)
+
+    def test_normalizar_formato(self):
+        self.assertEqual(am.normalizar({})[0]["formato_json"], "auto")
+        self.assertEqual(am.normalizar({"formato_json": "OFF"})[0]["formato_json"], "off")
+        self.assertEqual(am.normalizar({"formato_json": "true"})[0]["formato_json"], "on")
+        d, erros = am.normalizar({"formato_json": "talvez"})
+        self.assertEqual(d["formato_json"], "auto")
+        self.assertTrue(any("formato_json" in e for e in erros))
+
+    def test_provider_recusa_o_campo_e_repete_sem_ele(self):
+        # 400 com `response_format` (o que o DeepSeek faz sem a palavra json no
+        # prompt): o segundo pedido tem de sair sem o campo e o nivel tem de vir.
+        FILA.append({"conteudo": "formato nao suportado", "codigo": 400, "atraso": 0.0,
+                     "json": {"error": {"message": "response_format nao suportado"}}})
+        RESPOSTA.update({"conteudo": "media", "codigo": 200})
+        r = am.classificar(self.mensagens(), self.definicao(), lambda p, m: self.rota())
+        self.assertEqual(r["nivel"], "media")
+        self.assertIn("response_format", PEDIDOS[0]["corpo"])
+        self.assertNotIn("response_format", PEDIDOS[1]["corpo"])
+        self.assertEqual(r["classificador"]["formato_pedido"], "texto")
+
+    def test_401_nao_insiste(self):
+        RESPOSTA.update({"conteudo": "x", "codigo": 401, "json": {"error": "sem chave"}})
+        r = am.classificar(self.mensagens(), self.definicao(), lambda p, m: self.rota())
+        self.assertIn("HTTP 401", r["erro"])
+        self.assertEqual(len(PEDIDOS), 1, "401 nao se resolve a retirar um campo")
+
+    def test_forma_distingue_json_de_texto(self):
+        json_limpo = {"choices": [{"message": {"content": '{"nivel": "media"}'}}]}
+        texto = {"choices": [{"message": {"content": "acho que e media"}}]}
+        vazio = {"choices": [{"message": {"content": ""}}]}
+        self.assertEqual(am.forma(json_limpo), "json")
+        self.assertEqual(am.forma(texto), "texto")
+        self.assertEqual(am.forma(vazio), "raciocinio")
+
+
+class TestLote(Base):
+    """Classificacao em lote: um pedido, N niveis, alinhados ao que se pediu."""
+
+    def test_lote_devolve_um_nivel_por_pedido(self):
+        RESPOSTA.update({"codigo": 200, "json": {"choices": [{"message": {"content": json.dumps(
+            {"niveis": [{"i": 1, "nivel": "leve"}, {"i": 2, "nivel": "media"},
+                        {"i": 3, "nivel": "alta"}]})}}],
+            "usage": {"prompt_tokens": 300, "completion_tokens": 90}}})
+        r = am.classificar_lote(["ola", "explica o nginx", "desenha a arquitetura"],
+                                self.definicao(), lambda p, m: self.rota())
+        self.assertEqual(r["niveis"], ["leve", "media", "alta"])
+        self.assertEqual(r["erro"], "")
+        self.assertEqual(len(PEDIDOS), 1, "o lote tem de ser um so pedido")
+        corpo = PEDIDOS[0]["corpo"]
+        self.assertIn("1. ola", corpo["messages"][1]["content"])
+        self.assertIn("3. desenha a arquitetura", corpo["messages"][1]["content"])
+        self.assertIn("json", corpo["messages"][0]["content"].lower())
+
+    def test_lote_alinha_o_que_faltar_com_none(self):
+        RESPOSTA.update({"json": {"choices": [{"message": {"content": json.dumps(
+            {"niveis": [{"i": 1, "nivel": "leve"}, {"i": 3, "nivel": "alta"}]})}}]}})
+        r = am.classificar_lote(["a", "b", "c"], self.definicao(), lambda p, m: self.rota())
+        self.assertEqual(r["niveis"], ["leve", None, "alta"])
+
+    def test_ler_lote_aceita_as_tres_formas(self):
+        objetos = {"choices": [{"message": {"content": json.dumps(
+            {"niveis": [{"i": 1, "nivel": "leve"}, {"nivel": "alta"}]})}}]}
+        self.assertEqual(am._ler_lote(objetos, 2), ["leve", "alta"])
+        lista = {"choices": [{"message": {"content": json.dumps(
+            {"niveis": ["leve", "media"]})}}]}
+        self.assertEqual(am._ler_lote(lista, 2), ["leve", "media"])
+        mapa = {"choices": [{"message": {"content": json.dumps(
+            {"1": "leve", "2": "média"})}}]}
+        self.assertEqual(am._ler_lote(mapa, 2), ["leve", "media"])
+        self.assertEqual(am._ler_lote({"choices": []}, 2), [None, None])
+        self.assertEqual(am._ler_lote({"choices": [{"message": {"content": "sem json"}}]}, 2),
+                         [None, None])
+
+    def test_lote_sem_classificador(self):
+        r = am.classificar_lote(["a"], None, lambda p, m: self.rota())
+        self.assertEqual(r["niveis"], [None])
+        self.assertEqual(PEDIDOS, [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
