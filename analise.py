@@ -76,6 +76,12 @@ _OBJETO_VIVO = re.compile(
     r"modulo[\w]*|pipeline[\w]*|api\b|dashboard[\w]*)\b",
     re.IGNORECASE,
 )
+# Relatorio recorrente: produzir um resumo/relatorio de rotina.
+_RELATORIO = re.compile(
+    r"\b(relat[oó]rio\w*|relatorios?|resumo\w*|sum[aá]rio\w*|"
+    r"di[aá]rio\w*|semanal\w*|mensal\w*)\b",
+    re.IGNORECASE,
+)
 # Manutencao pequena: corrigir, adicionar, atualizar, revisao fina.
 _MANUTENCAO = re.compile(
     r"\b(adicion\w*|adiciona\w*|atualiz\w*|atualiza\w*|corrig\w*|corrige\w*|"
@@ -121,7 +127,7 @@ _AVARIA = re.compile(
     r"(\bfalha\b|\bfalhou\b|\bcrash\w*|\brebent\w*|"
     r"n[aã]o (?:funciona|devolve|arranca|responde|recuper\w*|sub\w*|volt\w*|"
     r"sincroniz\w*|lig\w*|carrega\w*|deteta\w*|aparece\w*|abre|passa)\b|"
-    r"est[aá] a falhar|d[aá] (?:este |um )?erro|est[aá] mal)",
+    r"est[aá] a falhar|parou de|deixou de|deixaram de|passou a falhar|d[aá] (?:este |um )?erro|est[aá] mal)",
     re.IGNORECASE,
 )
 # Consulta hipotetica: "como se cria", "o que e", "qual e" — pergunta, nao pedido
@@ -138,7 +144,10 @@ _EXPLICACAO = re.compile(
 _CODIGO = re.compile(r"```|^\s*(?:def |class |import |from |function |"
                      r"SELECT |CREATE |curl |docker |kubectl |ansible )",
                      re.MULTILINE)
-_CAMINHO = re.compile(r"(?:^|[\s\"'(])(?:/[\w.\-]+/[\w./\-]+|[A-Za-z]:\\\\|~/[\w./\-]+)")
+_CAMINHO = re.compile(
+    r"(?:^|[\s\"'(`])(?:/[\w.\-]+/[\w./\-]+|[A-Za-z]:\\\\|~/[\w./\-]+|"
+    r"[\w/\-]+\.(?:py|json|ya?ml|sh|js|ts|sql|cfg|ini|toml|service|conf)\b)"
+)
 _DOMINIO = re.compile(
     r"\b(api|docker|kubernetes|k8s|yaml|json|python|javascript|typescript|sql|regex|"
     r"gateway|proxy|nginx|keepalived|dashboard|plugin|script|automa[cç][aã]o|c[oó]digo|"
@@ -173,6 +182,7 @@ PESOS = {
     "trabalho": 5,        # produzir/alterar
     "manutencao": 3,      # corrigir typo, adicionar teste, revisao pequena
     "planeamento": 5,     # plano, janela, rollback, proposta de migracao
+    "relatorio": 3,       # relatorio/resumo recorrente: produzir, mas barato
     "analise": 2,         # analisar/comparar
     "auditoria": 4,       # auditar/diagnosticar sistema vivo
     "arquitetura": 6,     # decidir/desenhar (o topo)
@@ -407,6 +417,10 @@ def _pontuar_texto(texto: str, pesos: dict[str, int], ferramentas_escrita: int,
     if _PLANEAMENTO.search(texto):
         score += pesos["planeamento"]
         sinais.append("planeamento_futuro")
+    if (_RELATORIO.search(texto) and not _TRABALHO.search(texto)
+            and not _PLANEAMENTO.search(texto)):
+        score += pesos["relatorio"]
+        sinais.append("relatorio_recorrente")
 
     # Trabalho em curso: escreveu/alterou ficheiros nas ultimas mensagens.
     if ferramentas_escrita:

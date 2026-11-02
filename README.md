@@ -16,6 +16,36 @@ Três frases que resumem o contrato:
 3. Cada **perfil** decide se usa o plugin, como usa (estratégia) e com que lista.
    Um perfil ausente da config não é tocado.
 
+## Analise de complexidade (3.4)
+
+O classificador pontua sinais independentes e corta em dois limiares:
+`leve` (< media), `media` (>= 3) e `alta` (>= 6). Quatro regras o mantem honesto:
+
+- **Verificar nao e analisar.** "testa o plugin", "adiciona um teste" — o verbo e
+  confirmacao, nao trabalho de analise; `_ANALISE` ignora verbos de verificacao.
+- **Manutencao separada de trabalho.** `corrigir`, `adicionar`, `atualizar` e
+  `revisar` valem 3 (`manutencao`), nao 5 (`trabalho`) — um typo no README nao
+  compra um modelo caro. Mas se o alvo for **sistema vivo** (automacao, servico,
+  instalacao, container), volta a valer `trabalho`: e producao, nao manutencao fina.
+- **Planeamento e relatorio tem categoria propria.** `planeamento` (5): plano,
+  janela, rollback, proposta de migracao. `relatorio` (3): resumo/relatorio
+  recorrente, que produz mas e barato.
+- **Diagnostico baixou de 6 para 4** (`auditoria`): "porque o inversor nao liga"
+  e trabalho de analise, mas nao do peso de uma decisao de arquitetura (6).
+
+Medicao que fixou os limiares (2026-11-02, dois holdouts, 42 casos):
+
+| variante | holdout1 (24) | holdout2 (18) | total |
+|---|---|---|---|
+| `media=3` (em vigor) | 24/24 | 17/18 | **41/42 (98%)** |
+| `media=4` | 20/24 | 14/18 | 34/42 (81%) |
+| `media=3` + regra dos 2 sinais | 21/24 | 14/18 | 35/42 (83%) |
+
+A regra dos dois sinais (`media_sinais: 2`) fica implementada e **inativa**: so
+actua quando a chave existe nos limiares. `test_holdout.py` versiona o holdout2
+com baseline 17/18 — o unico erro conhecido ("NPM ou Traefik, justifica") e
+discutivel no rotulo e **nao se calibra contra ele**.
+
 ## Painel no dashboard (3.3)
 
 O plugin traz um painel próprio no dashboard do Hermes, na tab **Model Manager**
