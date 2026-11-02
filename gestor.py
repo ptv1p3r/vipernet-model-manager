@@ -19,7 +19,11 @@ Esquema (v3):
       "analise": {...},        # sobrepoe-se as omissoes globais
       "catalogo": [
         {"id": "deepseek-flash", "provider": "deepseek",
-         "modelo": "deepseek-flash", "complexidade": ["leve", "media"]}
+         "modelo": "deepseek-flash", "complexidade": ["leve", "media"],
+         "acesso": "api"},
+        {"id": "gpt-sol-sub", "provider": "openai-codex",
+         "modelo": "gpt-6.1-sol", "complexidade": ["media"],
+         "acesso": "subscricao"}
       ]
     }
   }
@@ -34,6 +38,11 @@ Regras que decidem o resultado:
 - **A complexidade e declarada por modelo**, na propria entrada: `complexidade`
   aceita um nivel (`"alta"`) ou uma lista (`["leve","media"]`). `niveis` continua
   aceite como sinonimo para nao partir catalogo antigo.
+- **A rota de acesso e explicita ou inferida, nunca convertida.** `acesso` vale
+  `api` ou `subscricao`; sem ele, infere-se do provider (openai-codex →
+  `subscricao`, restantes → `api`). Uma incompatibilidade (`subscricao` com
+  provider que nao openai-codex, ou `api` com openai-codex) e recusada. O campo
+  nunca reescreve provider/modelo: e rotulo + validacao + registo.
 - **A disponibilidade e do dono.** Nenhum provider entra no catalogo por
   inferencia; o plugin so usa o que aqui estiver escrito e cuja credencial
   resolva no escopo do perfil.
@@ -53,6 +62,11 @@ NOME = "vipernet-model-manager"
 NIVEIS = ("leve", "media", "alta")
 ESTRATEGIAS = ("rodizio", "prioridade")
 POR = ("turno", "sessao")
+ACESSOS = ("api", "subscricao")
+
+# Unico transporte de subscricao que o plugin conhece (ChatGPT via Codex). Os
+# restantes providers sao rota de API. A inferencia retrocompativel apoia-se nisto.
+_PROVIDERS_SUBSCRICAO = frozenset({"openai-codex"})
 
 ANALISE_PADRAO: dict[str, Any] = {
     "janela_mensagens": 8,
@@ -73,7 +87,7 @@ SEED: dict[str, Any] = {
     "perfis": {
         "default": {
             "activo": True,
-            "estrategia": "prioridade",
+            "estrategia": "rodizio",
             "rodizio": {"por": "sessao"},
             "catalogo": [
                 {"id": "deepseek-flash", "provider": "deepseek",
@@ -185,6 +199,31 @@ def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str
         "modelo": modelo,
         "complexidade": niveis,
     }
+    # rota de acesso: explicita (api|subscricao) ou inferida do provider
+    # (retrocompativel: openai-codex=subscricao, restantes=api).
+    acesso_bruto = entrada.get("acesso")
+    if acesso_bruto is None:
+        acesso = acesso_por_provider(provider)
+    else:
+        acesso = str(acesso_bruto).strip().lower()
+        if acesso not in ACESSOS:
+            erros.append(f"catalogo[{indice}] ({provider}:{modelo}) acesso invalido: "
+                         f"'{acesso_bruto}' (use api|subscricao)")
+            return None
+    if acesso == "subscricao" and provider.lower() not in _PROVIDERS_SUBSCRICAO:
+        erros.append(f"catalogo[{indice}] ({provider}:{modelo}) acesso 'subscricao' "
+                     f"exige provider openai-codex")
+        return None
+    if acesso == "api" and provider.lower() in _PROVIDERS_SUBSCRICAO:
+        erros.append(f"catalogo[{indice}] ({provider}:{modelo}) provider openai-codex "
+                     f"e uma subscricao; use acesso 'subscricao'")
+        return None
+    saida["acesso"] = acesso
+    tarefas = entrada.get("tarefas", [])
+    if not isinstance(tarefas, list) or any(not isinstance(t, str) or not t.strip() for t in tarefas):
+        erros.append(f"catalogo[{indice}].tarefas deve ser lista de identificadores")
+    else:
+        saida["tarefas"] = list(dict.fromkeys(t.strip() for t in tarefas))
     if entrada.get("desligado"):
         saida["desligado"] = True
     for chave in ("nota",):
@@ -253,7 +292,30 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
                     continue
                 vistos.add(limpa["id"])
                 catalogo.append(limpa)
+        tarefas = {}
+        regras = pcfg.get("tarefas", {})
+        if not isinstance(regras, dict):
+            erros.append(f"perfis.{nome}.tarefas deve ser objecto")
+            regras = {}
+        for tid, regra in regras.items():
+            if not isinstance(tid, str) or not tid.strip() or not isinstance(regra, dict):
+                erros.append(f"perfis.{nome}.tarefas: regra invalida")
+                continue
+            termos = regra.get("termos", [])
+            prioridade = regra.get("prioridade", 0)
+            if (not isinstance(termos, list) or not termos or
+                    any(not isinstance(t, str) or not t.strip() for t in termos) or
+                    type(prioridade) is not int):
+                erros.append(f"perfis.{nome}.tarefas.{tid}: termos/prioridade invalidos")
+                continue
+            tarefas[tid] = {"termos": list(dict.fromkeys(t.strip() for t in termos)),
+                            "prioridade": prioridade}
+        for entrada in catalogo:
+            for tid in entrada.get("tarefas", []):
+                if tid not in tarefas:
+                    erros.append(f"perfis.{nome}: tarefa desconhecida '{tid}' em {entrada['id']}")
         saida["perfis"][nome] = {
+            "tarefas": tarefas,
             "activo": bool(pcfg.get("activo", True)),
             "estrategia": estrategia,
             "rodizio": {"por": por},
@@ -336,6 +398,27 @@ def _semear_de_config_antigo() -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- perfil
+
+
+def acesso_por_provider(provider: str) -> str:
+    """Rota de acesso de um provider: `subscricao` para o transporte de
+    subscricao (openai-codex); `api` nos restantes. Base da inferencia
+    retrocompativel quando a entrada nao declara `acesso`."""
+    return "subscricao" if str(provider or "").strip().lower() in _PROVIDERS_SUBSCRICAO else "api"
+
+
+def casa_do_perfil(nome: str) -> Path:
+    """Home do perfil pelo nome: `default` e a raiz de lancamento; os restantes
+    em `<raiz>/profiles/<nome>`. O inverso de `nome_do_perfil`."""
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        raiz = Path(get_default_hermes_root())
+    except Exception:
+        raiz = Path(os.environ.get("HERMES_HOME") or "/opt/data")
+    if nome == "default":
+        return raiz
+    return raiz / "profiles" / nome
 
 
 def nome_do_perfil(home: Path | str) -> str:

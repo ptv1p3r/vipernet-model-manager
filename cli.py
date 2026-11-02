@@ -8,11 +8,11 @@ Uso:
   vmm perfil add NOME [--copiar-de X]
   vmm perfil rm NOME
   vmm rota list [PERFIL] [--json]
-  vmm rota add PERFIL PROVIDER MODELO --complexidade leve,media [--id ID]
+  vmm rota add PERFIL PROVIDER MODELO --complexidade leve,media [--id ID] [--acesso api|subscricao]
   vmm rota rm PERFIL ID
   vmm simular PERFIL "texto"          classifica o texto e mostra a rota escolhida
   vmm verificar [PERFIL]              resolve credenciais de cada rota (sem as imprimir)
-  vmm log [-n N] [--perfil NOME]
+  vmm log [-n N] [--perfil NOME] [--provider P] [--sessao S] [--evento E]
   vmm caminho                         imprime o caminho do config
   vmm recarregar                      pede ao gateway para recarregar os plugins
 
@@ -186,9 +186,10 @@ def cmd_rota_list(args) -> int:
         print(f"[{nome}] estrategia={p.get('estrategia')} "
               f"rodizio={(p.get('rodizio') or {}).get('por')} "
               f"activo={'sim' if p.get('activo', True) else 'NAO'}")
-        linhas = [["id", "provider", "modelo", "complexidade"]]
+        linhas = [["id", "provider", "modelo", "acesso", "complexidade"]]
         for r in p.get("catalogo") or []:
             linhas.append([r.get("id", ""), r.get("provider", ""), r.get("modelo", ""),
+                           r.get("acesso", "?"),
                            ",".join(r.get("complexidade") or [])])
         print(_tabela(linhas))
         print()
@@ -216,13 +217,16 @@ def cmd_rota_add(args) -> int:
     except ValueError as exc:
         return _erro(str(exc), 2)
     entrada = {"id": args.id or f"{args.provider}:{args.modelo}",
-               "provider": args.provider, "modelo": args.modelo, "complexidade": niveis}
+               "provider": args.provider, "modelo": args.modelo,
+               "complexidade": niveis,
+               "acesso": args.acesso or g.acesso_por_provider(args.provider)}
     p.setdefault("catalogo", []).append(entrada)
     try:
         g.gravar(cfg)
     except ValueError as exc:
         return _erro(f"config recusada: {exc}")
-    print(f"rota '{entrada['id']}' acrescentada a {args.perfil} para {','.join(niveis)}")
+    print(f"rota '{entrada['id']}' acrescentada a {args.perfil} para {','.join(niveis)}"
+          f" (acesso={entrada['acesso']})")
     return 0
 
 
@@ -259,8 +263,12 @@ def cmd_simular(args) -> int:
     print(f"perfil: {args.perfil}")
     print(f"nivel: {nivel} (origem={decisao['origem']}, score={decisao.get('score')}, "
           f"sinais={','.join(decisao.get('sinais') or [])})")
-    if nivel in g.NIVEIS:
-        lista = g.candidatos(g.catalogo_utilizavel(p), nivel)
+    tarefa = a.detectar_tarefa([{"role": "user", "content": args.texto}], p.get("tarefas") or {})
+    associadas = [r for r in g.catalogo_utilizavel(p) if tarefa in r.get("tarefas", [])]
+    if tarefa:
+        print(f"tarefa: {tarefa} (origem={'tarefa' if associadas else 'analise; sem associacao'})")
+    if nivel in g.NIVEIS or associadas:
+        lista = associadas or g.candidatos(g.catalogo_utilizavel(p), nivel)
         if not lista:
             print(f"rota: nenhuma — o catalogo de {args.perfil} nao cobre '{nivel}'")
             return 1
@@ -281,21 +289,63 @@ def cmd_verificar(args) -> int:
         from hermes_cli.runtime_provider import resolve_runtime_provider
     except Exception as exc:
         return _erro(f"resolve_runtime_provider indisponivel: {exc}", 1)
+    # Contexto do perfil alvo: home + escopo de segredos. Sem isto, o CLI
+    # resolveria sempre no escopo do processo de arranque e perfis com .env
+    # proprio (pessoal/trabalho) pareceriam sem credenciais.
+    contexto = None
+    try:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from agent.secret_scope import (build_profile_secret_scope, reset_secret_scope,
+                                        set_secret_scope)
+
+        def _entrar(casa) -> tuple[Any, Any] | None:
+            token_home = set_hermes_home_override(str(casa))
+            token_scope = set_secret_scope(build_profile_secret_scope(casa),
+                                           profile_home=str(casa))
+            return token_home, token_scope
+
+        def _sair(tokens) -> None:
+            token_home, token_scope = tokens
+            reset_secret_scope(token_scope)
+            reset_hermes_home_override(token_home)
+
+        contexto = (_entrar, _sair)
+    except Exception as exc:
+        print(f"aviso: contexto por perfil indisponivel ({exc}); "
+              f"a resolver no contexto do processo", file=sys.stderr)
     falhas = 0
     for nome in alvos:
+        if nome == "*":
+            continue
         print(f"[{nome}]")
-        for r in perfis[nome].get("catalogo") or []:
+        casa = g.casa_do_perfil(nome)
+        tokens = None
+        if contexto is not None:
             try:
-                rt = resolve_runtime_provider(requested=r["provider"], target_model=r["modelo"])
-                chave = rt.get("api_key") or ""
-                marca = "ok" if len(chave) > 15 else f"chave curta ({len(chave)} B)"
-                if not chave or len(chave) <= 15:
-                    falhas += 1
-                print(f"  {r['id']}: {marca}; base_url={rt.get('base_url')}; "
-                      f"fonte={rt.get('source')}; chave={len(chave)} B")
+                tokens = contexto[0](casa)
             except Exception as exc:
-                falhas += 1
-                print(f"  {r['id']}: FALHA {type(exc).__name__}: {exc}")
+                print(f"  aviso: nao foi possivel montar o contexto do perfil: {exc}",
+                      file=sys.stderr)
+        try:
+            for r in perfis[nome].get("catalogo") or []:
+                try:
+                    rt = resolve_runtime_provider(requested=r["provider"], target_model=r["modelo"])
+                    chave = rt.get("api_key") or ""
+                    marca = "ok" if len(chave) > 15 else f"chave curta ({len(chave)} B)"
+                    if not chave or len(chave) <= 15:
+                        falhas += 1
+                    print(f"  {r['id']}: {marca}; acesso={r.get('acesso', '?')}; "
+                          f"base_url={rt.get('base_url')}; "
+                          f"fonte={rt.get('source')}; chave={len(chave)} B")
+                except Exception as exc:
+                    falhas += 1
+                    print(f"  {r['id']}: FALHA {type(exc).__name__}: {exc}")
+        finally:
+            if tokens is not None:
+                try:
+                    contexto[1](tokens)
+                except Exception:
+                    pass
     return 1 if falhas else 0
 
 
@@ -304,9 +354,22 @@ def cmd_log(args) -> int:
     if not caminho.exists():
         return _erro(f"sem ledger em {caminho}", 3)
     linhas = caminho.read_text(encoding="utf-8", errors="replace").splitlines()
-    if args.perfil:
-        linhas = [l for l in linhas if f'"perfil": "{args.perfil}"' in l]
-    for linha in linhas[-max(1, args.n):]:
+    filtradas: list[str] = []
+    for linha in linhas:
+        try:
+            ev = json.loads(linha)
+        except Exception:
+            continue
+        if args.perfil and ev.get("perfil") != args.perfil:
+            continue
+        if args.provider and ev.get("provider") != args.provider:
+            continue
+        if args.sessao and ev.get("sessao") != args.sessao:
+            continue
+        if args.evento and ev.get("evento") != args.evento:
+            continue
+        filtradas.append(linha)
+    for linha in filtradas[-max(1, args.n):]:
         print(linha)
     return 0
 
@@ -374,6 +437,9 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--complexidade", required=True,
                    help="leve,media,alta (lista separada por virgulas)")
     a.add_argument("--id")
+    a.add_argument("--acesso", choices=["api", "subscricao"],
+                   help="rota de acesso; por omissao infere do provider "
+                        "(openai-codex=subscricao, restantes=api)")
     a.set_defaults(func=cmd_rota_add)
     a = sr.add_parser("rm")
     a.add_argument("perfil")
@@ -392,6 +458,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("log", help="ler o ledger")
     s.add_argument("-n", type=int, default=10)
     s.add_argument("--perfil")
+    s.add_argument("--provider")
+    s.add_argument("--sessao")
+    s.add_argument("--evento")
     s.set_defaults(func=cmd_log)
 
     s = sub.add_parser("caminho", help="caminhos da config e do ledger")

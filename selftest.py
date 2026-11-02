@@ -252,6 +252,63 @@ def testes_gestor() -> None:
                             nivel="leve", contadores={}) for i in range(12)}
     check("rodizio por sessao distribui por sessoes diferentes", len(dif) > 1, str(dif))
 
+    # acesso: inferencia retrocompativel e validacao de incompatibilidades
+    inf = g.validar(_cfg_base())[0]
+    pc = inf["perfis"]["pessoal"]["catalogo"]
+    check("acesso inferido: deepseek -> api", pc[0]["acesso"] == "api")
+    check("acesso inferido: openrouter -> api", pc[1]["acesso"] == "api")
+
+    sub = _cfg_base()
+    sub["perfis"]["pessoal"]["catalogo"].append(
+        {"id": "sol-sub", "provider": "openai-codex", "modelo": "gpt-6.1-sol",
+         "complexidade": ["media"]})
+    gv2, e2 = g.validar(sub)
+    check("acesso inferido: openai-codex -> subscricao",
+          gv2["perfis"]["pessoal"]["catalogo"][-1]["acesso"] == "subscricao", str(e2))
+
+    exp = _cfg_base()
+    exp["perfis"]["pessoal"]["catalogo"][0]["acesso"] = "subscricao"
+    _, e = g.validar(exp)
+    check("subscricao com provider nao codex recusada",
+          any("exige provider openai-codex" in m for m in e), str(e))
+
+    exp = _cfg_base()
+    exp["perfis"]["pessoal"]["catalogo"].append(
+        {"id": "codex-api", "provider": "openai-codex", "modelo": "gpt-6.1-sol",
+         "complexidade": ["media"], "acesso": "api"})
+    _, e = g.validar(exp)
+    check("api com provider openai-codex recusada",
+          any("use acesso 'subscricao'" in m for m in e), str(e))
+
+    exp = _cfg_base()
+    exp["perfis"]["pessoal"]["catalogo"][0]["acesso"] = "satelite"
+    _, e = g.validar(exp)
+    check("acesso invalido recusado", any("acesso invalido" in m for m in e), str(e))
+
+    exp = _cfg_base()
+    exp["perfis"]["pessoal"]["catalogo"][0]["acesso"] = "api"
+    gv3, _ = g.validar(exp)
+    check("acesso explicito nao reescreve provider/modelo",
+          gv3["perfis"]["pessoal"]["catalogo"][0]["provider"] == "deepseek"
+          and gv3["perfis"]["pessoal"]["catalogo"][0]["modelo"] == "deepseek-flash")
+
+    # casa_do_perfil: o inverso de nome_do_perfil
+    raiz = Path(tempfile.mkdtemp(prefix="vmm-casa-"))
+    falso = types.SimpleNamespace(get_default_hermes_root=lambda: raiz)
+    real = sys.modules.get("hermes_constants")
+    sys.modules["hermes_constants"] = falso  # type: ignore[assignment]
+    try:
+        check("casa_do_perfil default -> raiz", g.casa_do_perfil("default") == raiz)
+        check("casa_do_perfil trabalho -> profiles/trabalho",
+              g.casa_do_perfil("trabalho") == raiz / "profiles" / "trabalho")
+        check("casa_do_perfil e o inverso de nome_do_perfil",
+              g.nome_do_perfil(g.casa_do_perfil("pessoal")) == "pessoal")
+    finally:
+        if real is None:
+            sys.modules.pop("hermes_constants", None)
+        else:
+            sys.modules["hermes_constants"] = real
+
 
 # =========================================================================== 2. plugin
 
@@ -452,6 +509,42 @@ def testes_plugin() -> None:
         chamar(agent=ag, request=pedido(f"complexidade: leve {texto}"), session_id="s15")
         check("ledger nao contem texto de conversa",
               texto not in g.caminho_ledger().read_text())
+
+        # 16. resposta regista provider/modelo efectivos, superficie, acesso e correlacao
+        os.environ["VMM_DIR"] = str(_dir_com(_cfg_base()))
+        plugin.gestor.perfil_atual = lambda agente=None: "pessoal"
+        ag = FakeAgent(sid="s16")
+        chamar(agent=ag, request=pedido("complexidade: leve"), session_id="s16")
+        plugin.pos_resposta(session_id="s16", model="deepseek-flash", provider="deepseek",
+                            platform="cli", response_model="deepseek-flash-2026",
+                            finish_reason="stop", api_request_id="req-42", turn_id="turn-7",
+                            task_id="task-9", usage={"total_tokens": 3})
+        linhas = [json.loads(l) for l in g.caminho_ledger().read_text().splitlines()]
+        resp = [l for l in linhas if l.get("evento") == "resposta" and l.get("sessao") == "s16"]
+        check("resposta regista provider efectivo",
+              bool(resp) and resp[-1].get("provider") == "deepseek",
+              str(resp[-1] if resp else None))
+        check("resposta regista superficie",
+              bool(resp) and resp[-1].get("superficie") == "cli")
+        check("resposta regista acesso",
+              bool(resp) and resp[-1].get("acesso") in ("api", "subscricao"))
+        check("resposta regista correlacao request/turn/task_id",
+              bool(resp) and resp[-1].get("request_id") == "req-42"
+              and resp[-1].get("turn_id") == "turn-7" and resp[-1].get("task_id") == "task-9",
+              str(resp[-1] if resp else None))
+        check("resposta distingue escolhido de efectivo",
+              bool(resp) and isinstance(resp[-1].get("escolhido"), dict)
+              and resp[-1]["escolhido"].get("provider") in ("deepseek", "openrouter"),
+              str(resp[-1] if resp else None))
+
+        # 17. superficie desconhecida quando o hook nao a entrega
+        plugin.pos_resposta(session_id="s16", model="deepseek-flash", provider="deepseek",
+                            response_model="x", finish_reason="stop")
+        linhas = [json.loads(l) for l in g.caminho_ledger().read_text().splitlines()]
+        resp = [l for l in linhas if l.get("evento") == "resposta" and l.get("sessao") == "s16"]
+        check("resposta sem platform usa 'desconhecido'",
+              bool(resp) and resp[-1].get("superficie") == "desconhecido",
+              str(resp[-1] if resp else None))
     finally:
         plugin.resolver_rota = rotas_reais
         plugin.gestor.perfil_atual = perfis_reais
@@ -553,11 +646,122 @@ def testes_cli() -> None:
     r = vmm("log", "-n", "2")
     check("log le o ledger (vazio ou nao) sem rebentar", r.returncode in (0, 3), r.stderr)
 
+    # acesso via CLI: inferencia e validacao
+    r = vmm("rota", "add", "trabalho", "openai-codex", "gpt-6.1-sol",
+            "--complexidade", "media", "--id", "sol-sub")
+    cfg, _ = g.carregar(d / "config.json")
+    e = [x for x in cfg["perfis"]["trabalho"]["catalogo"] if x["id"] == "sol-sub"]
+    check("rota add openai-codex infere subscricao",
+          r.returncode == 0 and e and e[0]["acesso"] == "subscricao", r.stderr)
+
+    r = vmm("rota", "add", "trabalho", "openrouter", "openai/gpt-6.1-sol",
+            "--complexidade", "media", "--id", "sol-api", "--acesso", "api")
+    cfg, _ = g.carregar(d / "config.json")
+    e = [x for x in cfg["perfis"]["trabalho"]["catalogo"] if x["id"] == "sol-api"]
+    check("rota add --acesso api explicito",
+          r.returncode == 0 and e and e[0]["acesso"] == "api", r.stderr)
+
+    r = vmm("rota", "add", "trabalho", "openrouter", "openai/gpt-6.1-sol",
+            "--complexidade", "media", "--id", "mau-sub", "--acesso", "subscricao")
+    check("rota add subscricao com provider nao codex recusada (rc 1)",
+          r.returncode == 1, f"rc={r.returncode} {r.stderr}")
+
+    r = vmm("rota", "add", "trabalho", "openai-codex", "gpt-6.1-sol",
+            "--complexidade", "media", "--id", "mau-api", "--acesso", "api")
+    check("rota add api com openai-codex recusada (rc 1)",
+          r.returncode == 1, f"rc={r.returncode} {r.stderr}")
+
+    r = vmm("rota", "list", "trabalho")
+    check("rota list mostra a coluna acesso e a subscricao",
+          r.returncode == 0 and "acesso" in r.stdout and "subscricao" in r.stdout, r.stdout)
+
+    r = vmm("log", "--evento", "resposta", "--perfil", "nao-existe")
+    check("log filtrando evento/perfil nao rebenta", r.returncode in (0, 3), r.stderr)
+
+
+def testes_verificar() -> None:
+    print("\n== verificar: resolve no contexto do perfil alvo ==")
+    chamadas: dict[str, Any] = {}
+
+    class _FakeConstants:
+        def get_default_hermes_root(self):
+            return chamadas["raiz"]
+
+        def set_hermes_home_override(self, path):
+            chamadas["home_set"].append(str(path))
+            return ("home", len(chamadas["home_set"]))
+
+        def reset_hermes_home_override(self, token):
+            chamadas["home_reset"].append(token)
+
+    class _FakeScope:
+        def build_profile_secret_scope(self, casa):
+            chamadas["scope_build"].append(str(casa))
+            return {"FAKE_KEY": "x" * 40}
+
+        def set_secret_scope(self, secrets, *, profile_home=None):
+            chamadas["scope_set"].append(profile_home)
+            return ("scope", len(chamadas["scope_set"]))
+
+        def reset_secret_scope(self, token):
+            chamadas["scope_reset"].append(token)
+
+    class _FakeRuntimeProvider:
+        def resolve_runtime_provider(self, requested, target_model):
+            chamadas["resolve"].append((requested, target_model))
+            return {"provider": requested, "api_key": "k" * 40,
+                    "base_url": "https://t/v1", "api_mode": "chat", "source": "fake"}
+
+    raiz = Path(tempfile.mkdtemp(prefix="vmm-verif-"))
+    chamadas.update({"raiz": raiz, "home_set": [], "home_reset": [],
+                     "scope_build": [], "scope_set": [], "scope_reset": [],
+                     "resolve": []})
+    fc, fs, fr = _FakeConstants(), _FakeScope(), _FakeRuntimeProvider()
+    agp = types.ModuleType("agent")
+    agp.secret_scope = fs  # type: ignore[attr-defined]
+    hc = types.ModuleType("hermes_cli")
+    hc.runtime_provider = fr  # type: ignore[attr-defined]
+    antigos = {k: sys.modules.get(k) for k in
+               ("hermes_constants", "agent", "agent.secret_scope",
+                "hermes_cli", "hermes_cli.runtime_provider")}
+    sys.modules["hermes_constants"] = fc
+    sys.modules["agent"] = agp
+    sys.modules["agent.secret_scope"] = fs
+    sys.modules["hermes_cli"] = hc
+    sys.modules["hermes_cli.runtime_provider"] = fr
+
+    d = _dir_com(_cfg_base())
+    os.environ["VMM_DIR"] = str(d)
+    n_rotas = len(g.carregar(d / "config.json")[0]["perfis"]["trabalho"]["catalogo"])
+    cli = _mod("vmm_cli_verif", AQUI / "cli.py")
+    try:
+        rc = cli.cmd_verificar(types.SimpleNamespace(perfil="trabalho"))
+        check("verificar rc 0 com credencial fake", rc == 0, f"rc={rc}")
+        check("verificar resolveu no home do perfil",
+              any(h.endswith(str(Path("profiles") / "trabalho")) for h in chamadas["home_set"]),
+              str(chamadas["home_set"]))
+        check("verificar montou o escopo do perfil",
+              any(p == str(raiz / "profiles" / "trabalho") for p in chamadas["scope_set"]),
+              str(chamadas["scope_set"]))
+        check("verificar resolveu as rotas do perfil",
+              len(chamadas["resolve"]) == n_rotas,
+              f"{len(chamadas['resolve'])} vs {n_rotas}")
+        check("verificar restaura o contexto (home e escopo)",
+              bool(chamadas["home_reset"]) and bool(chamadas["scope_reset"]))
+    finally:
+        os.environ.pop("VMM_DIR", None)
+        for k, v in antigos.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
 
 def main() -> int:
     testes_gestor()
     testes_plugin()
     testes_cli()
+    testes_verificar()
     falhas = [n for n, ok, _ in _RESULTADOS if not ok]
     print(f"\n{len(_RESULTADOS) - len(falhas)}/{len(_RESULTADOS)} verificacoes OK")
     if falhas:

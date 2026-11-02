@@ -198,6 +198,26 @@ def nivel_de_score(score: int, limiares: dict[str, Any] | None = None) -> str:
     return "leve"
 
 
+def detectar_tarefa(mensagens: list[Any], regras: dict[str, Any]) -> str | None:
+    """Classificacao heuristica do pedido actual, nunca do historico ou contexto injectado.
+
+    Termos sao frases literais sem acentos e com fronteiras de palavra. Em
+    sobreposicao ganha prioridade maior, depois frase mais especifica e id.
+    """
+    users = [m for m in mensagens if isinstance(m, dict) and m.get("role") == "user"]
+    if not users:
+        return None
+    texto = _sem_acentos(limpar_contexto_injectado(texto_de(users[-1].get("content")))).lower()
+    texto = " ".join(texto.split())
+    achados = []
+    for tid, regra in regras.items():
+        for termo in regra.get("termos", []):
+            termo = " ".join(_sem_acentos(termo).lower().split())
+            if termo and re.search(r"(?<!\w)" + re.escape(termo) + r"(?!\w)", texto):
+                achados.append((regra.get("prioridade", 0), len(termo), tid))
+    return max(achados)[2] if achados else None
+
+
 def decidir(mensagens: list[Any], *, limiares: dict[str, Any] | None = None,
             janela: int = 8, maximo: int = 60) -> dict[str, Any]:
     """Nivel final do turno: marcador explicito > pontuacao."""

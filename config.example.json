@@ -26,19 +26,29 @@
           "complexidade": [
             "leve",
             "media"
-          ]
+          ],
+          "acesso": "api"
         },
         {
           "id": "gpt-sol",
           "provider": "openrouter",
           "modelo": "openai/gpt-6.1-sol",
-          "complexidade": "media"
+          "complexidade": "media",
+          "acesso": "api"
+        },
+        {
+          "id": "gpt-sol-sub",
+          "provider": "openai-codex",
+          "modelo": "gpt-6.1-sol",
+          "complexidade": "media",
+          "acesso": "subscricao"
         },
         {
           "id": "deepseek-pro",
           "provider": "deepseek",
           "modelo": "deepseek-v4-pro",
-          "complexidade": "alta"
+          "complexidade": "alta",
+          "acesso": "api"
         }
       ]
     },
@@ -56,25 +66,29 @@
           "complexidade": [
             "leve",
             "media"
-          ]
+          ],
+          "acesso": "api"
         },
         {
           "id": "lightning-free",
           "provider": "openrouter",
           "modelo": "nvidia/nemotron-3.5-lightning:free",
-          "complexidade": "leve"
+          "complexidade": "leve",
+          "acesso": "api"
         },
         {
           "id": "north-code-free",
           "provider": "openrouter",
           "modelo": "cohere/north-mini-code:free",
-          "complexidade": "media"
+          "complexidade": "media",
+          "acesso": "api"
         },
         {
           "id": "nemotron-ultra-free",
           "provider": "openrouter",
           "modelo": "nvidia/nemotron-3-ultra-550b-a55b:free",
-          "complexidade": "media"
+          "complexidade": "media",
+          "acesso": "api"
         }
       ]
     },
@@ -89,25 +103,29 @@
           "id": "deepseek-flash",
           "provider": "deepseek",
           "modelo": "deepseek-flash",
-          "complexidade": "leve"
+          "complexidade": "leve",
+          "acesso": "api"
         },
         {
           "id": "north-code-free",
           "provider": "openrouter",
           "modelo": "cohere/north-mini-code:free",
-          "complexidade": "media"
+          "complexidade": "media",
+          "acesso": "api"
         },
         {
           "id": "deepseek-pro",
           "provider": "deepseek",
           "modelo": "deepseek-v4-pro",
-          "complexidade": "alta"
+          "complexidade": "alta",
+          "acesso": "api"
         },
         {
           "id": "gpt-sol",
           "provider": "openrouter",
           "modelo": "openai/gpt-6.1-sol",
-          "complexidade": "alta"
+          "complexidade": "alta",
+          "acesso": "api"
         }
       ]
     }

@@ -39,7 +39,7 @@ from typing import Any
 
 try:  # carregado como pacote do Hermes
     from . import gestor
-    from .analise import NIVEIS, decidir as _decidir
+    from .analise import NIVEIS, decidir as _decidir, detectar_tarefa as _detectar_tarefa
 except Exception:  # import directo (selftest / CLI fora do Hermes)
     import importlib.util as _ilu
 
@@ -54,6 +54,7 @@ except Exception:  # import directo (selftest / CLI fora do Hermes)
     gestor = _mod("gestor")
     _an = _mod("analise")
     NIVEIS, _decidir = _an.NIVEIS, _an.decidir
+    _detectar_tarefa = _an.detectar_tarefa
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ _maus: set[tuple[str, str, str]] = set()
 _avisados: set[tuple[str, str, str]] = set()
 _maus_expira: dict[tuple[str, str, str], float] = {}
 _ultimo_perfil: dict[str, str] = {}
+_ultima_decisao: dict[str, dict[str, Any]] = {}
 
 
 # --------------------------------------------------------------------------- estado
@@ -107,15 +109,35 @@ def _config() -> dict[str, Any]:
     return dados
 
 
+def _append_linha(caminho: Path, linha: str) -> None:
+    """Uma linha por evento, num unico `write` com `O_APPEND`.
+
+    A escrita e atomica para linhas pequenas mesmo com varios processos a
+    acrescentar em simultaneo (o CLI e o gateway correm em processos
+    diferentes). O ficheiro nasce `0600`; nada de segredos, mas por higiene.
+    """
+    try:
+        caminho.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    try:
+        fd = os.open(str(caminho), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    except OSError:
+        return
+    try:
+        os.write(fd, linha.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
 def _registar(entrada: dict[str, Any], *, registar: bool = True) -> None:
-    """Ledger append-only; nunca leva texto de conversa."""
+    """Ledger append-only; nunca leva texto de conversa nem credenciais."""
     if not registar:
         return
     try:
-        linha = json.dumps({"ts": _agora(), **entrada}, ensure_ascii=False)
+        linha = json.dumps({"ts": _agora(), **entrada}, ensure_ascii=False) + "\n"
         with _log_lock:
-            with gestor.caminho_ledger().open("a", encoding="utf-8") as fh:
-                fh.write(linha + "\n")
+            _append_linha(gestor.caminho_ledger(), linha)
     except Exception:
         pass
 
@@ -123,10 +145,19 @@ def _registar(entrada: dict[str, Any], *, registar: bool = True) -> None:
 def _falha(motivo: str) -> None:
     try:
         with _log_lock:
-            with gestor.caminho_erros().open("a", encoding="utf-8") as fh:
-                fh.write(f"{_agora()} {motivo}\n")
+            _append_linha(gestor.caminho_erros(), f"{_agora()} {motivo}\n")
     except Exception:
         logger.warning("vipernet-model-manager: falha ao registar erro: %s", motivo)
+
+
+def _lembrar_decisao(sessao: str, **campos: Any) -> None:
+    """Guarda a decisao mais recente da sessao para a correlacionar na resposta."""
+    if not sessao:
+        return
+    with _lock:
+        _ultima_decisao[sessao] = campos
+        if len(_ultima_decisao) > 500:
+            _ultima_decisao.clear()
 
 
 def _uma_vez(chave: tuple[str, str, str]) -> bool:
@@ -196,14 +227,16 @@ def escolher(pcfg: dict[str, Any], nivel: str, *, perfil: str, sessao: str) -> d
 
 
 def escolher_com_rota(pcfg: dict[str, Any], nivel: str, *, perfil: str,
-                      sessao: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str]]:
+                      sessao: str, tarefa: str | None = None) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str]]:
     """Primeira entrada utilizavel do nivel, na ordem da estrategia; devolve as falhadas.
 
     A ordem e construida **uma vez** e percorrida: repetir `escolher()` a cada
     falha prendia o turno para sempre quando a estrategia e `prioridade` — a
     mesma entrada voltava a sair e o ciclo dava a volta sem tentar a seguinte.
     """
-    lista = gestor.candidatos(gestor.catalogo_utilizavel(pcfg), nivel)
+    catalogo = gestor.catalogo_utilizavel(pcfg)
+    lista = ([e for e in catalogo if tarefa in e.get("tarefas", [])] if tarefa
+             else gestor.candidatos(catalogo, nivel))
     if not lista:
         return None, None, []
     if str(pcfg.get("estrategia") or "rodizio") == "rodizio" and len(lista) > 1:
@@ -356,24 +389,46 @@ def middleware_llm_request(
             janela=int(analise.get("janela_mensagens", 8) or 8),
             maximo=int(analise.get("varredura_max_mensagens", 60) or 60),
         )
-        nivel = decisao["nivel"]
+        tarefa = _detectar_tarefa(_mensagens(request), pcfg.get("tarefas") or {})
+        associada = tarefa if any(tarefa in e.get("tarefas", [])
+                                 for e in gestor.catalogo_utilizavel(pcfg)) else None
+        nivel = decisao["nivel"] or ("leve" if associada else "")
         base = {"perfil": perfil, "sessao": session_id, "nivel": nivel,
-                "origem": decisao["origem"], "score": decisao.get("score"),
+                "origem": "tarefa" if associada else decisao["origem"],
+                "tarefa": tarefa, "score": decisao.get("score"),
                 "sinais": decisao.get("sinais")}
+        _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
+                         origem=base["origem"], acesso="", entrada="")
         if not nivel:
             _registar({**base, "evento": "reset"}, registar=registar)
             return None
-        nivel = aplicar_histerese(perfil, session_id, nivel,
-                                  descer_apos=int(analise.get("descer_apos", 2) or 2))
+        if associada:
+            # A tarefa nao contamina a histerese: a proxima tarefa e reavaliada ja.
+            with _lock:
+                _historico.pop(f"{perfil}\x1f{session_id}", None)
+        else:
+            nivel = aplicar_histerese(perfil, session_id, nivel,
+                                      descer_apos=int(analise.get("descer_apos", 2) or 2))
         base["nivel"] = nivel
+        _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
+                         origem=base["origem"], acesso="", entrada="")
         if not gestor.catalogo_utilizavel(pcfg):
             _registar({**base, "evento": "sem_catalogo"}, registar=registar)
             return None
         entrada, rota, falhadas = escolher_com_rota(
-            pcfg, nivel, perfil=perfil, sessao=session_id)
+            pcfg, nivel, perfil=perfil, sessao=session_id, tarefa=associada)
+        if associada and (entrada is None or rota is None):
+            base["origem"] = "analise_fallback_tarefa"
+            base["falhadas_tarefa"] = falhadas
+            entrada, rota, falhadas = escolher_com_rota(
+                pcfg, nivel, perfil=perfil, sessao=session_id)
         if entrada is None or rota is None:
             _registar({**base, "evento": "sem_rota", "falhadas": falhadas}, registar=registar)
             return None
+        _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
+                         origem=base["origem"], acesso=entrada.get("acesso", ""),
+                         entrada=entrada["id"], escolhido_provider=rota["provider"],
+                         escolhido_modelo=entrada["modelo"])
         atual = {"provider": (provider or "").strip().lower(),
                  "modelo": request.get("model") or model or ""}
         if agente is None:
@@ -381,10 +436,12 @@ def middleware_llm_request(
             # o destino pertence a rota actual — o limite da v1, mantido como rede.
             if rota["provider"].lower() != atual["provider"] or entrada["modelo"] == atual["modelo"]:
                 _registar({**base, "evento": "sem_agente", "entrada": entrada["id"],
+                           "acesso": entrada.get("acesso", ""),
                            "de": atual}, registar=registar)
                 return None
             _registar({**base, "evento": "troca_so_modelo", "de": atual["modelo"],
                        "para": entrada["modelo"], "entrada": entrada["id"],
+                       "acesso": entrada.get("acesso", ""),
                        "ms": round((time.monotonic() - inicio) * 1000, 1)}, registar=registar)
             return {"request": {**request, "model": entrada["modelo"]}, "source": NOME,
                     "reason": f"{perfil}:complexidade={nivel}->{entrada['modelo']}"}
@@ -392,7 +449,7 @@ def middleware_llm_request(
                    "modelo": getattr(agente, "model", "") or ""}
         if destino["provider"] == rota["provider"].lower() and destino["modelo"] == entrada["modelo"]:
             _registar({**base, "evento": "sem_troca", "rota": destino,
-                       "entrada": entrada["id"],
+                       "entrada": entrada["id"], "acesso": entrada.get("acesso", ""),
                        "ms": round((time.monotonic() - inicio) * 1000, 1)}, registar=registar)
             return None
         try:
@@ -402,10 +459,12 @@ def middleware_llm_request(
                 _maus_expira[(perfil, entrada["provider"].lower(), entrada["modelo"])] = \
                     time.monotonic() + _TTL_MAU
             _registar({**base, "evento": "falha_troca", "entrada": entrada["id"],
+                       "acesso": entrada.get("acesso", ""),
                        "de": destino, "erro": f"{type(exc).__name__}: {exc}"[:300]},
                       registar=registar)
             return None
         _registar({**base, "evento": "troca", "entrada": entrada["id"], "de": destino,
+                   "acesso": entrada.get("acesso", ""),
                    "para": aplicado, "fonte_credencial": rota.get("source", ""),
                    "ms": round((time.monotonic() - inicio) * 1000, 1)}, registar=registar)
         if entrada["modelo"] != request.get("model"):
@@ -426,24 +485,77 @@ def pos_resposta(
     response_model: Any = None,
     finish_reason: Any = None,
     usage: Any = None,
+    provider: str = "",
+    platform: str = "",
+    api_request_id: Any = None,
+    turn_id: Any = None,
+    task_id: Any = None,
+    api_mode: str = "",
     **_: Any,
 ) -> None:
-    """Prova independente: o modelo que o PROVIDER diz que respondeu."""
+    """Prova independente do que respondeu: o provider e o modelo **efectivos**
+    do agente no momento da resposta (nao o escolhido no catalogo), o
+    `response_model` que o provider devolveu, e o contexto da decisao
+    (perfil, sessao, superficie, acesso, tarefa/complexidade) mais a
+    correlacao de `request_id`/`turn_id`/`task_id` que o hook entrega.
+
+    Nada aqui e inventado a partir da config: `escolhido` e o que a middleware
+    decidiu; `provider`/`modelo` sao o que o agente tinha de facto.
+    """
     try:
         config = _config()
+        if not bool(config.get("registar", True)):
+            return
         with _lock:
-            perfil = _ultimo_perfil.get(session_id) or ""
+            decisao = dict(_ultima_decisao.get(session_id) or {})
+            perfil = decisao.get("perfil") or _ultimo_perfil.get(session_id) or ""
+        agente = agente_vivo(session_id) if not perfil else None
         if not perfil:
-            perfil = gestor.perfil_atual(agente_vivo(session_id))
-        entrada = {"evento": "resposta", "perfil": perfil,
-                   "sessao": session_id, "de": model,
-                   "respondido_por": response_model, "finish_reason": finish_reason}
+            perfil = gestor.perfil_atual(agente)
+        superficie = (platform or "").strip()
+        if not superficie and agente is not None:
+            superficie = (getattr(agente, "platform", "") or "").strip()
+        superficie = superficie or "desconhecido"
+        efectivo_provider = (provider or "").strip().lower()
+        efectivo_modelo = (model or "").strip()
+        acesso = decisao.get("acesso") or ""
+        if not acesso and efectivo_provider:
+            acesso = gestor.acesso_por_provider(efectivo_provider)
+        entrada: dict[str, Any] = {
+            "evento": "resposta",
+            "perfil": perfil or "desconhecido",
+            "sessao": session_id,
+            "superficie": superficie,
+            "provider": efectivo_provider or "desconhecido",
+            "modelo": efectivo_modelo or "desconhecido",
+            "respondido_por": response_model,
+            "finish_reason": finish_reason,
+            "api_mode": api_mode or "",
+            "acesso": acesso or "desconhecido",
+        }
+        if api_request_id is not None:
+            entrada["request_id"] = api_request_id
+        if turn_id is not None:
+            entrada["turn_id"] = turn_id
+        if task_id is not None:
+            entrada["task_id"] = task_id
+        if decisao.get("nivel"):
+            entrada["nivel"] = decisao["nivel"]
+        if decisao.get("tarefa"):
+            entrada["tarefa"] = decisao["tarefa"]
+        if decisao.get("origem"):
+            entrada["origem"] = decisao["origem"]
+        if decisao.get("escolhido_provider"):
+            entrada["escolhido"] = {
+                "provider": decisao["escolhido_provider"],
+                "modelo": decisao.get("escolhido_modelo", ""),
+            }
         if isinstance(usage, dict):
             entrada["tokens"] = {k: usage.get(k) for k in
                                  ("input_tokens", "output_tokens", "prompt_tokens",
                                   "completion_tokens", "total_tokens")
                                  if usage.get(k) is not None}
-        _registar(entrada, registar=bool(config.get("registar", True)))
+        _registar(entrada, registar=True)
     except Exception:
         return
 
