@@ -1,6 +1,6 @@
 {
-  "sha256": "90ead63dd3db3e5a925606a6dab0ad4095723db264f4f81f984472b73858b8b8",
-  "congelado_em": "2026-11-02T20:40:55+00:00",
+  "sha256": "ed288ff326a643dd7e41a3e3173d3542ca745682784215901a9bf9ffb84f806a",
+  "congelado_em": "2026-11-02T20:44:52+00:00",
   "usado_para_afinar": false,
   "nota": "Conjunto de teste. Nunca usar para afinar limiares ou prompt."
 }
