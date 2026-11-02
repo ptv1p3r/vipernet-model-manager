@@ -1,0 +1,14 @@
+{
+  "name": "vipernet-model-manager",
+  "label": "Model Manager",
+  "description": "Gestor de provider+modelo por perfil: interruptor, catalogo por complexidade, associacoes de tarefa e o registo do que foi servido a cada turno (modelo, provider, perfil, nivel, origem).",
+  "icon": "Router",
+  "version": "3.3.0",
+  "tab": {
+    "path": "/model-manager",
+    "position": "end"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "api.py"
+}

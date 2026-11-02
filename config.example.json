@@ -1,0 +1,133 @@
+{
+  "versao": 3,
+  "activo": true,
+  "registar": true,
+  "analise": {
+    "janela_mensagens": 8,
+    "varredura_max_mensagens": 60,
+    "limiares": {
+      "media": 3,
+      "alta": 7
+    },
+    "descer_apos": 2
+  },
+  "perfis": {
+    "default": {
+      "activo": true,
+      "estrategia": "prioridade",
+      "rodizio": {
+        "por": "sessao"
+      },
+      "catalogo": [
+        {
+          "id": "deepseek-flash",
+          "provider": "deepseek",
+          "modelo": "deepseek-flash",
+          "complexidade": [
+            "leve",
+            "media"
+          ],
+          "acesso": "api"
+        },
+        {
+          "id": "gpt-sol",
+          "provider": "openrouter",
+          "modelo": "openai/gpt-6.1-sol",
+          "complexidade": "media",
+          "acesso": "api"
+        },
+        {
+          "id": "gpt-sol-sub",
+          "provider": "openai-codex",
+          "modelo": "gpt-6.1-sol",
+          "complexidade": "media",
+          "acesso": "subscricao"
+        },
+        {
+          "id": "deepseek-pro",
+          "provider": "deepseek",
+          "modelo": "deepseek-v4-pro",
+          "complexidade": "alta",
+          "acesso": "api"
+        }
+      ]
+    },
+    "pessoal": {
+      "activo": true,
+      "estrategia": "rodizio",
+      "rodizio": {
+        "por": "sessao"
+      },
+      "catalogo": [
+        {
+          "id": "deepseek-flash",
+          "provider": "deepseek",
+          "modelo": "deepseek-flash",
+          "complexidade": [
+            "leve",
+            "media"
+          ],
+          "acesso": "api"
+        },
+        {
+          "id": "lightning-free",
+          "provider": "openrouter",
+          "modelo": "nvidia/nemotron-3.5-lightning:free",
+          "complexidade": "leve",
+          "acesso": "api"
+        },
+        {
+          "id": "north-code-free",
+          "provider": "openrouter",
+          "modelo": "cohere/north-mini-code:free",
+          "complexidade": "media",
+          "acesso": "api"
+        },
+        {
+          "id": "nemotron-ultra-free",
+          "provider": "openrouter",
+          "modelo": "nvidia/nemotron-3-ultra-550b-a55b:free",
+          "complexidade": "media",
+          "acesso": "api"
+        }
+      ]
+    },
+    "trabalho": {
+      "activo": true,
+      "estrategia": "rodizio",
+      "rodizio": {
+        "por": "sessao"
+      },
+      "catalogo": [
+        {
+          "id": "deepseek-flash",
+          "provider": "deepseek",
+          "modelo": "deepseek-flash",
+          "complexidade": "leve",
+          "acesso": "api"
+        },
+        {
+          "id": "north-code-free",
+          "provider": "openrouter",
+          "modelo": "cohere/north-mini-code:free",
+          "complexidade": "media",
+          "acesso": "api"
+        },
+        {
+          "id": "deepseek-pro",
+          "provider": "deepseek",
+          "modelo": "deepseek-v4-pro",
+          "complexidade": "alta",
+          "acesso": "api"
+        },
+        {
+          "id": "gpt-sol",
+          "provider": "openrouter",
+          "modelo": "openai/gpt-6.1-sol",
+          "complexidade": "alta",
+          "acesso": "api"
+        }
+      ]
+    }
+  }
+}

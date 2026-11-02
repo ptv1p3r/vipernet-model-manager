@@ -1,0 +1,11 @@
+name: vipernet-model-manager
+version: "3.3.0"
+description: "Escolhe o provider+modelo do turno pela complexidade do trabalho, dentro do catalogo que o dono declarou PARA O PERFIL servido. A complexidade e analisada (nao escrita a mao) a partir da ultima mensagem e do estado do trabalho; o marcador `complexidade: alta` continua como override. Cada perfil tem o seu interruptor, a sua estrategia (rodizio por turno/sessao, ou prioridade), os seus limiares e o seu catalogo de (provider, modelo, complexidade, acesso). A rota de acesso (`api` ou `subscricao`) e explicita ou inferida do provider (openai-codex=subscricao, restantes=api), nunca convertida: incompatibilidades sao recusadas. Perfis ausentes da config nao sao tocados. Troca o agente vivo via `agent.switch_model` (cliente HTTP, chave, base_url e api_mode mudam juntos). O ledger de `resposta` regista provider e modelo efectivos, response_model, superficie, acesso, tarefa/complexidade e a correlacao request_id. Fail-open: sem decisao, sem rota ou com credencial ausente o pedido segue intacto e a razao vai para uso.err."
+author: "Hermes Agent"
+kind: standalone
+provides_hooks:
+  - post_api_request
+provides_middleware:
+  - llm_request
+hooks:
+  - post_api_request

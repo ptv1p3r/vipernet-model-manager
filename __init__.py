@@ -1,0 +1,574 @@
+"""vipernet-model-manager — o provider e o modelo do turno seguem a complexidade,
+dentro do catalogo que o dono declarou para o perfil que esta a ser servido.
+
+O que faz, por turno:
+
+1. identifica o **perfil** do turno (o gateway multiplexado serve `default`,
+   `pessoal` e `trabalho` no mesmo processo — o perfil nao se adivinha pelo texto);
+2. se o perfil nao estiver em `perfis`, ou estiver desligado, ou o interruptor
+   global estiver em baixo: **nao toca no pedido** e regista o facto;
+3. analisa a conversa (`analise.decidir`) e obtem `leve`|`media`|`alta`;
+4. escolhe no catalogo **desse perfil** a entrada cuja `complexidade` cobre o
+   nivel, segundo `estrategia` (`rodizio`|`prioridade`), saltando entradas cuja
+   credencial nao resolve no escopo do perfil;
+5. troca o agente vivo (`agent.switch_model`): cliente HTTP, chave, base_url,
+   api_mode e contabilidade de custo mudam juntos.
+
+Regras de desenho:
+
+- **A middleware `llm_request` e o unico ponto que ve o pedido e o agente.** O
+  frame de `agent.turn_api_request.build_api_request` tem o agente vivo; o
+  `session_id` do frame coincide com o do turno (validado nesta instalacao).
+- **Nada e inventado.** Fora do catalogo do perfil nao ha rotas; uma entrada sem
+  credencial e saltada e fica registada. Sem decisao, o pedido segue intacto.
+- **Fail-open com rasto.** Qualquer excepcao devolve `None` e escreve em
+  `uso.err`; um `None` silencioso seria indistinguivel de "nao havia nada a fazer".
+- **Sem texto de conversa no ledger.** So perfil, nivel, score, nomes de sinais,
+  providers, modelos, tempos e o modelo que o provider diz que respondeu.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import threading
+import time
+import traceback
+from pathlib import Path
+from typing import Any
+
+try:  # carregado como pacote do Hermes
+    from . import gestor
+    from .analise import NIVEIS, decidir as _decidir, detectar_tarefa as _detectar_tarefa
+except Exception:  # import directo (selftest / CLI fora do Hermes)
+    import importlib.util as _ilu
+
+    _aqui = Path(__file__).resolve().parent
+
+    def _mod(nome: str):
+        spec = _ilu.spec_from_file_location(f"vmm_{nome}", _aqui / f"{nome}.py")
+        mod = _ilu.module_from_spec(spec)  # type: ignore[arg-type]
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        return mod
+
+    gestor = _mod("gestor")
+    _an = _mod("analise")
+    NIVEIS, _decidir = _an.NIVEIS, _an.decidir
+    _detectar_tarefa = _an.detectar_tarefa
+
+logger = logging.getLogger(__name__)
+
+NOME = gestor.NOME
+_AMBIENTE_DESLIGADO = ("VMM_DESATIVADO", "VIPERNET_MODEL_MANAGER_OFF")
+
+_TTL_CONFIG = 5.0
+_TTL_ROTA = 600.0
+_TTL_MAU = 120.0
+
+_lock = threading.Lock()
+_log_lock = threading.Lock()
+_cfg: dict[str, Any] = {"mtime": -1.0, "dados": gestor.SEED, "lido": 0.0, "caminho": ""}
+_rotas: dict[tuple[str, str, str], dict[str, Any]] = {}
+_historico: dict[str, dict[str, Any]] = {}
+_contadores: dict[str, int] = {}
+_maus: set[tuple[str, str, str]] = set()
+_avisados: set[tuple[str, str, str]] = set()
+_maus_expira: dict[tuple[str, str, str], float] = {}
+_ultimo_perfil: dict[str, str] = {}
+_ultima_decisao: dict[str, dict[str, Any]] = {}
+
+
+# --------------------------------------------------------------------------- estado
+
+
+def _agora() -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(ZoneInfo("Europe/Lisbon")).isoformat(timespec="seconds")
+
+
+def _config() -> dict[str, Any]:
+    """Config do disco, com cache curta por `mtime` (o dono edita-a a quente)."""
+    agora = time.monotonic()
+    caminho = gestor.ficheiro_config()
+    try:
+        mtime = caminho.stat().st_mtime
+    except OSError:
+        return gestor.carregar(caminho)[0]
+    with _lock:
+        if (_cfg["mtime"] == mtime and _cfg["caminho"] == str(caminho)
+                and (agora - _cfg["lido"]) < _TTL_CONFIG):
+            return _cfg["dados"]
+    dados, erros = gestor.carregar(caminho)
+    for erro in erros:
+        _falha(erro)
+    with _lock:
+        _cfg.update({"mtime": mtime, "dados": dados, "lido": agora,
+                     "caminho": str(caminho)})
+    return dados
+
+
+def _append_linha(caminho: Path, linha: str) -> None:
+    """Uma linha por evento, num unico `write` com `O_APPEND`.
+
+    A escrita e atomica para linhas pequenas mesmo com varios processos a
+    acrescentar em simultaneo (o CLI e o gateway correm em processos
+    diferentes). O ficheiro nasce `0600`; nada de segredos, mas por higiene.
+    """
+    try:
+        caminho.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    try:
+        fd = os.open(str(caminho), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    except OSError:
+        return
+    try:
+        os.write(fd, linha.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def _registar(entrada: dict[str, Any], *, registar: bool = True) -> None:
+    """Ledger append-only; nunca leva texto de conversa nem credenciais."""
+    if not registar:
+        return
+    try:
+        linha = json.dumps({"ts": _agora(), **entrada}, ensure_ascii=False) + "\n"
+        with _log_lock:
+            _append_linha(gestor.caminho_ledger(), linha)
+    except Exception:
+        pass
+
+
+def _falha(motivo: str) -> None:
+    try:
+        with _log_lock:
+            _append_linha(gestor.caminho_erros(), f"{_agora()} {motivo}\n")
+    except Exception:
+        logger.warning("vipernet-model-manager: falha ao registar erro: %s", motivo)
+
+
+def _lembrar_decisao(sessao: str, **campos: Any) -> None:
+    """Guarda a decisao mais recente da sessao para a correlacionar na resposta."""
+    if not sessao:
+        return
+    with _lock:
+        _ultima_decisao[sessao] = campos
+        if len(_ultima_decisao) > 500:
+            _ultima_decisao.clear()
+
+
+def _uma_vez(chave: tuple[str, str, str]) -> bool:
+    """True na primeira vez que esta chave aparece nesta sessao (evita spam de ledger)."""
+    with _lock:
+        if chave in _avisados:
+            return False
+        _avisados.add(chave)
+        if len(_avisados) > 2000:
+            _avisados.clear()
+        return True
+
+
+# --------------------------------------------------------------------------- rotas
+
+
+def resolver_rota(perfil: str, provider: str, modelo: str) -> dict[str, Any]:
+    """Credenciais/endpoint/wire para (perfil, provider, modelo), com cache.
+
+    A chave do cache inclui o perfil: o mesmo provider resolve para chaves
+    diferentes conforme o escopo de segredos do perfil servido.
+    """
+    chave = (perfil, provider.strip().lower(), modelo)
+    agora = time.monotonic()
+    with _lock:
+        guardado = _rotas.get(chave)
+        if guardado and guardado["expira"] > agora:
+            if "erro" in guardado:
+                raise RuntimeError(guardado["erro"])
+            return dict(guardado["rota"])
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    try:
+        rt = resolve_runtime_provider(requested=provider, target_model=modelo)
+        rota = {
+            "provider": (rt.get("provider") or provider).strip().lower(),
+            "api_key": rt.get("api_key") or "",
+            "base_url": rt.get("base_url") or "",
+            "api_mode": rt.get("api_mode") or "",
+            "source": rt.get("source") or "",
+        }
+        if not rota["api_key"]:
+            raise RuntimeError(f"provider {provider} sem credencial no perfil {perfil}")
+    except Exception as exc:
+        with _lock:
+            _rotas[chave] = {"expira": agora + _TTL_ROTA,
+                             "erro": f"{type(exc).__name__}: {exc}"}
+        raise
+    with _lock:
+        _rotas[chave] = {"expira": agora + _TTL_ROTA, "rota": rota}
+    return dict(rota)
+
+
+def escolher(pcfg: dict[str, Any], nivel: str, *, perfil: str, sessao: str) -> dict[str, Any] | None:
+    catalogo = gestor.catalogo_utilizavel(pcfg)
+    lista = gestor.candidatos(catalogo, nivel)
+    if not lista:
+        return None
+    if str(pcfg.get("estrategia") or "rodizio") != "rodizio" or len(lista) == 1:
+        return lista[0]
+    por = str((pcfg.get("rodizio") or {}).get("por") or "sessao")
+    chave = gestor.chave_rodizio(perfil, sessao, nivel)
+    with _lock:
+        indice = gestor.indice_rodizio(chave, len(lista), por=por, perfil=perfil,
+                                       sessao=sessao, nivel=nivel, contadores=_contadores)
+    return lista[indice % len(lista)]
+
+
+def escolher_com_rota(pcfg: dict[str, Any], nivel: str, *, perfil: str,
+                      sessao: str, tarefa: str | None = None) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str]]:
+    """Primeira entrada utilizavel do nivel, na ordem da estrategia; devolve as falhadas.
+
+    A ordem e construida **uma vez** e percorrida: repetir `escolher()` a cada
+    falha prendia o turno para sempre quando a estrategia e `prioridade` — a
+    mesma entrada voltava a sair e o ciclo dava a volta sem tentar a seguinte.
+    """
+    catalogo = gestor.catalogo_utilizavel(pcfg)
+    lista = ([e for e in catalogo if tarefa in e.get("tarefas", [])] if tarefa
+             else gestor.candidatos(catalogo, nivel))
+    if not lista:
+        return None, None, []
+    if str(pcfg.get("estrategia") or "rodizio") == "rodizio" and len(lista) > 1:
+        por = str((pcfg.get("rodizio") or {}).get("por") or "sessao")
+        chave = gestor.chave_rodizio(perfil, sessao, nivel)
+        with _lock:
+            indice = gestor.indice_rodizio(chave, len(lista), por=por, perfil=perfil,
+                                           sessao=sessao, nivel=nivel, contadores=_contadores)
+        ordenada = lista[indice % len(lista):] + lista[:indice % len(lista)]
+    else:
+        ordenada = list(lista)
+    falhadas: list[str] = []
+    for entrada in ordenada:
+        chave = (perfil, entrada["provider"].lower(), entrada["modelo"])
+        with _lock:
+            recente = _maus_expira.get(chave, 0.0) > time.monotonic()
+        if recente:
+            falhadas.append(f"{entrada['id']}:falhou_ha_pouco")
+            continue
+        try:
+            return entrada, resolver_rota(perfil, entrada["provider"], entrada["modelo"]), falhadas
+        except Exception as exc:
+            falhadas.append(f"{entrada['id']}:{type(exc).__name__}")
+            _registar({"evento": "sem_rota", "perfil": perfil, "sessao": sessao,
+                       "nivel": nivel, "entrada": entrada["id"],
+                       "erro": f"{type(exc).__name__}: {exc}"[:200]})
+    return None, None, falhadas
+
+
+def aplicar_histerese(perfil: str, sessao: str, nivel: str, *, descer_apos: int = 2) -> str:
+    """Sobe ja; desce so depois de `descer_apos` avaliacoes abaixo do nivel actual."""
+    if not nivel:
+        return nivel
+    chave = f"{perfil}\x1f{sessao}"
+    with _lock:
+        antes = _historico.get(chave)
+        if antes is None:
+            _historico[chave] = {"nivel": nivel, "abaixo": 0}
+            return nivel
+        ordem = {n: i for i, n in enumerate(NIVEIS)}
+        if ordem[nivel] >= ordem.get(antes["nivel"], 0):
+            _historico[chave] = {"nivel": nivel, "abaixo": 0}
+            return nivel
+        antes["abaixo"] += 1
+        if antes["abaixo"] >= max(1, int(descer_apos or 1)):
+            _historico[chave] = {"nivel": nivel, "abaixo": 0}
+            return nivel
+        return antes["nivel"]
+
+
+# --------------------------------------------------------------------------- agente
+
+
+def agente_vivo(session_id: str = "", profundidade: int = 40) -> Any:
+    """O agente do turno, encontrado na pilha da middleware.
+
+    `llm_request` corre dentro de `build_api_request(agent, ...)`: o frame do
+    chamador tem o agente. Sem agente compativel, o chamador cai para o modo
+    antigo (reescrever so o nome do modelo, so quando o destino pertence a rota
+    actual).
+    """
+    import sys
+
+    f = sys._getframe(1)
+    vistos = 0
+    candidato = None
+    while f is not None and vistos < profundidade:
+        obj = f.f_locals.get("agent")
+        if obj is not None and hasattr(obj, "switch_model"):
+            sid = getattr(obj, "session_id", "") or ""
+            if not session_id or sid == session_id:
+                return obj
+            candidato = candidato or obj
+        f = f.f_back
+        vistos += 1
+    return candidato
+
+
+def _mensagens(pedido: dict[str, Any]) -> list[Any]:
+    for chave in ("messages", "input"):
+        valor = pedido.get(chave)
+        if isinstance(valor, list):
+            return valor
+    return []
+
+
+def _trocar(agente: Any, entrada: dict[str, Any], rota: dict[str, Any],
+            perfil: str, sessao: str) -> dict[str, Any]:
+    alvo_provider = rota["provider"] or entrada["provider"].lower()
+    alvo_modelo = entrada["modelo"]
+    agente.switch_model(
+        new_model=alvo_modelo, new_provider=alvo_provider,
+        api_key=rota.get("api_key", ""), base_url=rota.get("base_url", ""),
+        api_mode=rota.get("api_mode", ""),
+    )
+    with _lock:
+        _maus_expira.pop((perfil, alvo_provider.lower(), alvo_modelo), None)
+    return {"provider": alvo_provider, "modelo": alvo_modelo}
+
+
+# --------------------------------------------------------------------------- middleware
+
+
+def middleware_llm_request(
+    request: Any = None,
+    original_request: Any = None,  # noqa: ARG001 — contrato da middleware
+    session_id: str = "",
+    model: str = "",
+    provider: str = "",
+    base_url: str = "",
+    api_mode: str = "",
+    **_: Any,
+) -> dict[str, Any] | None:
+    """Decide a rota do turno e troca-a no agente; `None` = pedido intacto."""
+    inicio = time.monotonic()
+    try:
+        if not isinstance(request, dict):
+            return None
+        for nome_env in _AMBIENTE_DESLIGADO:
+            if str(os.environ.get(nome_env) or "").strip().lower() in ("1", "on", "true", "sim"):
+                return None
+        config = _config()
+        registar = bool(config.get("registar", True))
+        if not config.get("activo", True):
+            if _uma_vez(("desligado", session_id, "")):
+                _registar({"evento": "desligado", "sessao": session_id}, registar=registar)
+            return None
+        agente = agente_vivo(session_id)
+        perfil = gestor.perfil_atual(agente)
+        with _lock:
+            if session_id:
+                _ultimo_perfil[session_id] = perfil
+                if len(_ultimo_perfil) > 500:
+                    _ultimo_perfil.clear()
+        pcfg = gestor.perfil_config(config, perfil)
+        if pcfg is None:
+            if _uma_vez(("perfil_nao_gerido", session_id, perfil)):
+                _registar({"evento": "perfil_nao_gerido", "perfil": perfil,
+                           "sessao": session_id}, registar=registar)
+            return None
+        if not pcfg.get("activo", True):
+            if _uma_vez(("perfil_desligado", session_id, perfil)):
+                _registar({"evento": "perfil_desligado", "perfil": perfil,
+                           "sessao": session_id}, registar=registar)
+            return None
+        analise = pcfg.get("analise") or {}
+        decisao = _decidir(
+            _mensagens(request),
+            limiares=analise.get("limiares"),
+            janela=int(analise.get("janela_mensagens", 8) or 8),
+            maximo=int(analise.get("varredura_max_mensagens", 60) or 60),
+        )
+        tarefa = _detectar_tarefa(_mensagens(request), pcfg.get("tarefas") or {})
+        associada = tarefa if any(tarefa in e.get("tarefas", [])
+                                 for e in gestor.catalogo_utilizavel(pcfg)) else None
+        nivel = decisao["nivel"] or ("leve" if associada else "")
+        base = {"perfil": perfil, "sessao": session_id, "nivel": nivel,
+                "origem": "tarefa" if associada else decisao["origem"],
+                "tarefa": tarefa, "score": decisao.get("score"),
+                "sinais": decisao.get("sinais")}
+        _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
+                         origem=base["origem"], acesso="", entrada="")
+        if not nivel:
+            _registar({**base, "evento": "reset"}, registar=registar)
+            return None
+        if associada:
+            # A tarefa nao contamina a histerese: a proxima tarefa e reavaliada ja.
+            with _lock:
+                _historico.pop(f"{perfil}\x1f{session_id}", None)
+        else:
+            nivel = aplicar_histerese(perfil, session_id, nivel,
+                                      descer_apos=int(analise.get("descer_apos", 2) or 2))
+        base["nivel"] = nivel
+        _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
+                         origem=base["origem"], acesso="", entrada="")
+        if not gestor.catalogo_utilizavel(pcfg):
+            _registar({**base, "evento": "sem_catalogo"}, registar=registar)
+            return None
+        entrada, rota, falhadas = escolher_com_rota(
+            pcfg, nivel, perfil=perfil, sessao=session_id, tarefa=associada)
+        if associada and (entrada is None or rota is None):
+            base["origem"] = "analise_fallback_tarefa"
+            base["falhadas_tarefa"] = falhadas
+            entrada, rota, falhadas = escolher_com_rota(
+                pcfg, nivel, perfil=perfil, sessao=session_id)
+        if entrada is None or rota is None:
+            _registar({**base, "evento": "sem_rota", "falhadas": falhadas}, registar=registar)
+            return None
+        _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
+                         origem=base["origem"], acesso=entrada.get("acesso", ""),
+                         entrada=entrada["id"], escolhido_provider=rota["provider"],
+                         escolhido_modelo=entrada["modelo"])
+        atual = {"provider": (provider or "").strip().lower(),
+                 "modelo": request.get("model") or model or ""}
+        if agente is None:
+            # Sem agente nao ha troca de provider: so reescreve o nome, e so quando
+            # o destino pertence a rota actual — o limite da v1, mantido como rede.
+            if rota["provider"].lower() != atual["provider"] or entrada["modelo"] == atual["modelo"]:
+                _registar({**base, "evento": "sem_agente", "entrada": entrada["id"],
+                           "acesso": entrada.get("acesso", ""),
+                           "de": atual}, registar=registar)
+                return None
+            _registar({**base, "evento": "troca_so_modelo", "de": atual["modelo"],
+                       "para": entrada["modelo"], "entrada": entrada["id"],
+                       "acesso": entrada.get("acesso", ""),
+                       "ms": round((time.monotonic() - inicio) * 1000, 1)}, registar=registar)
+            return {"request": {**request, "model": entrada["modelo"]}, "source": NOME,
+                    "reason": f"{perfil}:complexidade={nivel}->{entrada['modelo']}"}
+        destino = {"provider": (getattr(agente, "provider", "") or "").lower(),
+                   "modelo": getattr(agente, "model", "") or ""}
+        if destino["provider"] == rota["provider"].lower() and destino["modelo"] == entrada["modelo"]:
+            _registar({**base, "evento": "sem_troca", "rota": destino,
+                       "entrada": entrada["id"], "acesso": entrada.get("acesso", ""),
+                       "ms": round((time.monotonic() - inicio) * 1000, 1)}, registar=registar)
+            return None
+        try:
+            aplicado = _trocar(agente, entrada, rota, perfil, session_id)
+        except Exception as exc:
+            with _lock:
+                _maus_expira[(perfil, entrada["provider"].lower(), entrada["modelo"])] = \
+                    time.monotonic() + _TTL_MAU
+            _registar({**base, "evento": "falha_troca", "entrada": entrada["id"],
+                       "acesso": entrada.get("acesso", ""),
+                       "de": destino, "erro": f"{type(exc).__name__}: {exc}"[:300]},
+                      registar=registar)
+            return None
+        _registar({**base, "evento": "troca", "entrada": entrada["id"], "de": destino,
+                   "acesso": entrada.get("acesso", ""),
+                   "para": aplicado, "fonte_credencial": rota.get("source", ""),
+                   "ms": round((time.monotonic() - inicio) * 1000, 1)}, registar=registar)
+        if entrada["modelo"] != request.get("model"):
+            return {"request": {**request, "model": entrada["modelo"]}, "source": NOME,
+                    "reason": f"{perfil}:complexidade={nivel}->{aplicado['provider']}:{entrada['modelo']}"}
+        return None
+    except Exception:
+        _falha("middleware llm_request: " + traceback.format_exc(limit=4).replace("\n", " | "))
+        return None
+
+
+# --------------------------------------------------------------------------- prova
+
+
+def pos_resposta(
+    session_id: str = "",
+    model: str = "",
+    response_model: Any = None,
+    finish_reason: Any = None,
+    usage: Any = None,
+    provider: str = "",
+    platform: str = "",
+    api_request_id: Any = None,
+    turn_id: Any = None,
+    task_id: Any = None,
+    api_mode: str = "",
+    **_: Any,
+) -> None:
+    """Prova independente do que respondeu: o provider e o modelo **efectivos**
+    do agente no momento da resposta (nao o escolhido no catalogo), o
+    `response_model` que o provider devolveu, e o contexto da decisao
+    (perfil, sessao, superficie, acesso, tarefa/complexidade) mais a
+    correlacao de `request_id`/`turn_id`/`task_id` que o hook entrega.
+
+    Nada aqui e inventado a partir da config: `escolhido` e o que a middleware
+    decidiu; `provider`/`modelo` sao o que o agente tinha de facto.
+    """
+    try:
+        config = _config()
+        if not bool(config.get("registar", True)):
+            return
+        with _lock:
+            decisao = dict(_ultima_decisao.get(session_id) or {})
+            perfil = decisao.get("perfil") or _ultimo_perfil.get(session_id) or ""
+        agente = agente_vivo(session_id) if not perfil else None
+        if not perfil:
+            perfil = gestor.perfil_atual(agente)
+        superficie = (platform or "").strip()
+        if not superficie and agente is not None:
+            superficie = (getattr(agente, "platform", "") or "").strip()
+        superficie = superficie or "desconhecido"
+        efectivo_provider = (provider or "").strip().lower()
+        efectivo_modelo = (model or "").strip()
+        acesso = decisao.get("acesso") or ""
+        if not acesso and efectivo_provider:
+            acesso = gestor.acesso_por_provider(efectivo_provider)
+        entrada: dict[str, Any] = {
+            "evento": "resposta",
+            "perfil": perfil or "desconhecido",
+            "sessao": session_id,
+            "superficie": superficie,
+            "provider": efectivo_provider or "desconhecido",
+            "modelo": efectivo_modelo or "desconhecido",
+            "respondido_por": response_model,
+            "finish_reason": finish_reason,
+            "api_mode": api_mode or "",
+            "acesso": acesso or "desconhecido",
+        }
+        if api_request_id is not None:
+            entrada["request_id"] = api_request_id
+        if turn_id is not None:
+            entrada["turn_id"] = turn_id
+        if task_id is not None:
+            entrada["task_id"] = task_id
+        if decisao.get("nivel"):
+            entrada["nivel"] = decisao["nivel"]
+        if decisao.get("tarefa"):
+            entrada["tarefa"] = decisao["tarefa"]
+        if decisao.get("origem"):
+            entrada["origem"] = decisao["origem"]
+        if decisao.get("escolhido_provider"):
+            entrada["escolhido"] = {
+                "provider": decisao["escolhido_provider"],
+                "modelo": decisao.get("escolhido_modelo", ""),
+            }
+        if isinstance(usage, dict):
+            entrada["tokens"] = {k: usage.get(k) for k in
+                                 ("input_tokens", "output_tokens", "prompt_tokens",
+                                  "completion_tokens", "total_tokens")
+                                 if usage.get(k) is not None}
+        _registar(entrada, registar=True)
+    except Exception:
+        return
+
+
+# --------------------------------------------------------------------------- registo
+
+
+def register(ctx: Any) -> None:
+    try:
+        ctx.register_middleware("llm_request", middleware_llm_request)
+        ctx.register_hook("post_api_request", pos_resposta)
+        gestor.garantir()  # cria o config por omissao para o dono o editar
+        _config()  # aquece a cache com o que esta no disco
+    except Exception:
+        _falha("register: " + traceback.format_exc(limit=4).replace("\n", " | "))
+        raise
