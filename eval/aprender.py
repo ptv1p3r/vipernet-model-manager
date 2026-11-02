@@ -208,6 +208,34 @@ def _escrever_json(caminho: Path, dados: Any) -> None:
 # --------------------------------------------------------------------------- metricas
 
 
+def conteudo_json(resposta: dict) -> dict[str, Any]:
+    """Objecto JSON que o modelo devolveu.
+
+    `_pedir_com_formato` devolve o corpo da API em `json`, nao o conteudo
+    ja parseado: o conteudo vive em `choices[0].message.content`. Ler
+    `resposta["json"]` como se fosse a resposta foi um erro medido — deu
+    "json sem campos" em todos os casos.
+    """
+    corpo = resposta.get("json") or {}
+    try:
+        texto = corpo["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError):
+        return {}
+    texto = texto.strip()
+    if texto.startswith("```"):
+        texto = texto.split("\n", 1)[-1]
+        if "```" in texto:
+            texto = texto.rsplit("```", 1)[0]
+    i, j = texto.find("{"), texto.rfind("}")
+    if i < 0 or j <= i:
+        return {}
+    try:
+        d = json.loads(texto[i:j + 1])
+    except json.JSONDecodeError:
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
 def _f1_por_classe(pares: list[tuple[str, str]]) -> dict[str, dict[str, float]]:
     saida: dict[str, dict[str, float]] = {}
     for c in NIVEIS:
@@ -224,7 +252,12 @@ def _f1_por_classe(pares: list[tuple[str, str]]) -> dict[str, dict[str, float]]:
 
 def metricas(pares: list[tuple[str, str]]) -> dict[str, Any]:
     if not pares:
-        return {"n": 0, "macro_f1": 0.0, "acerto": 0.0, "por_classe": {}}
+        # Com `por_classe` vazio, quem consome (`treinar`, o relatorio) estoura
+        # com KeyError a meio do ciclo; a forma tem de ser a mesma com 0 casos.
+        vazio = {"precisao": 0.0, "cobertura": 0.0, "f1": 0.0, "suporte": 0}
+        return {"n": 0, "macro_f1": 0.0, "acerto": 0.0,
+                "por_classe": {c: dict(vazio) for c in NIVEIS},
+                "confusao": {r: {p: 0 for p in NIVEIS} for r in NIVEIS}}
     por_classe = _f1_por_classe(pares)
     macro = sum(v["f1"] for v in por_classe.values()) / len(NIVEIS)
     acerto = sum(1 for r, p in pares if r == p) / len(pares)
@@ -236,7 +269,12 @@ def metricas(pares: list[tuple[str, str]]) -> dict[str, Any]:
 
 
 def kappa(a: list[dict], b: list[dict]) -> dict[str, Any]:
-    """Kappa de Cohen entre dois rotuladores, por id comum."""
+    """Kappa de Cohen entre dois rotuladores, por id comum.
+
+    Generico no vocabulario: serve as tres classes e tambem perguntas binarias
+    (`sim`/`nao`). Preso a `NIVEIS`, um juiz binario devolvia o acordo simples
+    como se fosse kappa — numero com aspecto de validado e sem significado.
+    """
     mapa_b = {r["id"]: r["rotulo"] for r in b}
     pares = [(r["rotulo"], mapa_b[r["id"]]) for r in a if r["id"] in mapa_b]
     if not pares:
@@ -244,7 +282,8 @@ def kappa(a: list[dict], b: list[dict]) -> dict[str, Any]:
     obs = sum(1 for x, y in pares if x == y) / len(pares)
     ca = collections.Counter(x for x, _ in pares)
     cb = collections.Counter(y for _, y in pares)
-    esp = sum((ca[c] / len(pares)) * (cb[c] / len(pares)) for c in NIVEIS)
+    categorias = set(ca) | set(cb)
+    esp = sum((ca[c] / len(pares)) * (cb[c] / len(pares)) for c in categorias)
     k = (obs - esp) / (1 - esp) if esp < 1 else 0.0
     return {"n": len(pares), "kappa": round(k, 4), "acordo": round(obs, 4)}
 
@@ -657,8 +696,23 @@ def main() -> int:
             return 1
 
     # 3. treino e avaliacao
-    pesos_novos, resultado = treinar(pesos_atuais, casos, limiares, passes=args.passes)
-    passou, razoes = portoes(k, resultado["antes"], resultado["depois"],
+    #
+    # Separacao treino/validacao obrigatoria: treinar e avaliar no mesmo
+    # conjunto mede a capacidade de decorar. Medido num ciclo de 20 casos, a
+    # macro-F1 "subia" de 0,44 para 0,70 no proprio conjunto de treino. O portao
+    # decide sobre a validacao, que o treino nunca ve.
+    ordenados = sorted(casos, key=lambda c: str(c["id"]))
+    random.Random(args.semente).shuffle(ordenados)
+    corte = max(1, int(len(ordenados) * 0.7))
+    treino, validacao = ordenados[:corte], ordenados[corte:]
+    if not validacao:
+        validacao = treino
+    pesos_novos, resultado = treinar(pesos_atuais, treino, limiares, passes=args.passes)
+    antes_val = avaliar_pesos(pesos_atuais, validacao, limiares)
+    depois_val = avaliar_pesos(pesos_novos, validacao, limiares)
+    resultado["antes"] = antes_val
+    resultado["depois"] = depois_val
+    passou, razoes = portoes(k, antes_val, depois_val,
                              args.kappa_minimo, args.ganho_minimo)
 
     # 4. A/B do modelo (opcional)
