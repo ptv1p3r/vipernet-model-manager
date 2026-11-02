@@ -334,7 +334,10 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
             for chave, valor in pcfg["analise"].items():
                 if chave == "limiares" and isinstance(valor, dict):
                     # So as chaves declaradas: o que falta vem do global.
-                    panalise["limiares"] = dict(valor)
+                    globais = saida["analise"].get("limiares") or {}
+                    declarados = {k: v for k, v in valor.items() if globais.get(k) != v}
+                    if declarados:
+                        panalise["limiares"] = declarados
                 elif chave == "classificador":
                     # Substitui por inteiro (nao funde) o classificador global:
                     # e o que permite ao perfil desligar o que a config global
@@ -347,6 +350,13 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
                         continue
                     panalise["classificador"] = limpo
                 else:
+                    # Mesma regra para as chaves simples: um valor igual ao
+                    # global nao e uma declaracao, e uma copia que fixa o perfil
+                    # ao dia (medido a 2026-11-02: os tres perfis guardavam
+                    # `descer_apos`, `janela_mensagens` e `varredura_max_mensagens`
+                    # iguais ao global, herdados da semente antiga).
+                    if chave in saida["analise"] and valor == saida["analise"][chave]:
+                        continue
                     panalise[chave] = valor
         catalogo: list[dict[str, Any]] = []
         vistos: set[str] = set()
@@ -389,7 +399,9 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
             "activo": bool(pcfg.get("activo", True)),
             "estrategia": estrategia,
             "rodizio": {"por": por},
-            "analise": panalise,
+            # Sem nada declarado nao se grava `analise` vazia: a ausencia da
+            # chave e o que significa "herda tudo do global".
+            **({"analise": panalise} if panalise else {}),
             "catalogo": catalogo,
         }
     return saida, erros
