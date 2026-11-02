@@ -149,6 +149,13 @@ def main() -> int:
           str(tr.get("ultimo")))
     check("/estado ledger", (est.get("ledger") or {}).get("existe") is True)
     check("/estado versao", bool(est.get("versao_painel")))
+    # A versao do endpoint tem de ser a do manifest: este numero ja divergiu
+    # (3.3.0 no /estado, 3.6.x no manifest) e e o primeiro sitio onde se ve que
+    # codigo esta a correr no contentor.
+    manifesto = json.loads((RAIZ / "dashboard" / "manifest.json").read_text(encoding="utf-8"))
+    check("/estado versao vem do manifest",
+          est.get("versao_painel") == manifesto.get("version"),
+          f"{est.get('versao_painel')} vs {manifesto.get('version')}")
 
     # --- /log --------------------------------------------------------------
     r = cli.get("/log?limite=10")
