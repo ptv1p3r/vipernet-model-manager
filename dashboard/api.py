@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 # O ``api.py`` e importado por caminho; o pacote do plugin tem de estar no sys.path
@@ -42,6 +42,55 @@ LIMITE_LOG_OMISSAO = 50
 def _cfg() -> dict[str, Any]:
     cfg, _erros = gestor.carregar()
     return cfg
+
+
+def _corpo_objeto(corpo: Any, *, obrigatorio: bool = True) -> Optional[dict[str, Any]]:
+    """Normaliza o corpo do pedido para ``dict`` — ou recusa com 400 e a razao.
+
+    O ``fetchJSON`` do SDK passa o ``init`` tal e qual ao ``fetch()``: se o painel
+    lhe entregar um objecto JS, o corpo chega ao servidor como a string
+    ``"[object Object]"`` (``Content-Type: text/plain``) e o FastAPI responde 422
+    ``Input should be a valid dictionary`` — um erro que nao diz nada a quem esta
+    a editar a configuracao. Aceita-se por isso dict, string JSON e lista, e o
+    resto e recusado com uma mensagem que identifica o que foi recebido.
+
+    ``obrigatorio=False`` devolve ``None`` para corpo ausente (validar o que esta).
+    """
+    if isinstance(corpo, dict):
+        return corpo
+    if isinstance(corpo, bytes):
+        try:
+            corpo = corpo.decode("utf-8")
+        except (UnicodeDecodeError, ValueError):
+            if obrigatorio:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"corpo nao e um objecto JSON (recebido bytes, nao e utf-8)",
+                )
+            return None
+    if isinstance(corpo, str):
+        try:
+            lido = json.loads(corpo)
+        except (json.JSONDecodeError, ValueError):
+            lido = None
+        if isinstance(lido, dict):
+            return lido
+        if isinstance(lido, list) and lido:
+            return {"catalogo": lido}
+        if obrigatorio:
+            raise HTTPException(
+                status_code=400,
+                detail=f"corpo nao e um objecto JSON (recebido {corpo[:60]!r})",
+            )
+        return None
+    if isinstance(corpo, list) and corpo:
+        return {"catalogo": corpo}
+    if corpo is None and not obrigatorio:
+        return None
+    raise HTTPException(
+        status_code=400,
+        detail=f"corpo nao e um objecto JSON (recebido o tipo {type(corpo).__name__})",
+    )
 
 
 def _ler_ledger(limite: int, perfil: Optional[str]) -> tuple[list[dict[str, Any]], int]:
@@ -209,8 +258,9 @@ def log(
 
 
 @router.post("/toggle")
-def toggle(corpo: dict[str, Any]) -> JSONResponse:
+def toggle(corpo: Any = Body(default=None)) -> JSONResponse:
     """Liga/desliga o plugin. ``ambito='global'`` (por omissao) ou ``'perfil'`` + ``perfil``."""
+    corpo = _corpo_objeto(corpo)
     activo = corpo.get("activo")
     if not isinstance(activo, bool):
         raise HTTPException(status_code=400, detail="'activo' tem de ser booleano")
@@ -255,9 +305,54 @@ def perfis() -> dict[str, Any]:
     return {"perfis": sorted((cfg.get("perfis") or {}).keys())}
 
 
+# --------------------------------------------------------------------------- config ---------------------------------------------------------------------------
+
+@router.get("/config")
+def config_get() -> dict[str, Any]:
+    """Devolve a configuracao JSON completa (normalizada) — usada pelo painel do dashboard para edicao."""
+    cfg, _ = gestor.carregar()
+    return cfg
+
+@router.post("/config")
+def config_post(corpo: Any = Body(default=None)) -> dict[str, Any]:
+    """Substitui a config toda via gestor.gravar — mesma semantica que `vmm` CLI, validacao e backup."""
+    corpo = _corpo_objeto(corpo)
+    if not corpo:
+        raise HTTPException(status_code=400, detail="JSON inválido: não é um objecto")
+    if not (corpo.get("perfis") or {}):
+        raise HTTPException(
+            status_code=400,
+            detail="config sem nenhum perfil: recusado (o plugin ficaria sem rotas)",
+        )
+    try:
+        # gestor.gravar retorna o caminho do ficheiro, mas queremos devolver o config lido depois da gravacao.
+        # A funcao gravar no plugin ja escreve e valida, entao podemos recarregar para garantir.
+        gestor.gravar(corpo)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    cfg, _ = gestor.carregar()
+    return cfg
+
+@router.post("/validar")
+def validar_post(corpo: Any = Body(default=None)) -> dict[str, Any]:
+    """Valida a config sem a escrever; devolve o config normalizado e uma lista de erros.
+
+    Corpo ausente valida o que esta gravado; corpo presente e ilegivel e recusado
+    com 400 — devolver 200 nesse caso diria "valido" sobre um texto que o painel
+    nem conseguiu ler.
+    """
+    if corpo is None:
+        cfg, erros = gestor.carregar()
+        return {"config": cfg, "erros": erros}
+    cfg, erros = gestor.validar(_corpo_objeto(corpo, obrigatorio=True))
+    if not (cfg.get("perfis") or {}):
+        erros = list(erros) + ["config sem nenhum perfil: o plugin ficaria sem rotas"]
+    return {"config": cfg, "erros": erros}
+
+
 def _perfil_servido() -> Optional[str]:
     """Perfil que este processo serve, quando o host o expoe; ``None`` se nao souber."""
-    for var in ("HERMES_PROFILE", "HERMES_PROFILE_NAME"):
+    for var in ("HERMES_HOME", "HERMES_HOME_NAME"):
         valor = (os.environ.get(var) or "").strip()
         if valor:
             return valor

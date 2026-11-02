@@ -32,12 +32,23 @@
   const BASE = "/api/plugins/" + NOME;
 
   function pedir(caminho, opcoes) {
-    if (SDK.fetchJSON) return SDK.fetchJSON(BASE + caminho, opcoes);
-    // Fallback minimo: o host injeta o token de sessao no header em modo loopback.
+    var opts = Object.assign({}, opcoes || {});
+    // O SDK.fetchJSON entrega o init tal e qual ao fetch(): um body objecto vira a
+    // string "[object Object]" (text/plain) e o servidor responde 422 "Input should
+    // be a valid dictionary". Serializa-se aqui e marca-se o Content-Type — o mesmo
+    // padrao do painel kanban.
+    if (opts.body !== undefined && opts.body !== null) {
+      if (typeof opts.body !== "string") opts.body = JSON.stringify(opts.body);
+      opts.headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
+    }
+    if (SDK.fetchJSON) return SDK.fetchJSON(BASE + caminho, opts);
+    // Fallback minimo: o host injecta o token de sessão no header em modo loopback.
     const tok = window.__HERMES_SESSION_TOKEN__;
-    const headers = { "Content-Type": "application/json" };
+    const headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
     if (tok) headers["X-Hermes-Session-Token"] = tok;
-    return fetch(BASE + caminho, Object.assign({ credentials: "include", headers: headers }, opcoes || {}))
+    const resto = Object.assign({}, opts);
+    delete resto.headers;
+    return fetch(BASE + caminho, Object.assign({ credentials: "include", headers: headers }, resto))
       .then(function (r) {
         if (!r.ok) throw new Error(r.status + ": " + r.statusText);
         return r.json();
@@ -237,6 +248,9 @@
     const [erro, setErro] = useState(null);
     const [aGravar, setAGravar] = useState(false);
     const [aCarregar, setACarregar] = useState(false);
+    const [mostrarEditor, setMostrarEditor] = useState(false);
+    const [configJSON, setConfigJSON] = useState("");
+    const [errosValidacao, setErrosValidacao] = useState([]);
 
     const carregar = useCallback(function () {
       setACarregar(true);
@@ -259,10 +273,66 @@
       setAGravar(true);
       const corpo = { ambito: ambito, activo: activo };
       if (perfil) corpo.perfil = perfil;
-      pedir("/toggle", { method: "POST", body: JSON.stringify(corpo) })
+      pedir("/toggle", { method: "POST", body: corpo })
         .then(function () { return carregar(); })
         .catch(function (e) { setErro(String(e && e.message ? e.message : e)); })
         .then(function () { setAGravar(false); });
+    }
+
+    function carregarConfig() {
+      pedir("/config")
+        .then(function (c) { setConfigJSON(JSON.stringify(c, null, 2)); setErrosValidacao([]); })
+        .catch(function (e) { setErro("Erro ao carregar config: " + String(e && e.message ? e.message : e)); });
+    }
+
+    function validarConfig() {
+      setErrosValidacao([]);
+      try {
+        const cfg = JSON.parse(configJSON);
+        // Garantia extra: o corpo deve ser um objecto (não array, não string)
+        if (cfg === null || typeof cfg !== "object" || Array.isArray(cfg)) {
+          throw new Error("O JSON deve ser um objecto (não array, não null, não string)");
+        }
+        pedir("/validar", { method: "POST", body: cfg })
+          .then(function (r) {
+            if (r && r.erros && r.erros.length) {
+              setErrosValidacao(r.erros);
+              setErro("Configuração inválida: " + r.erros.join("; "));
+            } else {
+              setErro(null);
+            }
+          })
+          .catch(function (e) { setErro("Erro ao validar: " + String(e && e.message ? e.message : e)); });
+      } catch (e) {
+        setErrosValidacao(["JSON inválido: " + String(e && e.message ? e.message : e)]);
+        setErro("JSON inválido: " + String(e && e.message ? e.message : e));
+      }
+    }
+
+    function salvarConfig() {
+      try {
+        const cfg = JSON.parse(configJSON);
+        // Garantia extra: o corpo deve ser um objecto (não array, não string)
+        if (cfg === null || typeof cfg !== "object" || Array.isArray(cfg)) {
+          throw new Error("O JSON deve ser um objecto (não array, não null, não string)");
+        }
+        pedir("/config", { method: "POST", body: cfg })
+          .then(function () {
+            setMostrarEditor(false);
+            setConfigJSON("");
+            setErrosValidacao([]);
+            carregar();
+          })
+          .catch(function (e) { setErro("Erro ao salvar: " + String(e && e.message ? e.message : e)); });
+      } catch (e) {
+        setErro("JSON inválido: " + String(e && e.message ? e.message : e));
+      }
+    }
+
+    function fecharEditor() {
+      setMostrarEditor(false);
+      setConfigJSON("");
+      setErrosValidacao([]);
     }
 
     if (!estado && !erro) {
@@ -304,12 +374,56 @@
               title: "Ligar/desligar o gestor em todos os perfis",
             })
           ),
-          h(Button, { size: "sm", variant: "outline", onClick: carregar, disabled: aCarregar },
+          h(Button, {
+            size: "sm",
+            variant: "outline",
+            onClick: function() { setMostrarEditor(true); carregarConfig(); }
+          },
+          "Editar configuração"
+        ),
+        h(Button, { size: "sm", variant: "outline", onClick: carregar, disabled: aCarregar },
             aCarregar ? "a actualizar…" : "Actualizar")
         )
       ),
 
       erro ? h("div", { className: "vmm-erro" }, "erro: " + erro) : null,
+
+      mostrarEditor && h(
+        Card,
+        { className: "vmm-card-editor" },
+        h(
+          CardContent,
+          { className: "vmm-card-content" },
+          h(
+            "div",
+            { className: "vmm-linha vmm-editor-cabecalho" },
+            h("h3", { className: "vmm-editor-titulo" }, "Editor de Configuração"),
+            h(Button, { size: "sm", variant: "ghost", onClick: fecharEditor }, "Fechar")
+          ),
+          h(
+            "div",
+            { className: "vmm-editor-corpo" },
+            h("textarea", {
+              value: configJSON,
+              onChange: function (e) { setConfigJSON(e.target.value); },
+              className: "vmm-editor-textarea",
+              style: { width: "100%", height: "350px", fontFamily: "monospace", fontSize: "12px", lineHeight: "1.5", padding: "8px", border: "1px solid var(--border)", borderRadius: "4px", resize: "vertical" }
+            }),
+            errosValidacao.length > 0 && h(
+              "div",
+              { className: "vmm-editor-erros" },
+              errosValidacao.map(function (e, i) { return h("div", { key: i, className: "vmm-erro-item" }, "• " + e); })
+            )
+          ),
+          h(
+            "div",
+            { className: "vmm-editor-accoes" },
+            h(Button, { size: "sm", variant: "outline", onClick: validarConfig }, "Validar"),
+            h(Button, { size: "sm", variant: "default", onClick: salvarConfig, disabled: aGravar }, aGravar ? "A gravar…" : "Salvar"),
+            h(Button, { size: "sm", variant: "ghost", onClick: fecharEditor }, "Cancelar")
+          )
+        )
+      ),
 
       h(
         "div",
@@ -359,7 +473,7 @@
       ),
 
       h("div", { className: "vmm-pe vmm-mudo" },
-        "Catalogo e associacoes de tarefa vivem em plugin-data/vipernet-model-manager/config.json — este painel nao os reescreve. Versao do painel: " +
+        "Catalogo e associacoes de tarefa vivem em plugin-data/vipernet-model-manager/config.json — este painel permite editar a configuração. Versao do painel: " +
         ((estado && estado.versao_painel) || "—"))
     );
   }
