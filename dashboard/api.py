@@ -325,14 +325,18 @@ def config_post(corpo: Any = Body(default=None)) -> dict[str, Any]:
 
 @router.post("/validar")
 def validar_post(corpo: Any = Body(default=None)) -> dict[str, Any]:
-    """Valida a config sem a escrever; devolve o config normalizado e uma lista de erros."""
-    cfg, erros = gestor.carregar()
-    # Sem corpo, valida o que esta gravado; com corpo, valida esse corpo.
-    corpo = _corpo_objeto(corpo, obrigatorio=False)
-    if corpo:
-        cfg, erros = gestor.validar(corpo)
-        if not (cfg.get("perfis") or {}):
-            erros = list(erros) + ["config sem nenhum perfil: o plugin ficaria sem rotas"]
+    """Valida a config sem a escrever; devolve o config normalizado e uma lista de erros.
+
+    Corpo ausente valida o que esta gravado; corpo presente e ilegivel e recusado
+    com 400 — devolver 200 nesse caso diria "valido" sobre um texto que o painel
+    nem conseguiu ler.
+    """
+    if corpo is None:
+        cfg, erros = gestor.carregar()
+        return {"config": cfg, "erros": erros}
+    cfg, erros = gestor.validar(_corpo_objeto(corpo, obrigatorio=True))
+    if not (cfg.get("perfis") or {}):
+        erros = list(erros) + ["config sem nenhum perfil: o plugin ficaria sem rotas"]
     return {"config": cfg, "erros": erros}
 
 
