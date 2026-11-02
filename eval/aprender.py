@@ -44,6 +44,7 @@ import json
 import os
 import random
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +71,14 @@ if str(REPO) not in sys.path:
 if str(EVAL) not in sys.path:
     sys.path.insert(0, str(EVAL))
 
+# `seams.resolve_runtime_provider` importa modulos do core (`hermes_cli`), que
+# vivem na raiz da instalacao do Hermes e nao no site-packages do python que
+# corre este script. Sem isto, em cron, o juiz falha com "seam indisponivel" —
+# que se le como falta de acesso quando e falta de path.
+_INSTALACAO = Path(os.environ.get("HERMES_INSTALL_ROOT") or "/opt/hermes")
+if (_INSTALACAO / "hermes_cli").is_dir() and str(_INSTALACAO) not in sys.path:
+    sys.path.insert(0, str(_INSTALACAO))
+
 #: Prompt do juiz. Nao e o `PROMPT` do classificador de proposito: um juiz com
 #: o mesmo texto do avaliado mede a concordancia do modelo consigo mesmo, nao a
 #: qualidade. Este e ancorado na RUBRICA (eixos, contra-ancoras) e mais longo.
@@ -91,8 +100,61 @@ PROMPT_JUIZ = (
     "urgencia, ou o pedido ser sobre uma avaria. Avalia o trabalho pedido, nao a forma."
 )
 
+#: Juiz de duas fronteiras. Medido: o juiz de tres classes concorda com os
+#: rotulos humanos em kappa 0,53, e quase todo o erro e `media` -> `leve`; a
+#: classe do meio nao tem fronteira operacional, e forcar uma regra de fronteira
+#: piorou (0,35). Duas perguntas binarias sao mensuraveis em separado e cada uma
+#: corresponde exactamente a um limiar que a producao usa.
+PROMPT_JUIZ2 = (
+    "Avalias um pedido feito a um agente de engenharia respondendo a DUAS perguntas "
+    "binarias, cada uma independente.\n"
+    "Responde APENAS com um objecto json valido e nada fora dele:\n"
+    '{"leve": <true|false>, "alta": <true|false>}\n'
+    "1) `leve` - e verdade se o pedido NAO exige produzir um artefacto nem tocar em "
+    "nada: e conversa, confirmacao, pergunta de uma linha, extrair um valor, sim/nao, "
+    "pedir esclarecimento. Se pede para fazer, alterar, escrever, corrigir ou "
+    "verificar alguma coisa, entao `leve` e false.\n"
+    "2) `alta` - e verdade se o pedido exige desenhar arquitetura ou decidir "
+    "trade-offs, depurar sem reproducao nem mensagem de erro, mexer em varios "
+    "ficheiros ou servicos em conjunto, provar correcao, otimizar um algoritmo ou "
+    "auditar um sistema. Um pedido que produz um artefacto simples, com alvo "
+    "conhecido e sem essas caracteristicas, nao e `alta`.\n"
+    "As duas podem ser false ao mesmo tempo (trabalho de rotina com alvo conhecido). "
+    "Nao mudam nenhuma das respostas: registo informal, giria, abreviaturas, erros "
+    "ortograficos, urgencia do utilizador, ou o pedido ser sobre uma avaria."
+)
+
+JUIZ_3 = "3classes"
+JUIZ_2 = "2fronteiras"
+
 
 # --------------------------------------------------------------------------- modulos
+
+
+def garantir_interpretador() -> None:
+    """Re-executa no python do Hermes quando o seam de credenciais nao resolve.
+
+    O ciclo precisa de `resolve_runtime_provider`, que vive na instalacao do
+    Hermes e depende das dependencias dela. Corrido com outro python (cron, shell
+    limpa, `python3` do sistema) o juiz nao resolve credencial e o ciclo morre
+    com "seam indisponivel" — sintoma que se le como falta de acesso. Medido:
+    `/usr/local/bin/python3` nao tem `ruamel`, `/opt/hermes/.venv/bin/python` tem.
+    """
+    if os.environ.get("VMM_APRENDER_REEXEC") == "1":
+        return
+    try:
+        import ruamel.yaml  # noqa: F401,PLC0415
+        from hermes_cli.runtime_provider import resolve_runtime_provider  # noqa: F401,PLC0415
+
+        return
+    except Exception:  # noqa: BLE001
+        pass
+    candidato = _INSTALACAO / ".venv/bin/python"
+    if not candidato.exists():
+        return
+    os.environ["VMM_APRENDER_REEXEC"] = "1"
+    os.execve(str(candidato), [str(candidato), __file__, *sys.argv[1:]],
+              {**os.environ, "PYTHONPATH": str(_INSTALACAO)})
 
 
 def _mod(nome: str):
@@ -279,8 +341,13 @@ def _etiquetar(casos: list[dict], definicao: dict[str, Any], resolver, threads: 
                                definicao, resolver, perfil="aprendiz", prompt=PROMPT_JUIZ)
         if r is None:
             # `classificar` devolve None quando a rota esta suspensa depois de
-            # falhar (comportamento documentado). Nao e um rotulo: e uma falha,
-            # e tem de aparecer no relatorio como tal.
+            # falhar (comportamento documentado). Uma falha transitoria suspende
+            # a rota para todos os casos seguintes, por isso espera-se e tenta-se
+            # uma vez; sem isto, um unico 429 apagava o resto do lote.
+            time.sleep(3.0)
+            r = modelo.classificar([{"role": "user", "content": caso["texto"]}],
+                                   definicao, resolver, perfil="aprendiz", prompt=PROMPT_JUIZ)
+        if r is None:
             return {"id": caso["id"], "rotulo": None, "erro": "rota suspensa apos falha"}
         nivel = (r.get("nivel") or "").strip().lower()
         if nivel not in NIVEIS:
@@ -528,6 +595,8 @@ def main() -> int:
     ap.add_argument("--reverter", action="store_true", help="restaurar os pesos do ciclo anterior")
     ap.add_argument("--so-treinar", default="", help="ficheiro jsonl rotulado: salta juiz e calibracao")
     args = ap.parse_args()
+
+    garantir_interpretador()
 
     if args.reverter:
         r = reverter()
