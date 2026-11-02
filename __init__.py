@@ -70,43 +70,65 @@ logger = logging.getLogger(__name__)
 
 _FICHEIRO_ANALISE = Path(_analise_mod.__file__ or "analise.py").resolve()
 _MTIME_ANALISE = [0]
+_FICHEIRO_ANALISE_MODELO = Path(_analise_modelo_mod.__file__ or "analise_modelo.py").resolve()
+_MTIME_ANALISE_MODELO = [0]
+
+
+def _recarregar_modulo(mod: Any, ficheiro: Path, cache: list[int], rotulo: str) -> Any:
+    """Devolve a versao mais recente do modulo se o ficheiro mudou no disco.
+
+    O gateway importa o plugin uma vez e congela as funcoes em memoria: uma
+    melhoria so entrava com restart do gateway, que corta as sessoes vivas.
+    Aqui o modulo e reexecutado quando o `mtime` muda, para entrar no turno
+    seguinte.
+
+    Nao se usa `importlib.reload`: exige que um finder reencontre o modulo a
+    partir do `sys.path`, e estes modulos vem de uma directoria que nao esta
+    la — reload falhava com `spec not found` e deixava o modulo preso no
+    arranque. Reexecuta-se o spec original.
+
+    Fail-open: se a recarga falhar, devolve-se o modulo em memoria e registra-se.
+    """
+    try:
+        mtime = ficheiro.stat().st_mtime_ns
+    except OSError:
+        return mod
+    if mtime == cache[0]:
+        return mod
+    try:
+        spec = mod.__spec__
+        if spec is None or spec.loader is None:
+            raise ImportError(f"{rotulo} sem spec carregavel")
+        recente = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = recente
+        spec.loader.exec_module(recente)
+        cache[0] = mtime
+        logger.info("%s recarregado (ficheiro mudou)", rotulo)
+        return recente
+    except Exception:  # noqa: BLE001 - nunca partir um turno por causa disto
+        logger.warning("falha a recarregar %s; mantem a versao em memoria",
+                       rotulo, exc_info=True)
+        return mod
 
 
 def _recarregar_analise_se_mudou() -> None:
-    """Recarrega `analise.py` quando o ficheiro mudou no disco.
-
-    O gateway importa o plugin uma vez e, com `from .analise import decidir`,
-    congela a funcao em memoria: um classificador novo so entrava com restart
-    do gateway, o que corta as sessoes vivas. Aqui o modulo e relido quando o
-    mtime muda, para que a melhoria entre no turno seguinte.
-
-    Nao se usa `importlib.reload`: ele exige que um finder consiga reencontrar
-    o modulo a partir de `sys.path`, e estes modulos vem de um directoria que
-    nao esta no `sys.path` — reload falhava com `spec not found` e deixava o
-    analisador preso no arranque. Reexecuta-se o spec original.
-    Fail-open: se a recarga falhar, mantem-se a versao em memoria e regista-se.
-    """
+    """`analise.py` — o analisador heuristico."""
     global NIVEIS, _analise_mod
-    try:
-        mtime = _FICHEIRO_ANALISE.stat().st_mtime_ns
-    except OSError:
-        return
-    if mtime == _MTIME_ANALISE[0]:
-        return
-    try:
-        spec = _analise_mod.__spec__
-        if spec is None or spec.loader is None:
-            raise ImportError("analise sem spec carregavel")
-        novo = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = novo
-        spec.loader.exec_module(novo)
-        _analise_mod = novo
-        NIVEIS = novo.NIVEIS
-        _MTIME_ANALISE[0] = mtime
-        logger.info("analisador recarregado (analise.py mudou)")
-    except Exception:  # noqa: BLE001 - nunca partir um turno por causa disto
-        logger.warning("falha a recarregar o analisador; mantem a versao em memoria",
-                       exc_info=True)
+    antes = _analise_mod
+    _analise_mod = _recarregar_modulo(antes, _FICHEIRO_ANALISE, _MTIME_ANALISE, "analisador")
+    if _analise_mod is not antes:
+        NIVEIS = _analise_mod.NIVEIS
+
+
+def _recarregar_analise_modelo_se_mudou() -> None:
+    """`analise_modelo.py` — o classificador por modelo.
+
+    Muda com mais frequencia que o resto (e o que se afina), e sem isto cada
+    melhoria exigia reiniciar o gateway.
+    """
+    global _analise_modelo_mod
+    _analise_modelo_mod = _recarregar_modulo(
+        _analise_modelo_mod, _FICHEIRO_ANALISE_MODELO, _MTIME_ANALISE_MODELO, "classificador")
 
 NOME = gestor.NOME
 _AMBIENTE_DESLIGADO = ("VMM_DESATIVADO", "VIPERNET_MODEL_MANAGER_OFF")
@@ -619,6 +641,7 @@ def middleware_llm_request(
             return None
         analise = pcfg.get("analise") or {}
         _recarregar_analise_se_mudou()
+        _recarregar_analise_modelo_se_mudou()
         decisao = _analise_mod.decidir(
             _mensagens(request),
             limiares=analise.get("limiares"),

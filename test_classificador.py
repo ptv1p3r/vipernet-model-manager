@@ -39,6 +39,8 @@ gestor = _mod("gestor")
 
 PEDIDOS: list[dict] = []
 RESPOSTA = {"conteudo": "alta", "codigo": 200, "atraso": 0.0, "json": None}
+# Fila para provar o retry: cada POST consome uma entrada; vazia = RESPOSTA.
+FILA: list[dict] = []
 
 
 class Servidor(BaseHTTPRequestHandler):
@@ -47,14 +49,15 @@ class Servidor(BaseHTTPRequestHandler):
         corpo = json.loads(self.rfile.read(tamanho) or b"{}")
         PEDIDOS.append({"corpo": corpo, "auth": self.headers.get("Authorization"),
                         "ua": self.headers.get("User-Agent"), "caminho": self.path})
-        if RESPOSTA["atraso"]:
-            time.sleep(float(RESPOSTA["atraso"]))
-        codigo = int(RESPOSTA["codigo"])
-        if RESPOSTA["json"] is not None:
-            dados = RESPOSTA["json"]
+        atual = FILA.pop(0) if FILA else RESPOSTA
+        if atual["atraso"]:
+            time.sleep(float(atual["atraso"]))
+        codigo = int(atual["codigo"])
+        if atual["json"] is not None:
+            dados = atual["json"]
         else:
             dados = {"choices": [{"message": {"role": "assistant",
-                                              "content": RESPOSTA["conteudo"]}}],
+                                              "content": atual["conteudo"]}}],
                      "usage": {"prompt_tokens": 120, "completion_tokens": 2}}
         bruto = json.dumps(dados).encode()
         try:
@@ -86,6 +89,7 @@ class Base(unittest.TestCase):
 
     def setUp(self) -> None:
         PEDIDOS.clear()
+        FILA.clear()
         RESPOSTA.update({"conteudo": "alta", "codigo": 200, "atraso": 0.0, "json": None})
         am.limpar_cache()
 
@@ -392,6 +396,187 @@ class TestExtracao(Base):
     def test_resposta_vazia_levanta(self):
         with self.assertRaises(ValueError):
             am._extrair_nivel({"choices": [{"message": {"content": ""}}]})
+
+
+def _sem_nivel(motivo: str = "length", tokens: int = 320) -> dict:
+    """Resposta do modelo que gastou o orcamento a raciocinar e nao disse nada."""
+    return {"json": {"choices": [{"finish_reason": motivo,
+                                  "message": {"role": "assistant", "content": ""}}],
+                     "usage": {"prompt_tokens": 120, "completion_tokens": tokens}},
+            "codigo": 200, "atraso": 0.0, "conteudo": ""}
+
+
+class TestVariantes(Base):
+    """O modelo nem sempre responde em portugues nem em texto limpo."""
+
+    def test_variantes_de_vocabulario(self):
+        for texto, esperado in (("Medium", "media"), ("high", "alta"), ("LOW", "leve"),
+                                ("baixa", "leve"), ("moderado", "media"),
+                                ("the complexity is high here", "alta")):
+            payload = {"choices": [{"message": {"content": texto}, "finish_reason": "stop"}]}
+            nivel, _ = am._extrair_nivel(payload)
+            self.assertEqual(nivel, esperado, texto)
+
+    def test_json_com_acento(self):
+        payload = {"choices": [{"message": {"content": '{"nivel": "média"}'}}]}
+        nivel, _ = am._extrair_nivel(payload)
+        self.assertEqual(nivel, "media")
+
+
+class TestRetry(Base):
+    """Orcamento gasto a raciocinar: a segunda tentativa tem de recuperar."""
+
+    def test_recupera_com_mais_orcamento_e_sem_esforco(self):
+        FILA.extend([_sem_nivel(), {"conteudo": "media", "codigo": 200,
+                                    "atraso": 0.0, "json": None}])
+        d = self.definicao(max_tokens=320, esforco="baixo")
+        r = am.classificar(self.mensagens(), d, lambda p, m: self.rota())
+        self.assertEqual(r["nivel"], "media")
+        self.assertEqual(r["classificador"]["tentativas"], 2)
+        self.assertEqual(len(PEDIDOS), 2)
+        primeiro, segundo = PEDIDOS[0]["corpo"], PEDIDOS[1]["corpo"]
+        self.assertGreater(segundo["max_tokens"], primeiro["max_tokens"])
+        # A segunda tentativa nao leva o esforco: e ele que faz raciocinar.
+        for campo in ("reasoning_effort", "thinking", "reasoning"):
+            self.assertNotIn(campo, segundo)
+
+    def test_duas_falhas_devolvem_erro(self):
+        FILA.extend([_sem_nivel(), _sem_nivel(tokens=1200)])
+        r = am.classificar(self.mensagens(), self.definicao(max_tokens=320),
+                           lambda p, m: self.rota())
+        self.assertIsNone(r.get("nivel"))
+        self.assertIn("ValueError", r["erro"])
+        self.assertEqual(len(PEDIDOS), 2)
+
+
+class TestCacheNegativo(Base):
+    """Um turno faz varios `llm_request`: a falha nao se paga duas vezes."""
+
+    def test_falha_nao_repete_a_chamada(self):
+        RESPOSTA.update(_sem_nivel())
+        d = self.definicao(cache_ttl_s=300)
+        r1 = am.classificar(self.mensagens(), d, lambda p, m: self.rota())
+        self.assertIn("erro", r1)
+        chamadas = len(PEDIDOS)          # 1 tentativa + 1 retry
+        self.assertEqual(chamadas, 2)
+        r2 = am.classificar(self.mensagens(), d, lambda p, m: self.rota())
+        self.assertEqual(len(PEDIDOS), chamadas, "a falha voltou a pagar chamada")
+        self.assertTrue(r2.get("cache_erro"))
+
+    def test_ttl_zero_desliga_o_cache_negativo(self):
+        RESPOSTA.update(_sem_nivel())
+        d = self.definicao(cache_ttl_s=0)
+        am.classificar(self.mensagens(), d, lambda p, m: self.rota())
+        depois = len(PEDIDOS)
+        am.classificar(self.mensagens(), d, lambda p, m: self.rota())
+        self.assertGreater(len(PEDIDOS), depois)
+
+    def test_sucesso_limpa_o_erro_guardado(self):
+        RESPOSTA.update(_sem_nivel())
+        d = self.definicao(cache_ttl_s=300)
+        am.classificar(self.mensagens(), d, lambda p, m: self.rota())
+        am.limpar_cache()
+        RESPOSTA.update({"conteudo": "leve", "codigo": 200, "atraso": 0.0, "json": None})
+        r = am.classificar(self.mensagens(), d, lambda p, m: self.rota())
+        self.assertEqual(r["nivel"], "leve")
+        self.assertFalse(r.get("cache_erro"))
+
+
+class TestFormatoJson(Base):
+    """O prompt pede json e o corpo leva `response_format`, com degradacao."""
+
+    def test_o_prompt_contem_a_palavra_json(self):
+        # O DeepSeek recusa `response_format: json_object` com 400 quando o
+        # prompt nao contem a palavra "json" (medido a 2026-11-02). Esta
+        # verificacao guarda essa condicao, que nao e obvia no texto do prompt.
+        self.assertIn("json", am.PROMPT.lower())
+        self.assertIn("json", am.PROMPT_LOTE.lower())
+
+    def test_corpo_pede_response_format_por_omissao(self):
+        corpo = am._corpo("openrouter", "m", "texto", self.definicao())
+        self.assertEqual(corpo["response_format"], {"type": "json_object"})
+
+    def test_formato_off_nao_pede(self):
+        corpo = am._corpo("openrouter", "m", "texto", self.definicao(formato_json="off"))
+        self.assertNotIn("response_format", corpo)
+
+    def test_normalizar_formato(self):
+        self.assertEqual(am.normalizar({})[0]["formato_json"], "auto")
+        self.assertEqual(am.normalizar({"formato_json": "OFF"})[0]["formato_json"], "off")
+        self.assertEqual(am.normalizar({"formato_json": "true"})[0]["formato_json"], "on")
+        d, erros = am.normalizar({"formato_json": "talvez"})
+        self.assertEqual(d["formato_json"], "auto")
+        self.assertTrue(any("formato_json" in e for e in erros))
+
+    def test_provider_recusa_o_campo_e_repete_sem_ele(self):
+        # 400 com `response_format` (o que o DeepSeek faz sem a palavra json no
+        # prompt): o segundo pedido tem de sair sem o campo e o nivel tem de vir.
+        FILA.append({"conteudo": "formato nao suportado", "codigo": 400, "atraso": 0.0,
+                     "json": {"error": {"message": "response_format nao suportado"}}})
+        RESPOSTA.update({"conteudo": "media", "codigo": 200})
+        r = am.classificar(self.mensagens(), self.definicao(), lambda p, m: self.rota())
+        self.assertEqual(r["nivel"], "media")
+        self.assertIn("response_format", PEDIDOS[0]["corpo"])
+        self.assertNotIn("response_format", PEDIDOS[1]["corpo"])
+        self.assertEqual(r["classificador"]["formato_pedido"], "texto")
+
+    def test_401_nao_insiste(self):
+        RESPOSTA.update({"conteudo": "x", "codigo": 401, "json": {"error": "sem chave"}})
+        r = am.classificar(self.mensagens(), self.definicao(), lambda p, m: self.rota())
+        self.assertIn("HTTP 401", r["erro"])
+        self.assertEqual(len(PEDIDOS), 1, "401 nao se resolve a retirar um campo")
+
+    def test_forma_distingue_json_de_texto(self):
+        json_limpo = {"choices": [{"message": {"content": '{"nivel": "media"}'}}]}
+        texto = {"choices": [{"message": {"content": "acho que e media"}}]}
+        vazio = {"choices": [{"message": {"content": ""}}]}
+        self.assertEqual(am.forma(json_limpo), "json")
+        self.assertEqual(am.forma(texto), "texto")
+        self.assertEqual(am.forma(vazio), "raciocinio")
+
+
+class TestLote(Base):
+    """Classificacao em lote: um pedido, N niveis, alinhados ao que se pediu."""
+
+    def test_lote_devolve_um_nivel_por_pedido(self):
+        RESPOSTA.update({"codigo": 200, "json": {"choices": [{"message": {"content": json.dumps(
+            {"niveis": [{"i": 1, "nivel": "leve"}, {"i": 2, "nivel": "media"},
+                        {"i": 3, "nivel": "alta"}]})}}],
+            "usage": {"prompt_tokens": 300, "completion_tokens": 90}}})
+        r = am.classificar_lote(["ola", "explica o nginx", "desenha a arquitetura"],
+                                self.definicao(), lambda p, m: self.rota())
+        self.assertEqual(r["niveis"], ["leve", "media", "alta"])
+        self.assertEqual(r["erro"], "")
+        self.assertEqual(len(PEDIDOS), 1, "o lote tem de ser um so pedido")
+        corpo = PEDIDOS[0]["corpo"]
+        self.assertIn("1. ola", corpo["messages"][1]["content"])
+        self.assertIn("3. desenha a arquitetura", corpo["messages"][1]["content"])
+        self.assertIn("json", corpo["messages"][0]["content"].lower())
+
+    def test_lote_alinha_o_que_faltar_com_none(self):
+        RESPOSTA.update({"json": {"choices": [{"message": {"content": json.dumps(
+            {"niveis": [{"i": 1, "nivel": "leve"}, {"i": 3, "nivel": "alta"}]})}}]}})
+        r = am.classificar_lote(["a", "b", "c"], self.definicao(), lambda p, m: self.rota())
+        self.assertEqual(r["niveis"], ["leve", None, "alta"])
+
+    def test_ler_lote_aceita_as_tres_formas(self):
+        objetos = {"choices": [{"message": {"content": json.dumps(
+            {"niveis": [{"i": 1, "nivel": "leve"}, {"nivel": "alta"}]})}}]}
+        self.assertEqual(am._ler_lote(objetos, 2), ["leve", "alta"])
+        lista = {"choices": [{"message": {"content": json.dumps(
+            {"niveis": ["leve", "media"]})}}]}
+        self.assertEqual(am._ler_lote(lista, 2), ["leve", "media"])
+        mapa = {"choices": [{"message": {"content": json.dumps(
+            {"1": "leve", "2": "média"})}}]}
+        self.assertEqual(am._ler_lote(mapa, 2), ["leve", "media"])
+        self.assertEqual(am._ler_lote({"choices": []}, 2), [None, None])
+        self.assertEqual(am._ler_lote({"choices": [{"message": {"content": "sem json"}}]}, 2),
+                         [None, None])
+
+    def test_lote_sem_classificador(self):
+        r = am.classificar_lote(["a"], None, lambda p, m: self.rota())
+        self.assertEqual(r["niveis"], [None])
+        self.assertEqual(PEDIDOS, [])
 
 
 if __name__ == "__main__":

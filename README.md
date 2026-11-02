@@ -321,6 +321,70 @@ Testado por `selftest.py` (21 verificações novas): vocabulário, validação n
 catálogo, forma por provider, limpeza do payload, reposição do valor de origem
 e o corpo do classificador.
 
+## Resposta em JSON e classificação em lote (3.9)
+
+O classificador pede a resposta como **objecto JSON** (`{"nivel": "media"}`) em
+vez de uma palavra solta, e a configuração tem três valores para `formato_json`:
+
+| valor | comportamento |
+|---|---|
+| `auto` (por omissão) | pede `response_format: {"type": "json_object"}`; se o provider recusar com **400/404/415/422**, repete **o mesmo pedido sem o campo** e segue |
+| `on` | pede sempre; um provider que recuse dá erro, sem segunda tentativa sem formato |
+| `off` | nunca pede; só texto (o parse tolerante continua a valer) |
+
+Porque é que `auto` degrada em vez de ter uma lista de providers: uma lista
+envelhece a cada modelo novo, e o custo de errar é uma chamada. Os códigos foram
+escolhidos — **401/402/429/5xx não se resolvem a retirar um campo**, e esses
+falham à primeira.
+
+Medido no `inception/mercury-3` a 2026-11-02, 10 mensagens por variante:
+
+| variante | latência mediana | tokens saída | json limpo | divergências (`length`) | acertos |
+|---|---|---|---|---|---|
+| **json + esforço baixo** | **665 ms** | **68** | **10/10** | **0** | **9/10** |
+| json + esforço médio | 1029 ms | 373 | 9/10 | 1 (aos 4314 ms) | 7/10 |
+| texto + esforço médio | 553 ms | 76 | — | 0 | 9/10 |
+| texto + esforço baixo | 548 ms | 60 | — | 1 | 9/10 |
+
+Duas conclusões que contrariam o conselho genérico «comece sempre em *medium*»:
+neste modelo, **médio é pior** para esta tarefa (cinco vezes os tokens, o dobro
+da latência, dois acertos a menos) — é classificação de três classes, não
+raciocínio difícil; e o **JSON estabiliza a resposta** (zero divergências contra
+uma). O `esforco` do classificador fica, por isso, em `baixo` na configuração
+viva, e mudar é um comando.
+
+`forma()` regista no ledger como a resposta veio — `json` (objecto com nível),
+`texto` (palavra solta, sujeita a falso positivo por citação do prompt) ou
+`raciocinio` (conteúdo vazio, só pensamento). Sem esta distinção, um acerto por
+palavra solta parecia igual a um JSON limpo.
+
+### Lote
+
+`classificar_lote()` manda N pedidos num só, com uma lista numerada e uma
+resposta `{"niveis": [{"i": 1, "nivel": …}]}`. Serve para medir um corpus
+inteiro e para lotes grandes; o turno normal continua a classificar um pedido,
+com cache.
+
+```
+vmm classificador lote "ola" "explica o cache do nginx" "desenha a arquitetura do AAD"
+```
+
+Medido a 2026-11-02 com 8 pedidos reais: **551 ms**, 447→130 tokens, 8/8
+acertos, formato json aceite. Com 10 pedidos: 2,5 s contra 6,6 s um a um (2,7×
+mais rápido) mas ~1,6× os tokens — o lote paga-se em latência, não em dinheiro.
+O orçamento acompanha o lote (`max(1200, 120 × N)`); um lote que volte sem
+níveis é repetido uma vez sem formato e sem esforço.
+
+O `_ler_lote` aceita as três formas que um modelo devolve na prática —
+`{"niveis":[{"i":N,"nivel":…}]}`, `{"niveis":["leve",…]}` e `{"1":"leve"}` — e
+**alinha sempre ao tamanho da entrada**, com `None` no que faltar: quem chama
+não tem de adivinhar quantos vieram.
+
+Uma armadilha que já custou uma sessão: o prompt **tem de conter a palavra
+`json`**, porque o DeepSeek recusa `response_format: json_object` com
+`400 Invalid request: Prompt must contain the word 'json'` — medido. Está
+travado por teste.
+
 ## Tarefas por perfil (3.2)
 
 No mesmo JSON, `perfis.<perfil>.tarefas` define como reconhecer cada tarefa;
@@ -377,6 +441,8 @@ vmm rota rm PERFIL ID
 vmm simular PERFIL "texto"           classifica e mostra as candidatas
 vmm verificar [PERFIL]               resolve credenciais de cada rota (sem as imprimir)
 vmm classificador [ver|on|off] [--perfil NOME] [--provider P] [--modelo M]
+                 [--esforco baixo|medio|alto|-] [--formato auto|on|off]
+vmm classificador lote "texto1" "texto2" ...   N pedidos num só pedido (contexto longo)
 vmm log [-n N] [--perfil NOME] [--provider P] [--sessao S] [--evento E]
 vmm caminho                          caminhos de config e ledger
 vmm recarregar                       recarrega plugins no gateway

@@ -98,6 +98,21 @@
   // classificador ligado que falha cai na heuristica, e um perfil sem bloco
   // herda o global sem o mostrar em lado nenhum. Por isso o rotulo diz as duas
   // coisas: o que devia decidir e a evidencia do ledger de que decidiu.
+  function _hhmm(iso) {
+    try {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return "";
+      return d.toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" });
+    } catch (e) { return ""; }
+  }
+  function _haMin(iso) {
+    try {
+      const t = Date.parse(iso);
+      if (isNaN(t)) return null;
+      return Math.max(0, Math.round((Date.now() - t) / 60000));
+    } catch (e) { return null; }
+  }
+
   function rotuloAnalise(a) {
     const vazio = {
       modo: "heuristica",
@@ -123,9 +138,16 @@
       const n = origens[k] || 0;
       if (n > 0) contagens.push(n + " " + (nomes[k] || k));
     });
-    const evidencia = a.respostas > 0
+    let evidencia = a.respostas > 0
       ? "últimos " + a.respostas + " turnos: " + contagens.join(" · ")
       : "";
+    const taxa = a.taxa || {};
+    const lidas = (taxa.leituras || 0) + (taxa.falhas || 0);
+    if (lidas > 0) {
+      const taxaTxt = (taxa.leituras || 0) + "/" + lidas + " leituras ok"
+        + (taxa.falhas ? " (" + Math.round((taxa.falhas / lidas) * 100) + "% falhas)" : "");
+      evidencia = evidencia ? evidencia + " · classificador: " + taxaTxt : "classificador: " + taxaTxt;
+    }
     const rasto = a.rasto || {};
     // O aviso so vale para a ultima chamada: um erro antigo nao pode ficar a
     // assombrar um classificador que voltou a acertar (foi medido: 149 leituras
@@ -136,6 +158,9 @@
       const onde = c.origem === "proprio" ? "próprio do perfil" : "herdado do global";
       const extra = [];
       if (c.esforco) extra.push("esforço " + c.esforco);
+      // O formato so se mostra quando nao e o de fabrica: `auto` e o normal e
+      // nao vale um chip. `texto` e uma escolha, e essa ve-se.
+      if (c.formato_json && c.formato_json !== "auto") extra.push("formato " + c.formato_json);
       extra.push(onde);
       if (rasto.lido) {
         extra.push("leu " + rasto.lido + (rasto.ms ? " em " + Math.round(rasto.ms) + " ms" : ""));
@@ -146,7 +171,15 @@
         tom: "default",
         detalhe: extra.join(" · "),
         evidencia: evidencia,
-        alerta: alertaBruto ? "o classificador falhou no último turno — caiu na heurística: " + alertaBruto : "",
+        alerta: (function () {
+          if (!alertaBruto) return "";
+          const hora = _hhmm(rasto.ts);
+          const idade = _haMin(rasto.ts);
+          const quando = hora
+            ? " às " + hora + (idade !== null ? " (há " + (idade < 1 ? "instantes" : idade + " min") + ")" : "")
+            : "";
+          return "o classificador falhou" + quando + " — caiu na heurística: " + alertaBruto;
+        })(),
       };
     }
     const motivo = String(c.motivo || "");
@@ -439,7 +472,13 @@
       // O esforco acompanha o bloco: nao se perde ao mudar provider ou modelo,
       // e sai do JSON quando volta a "nao declarado" — um campo vazio deixado
       // la era validado como valor invalido.
-      if (actual.esforco) novo.esforco = actual.esforco;
+      // Os campos que nao estao no formulario acompanham o bloco: mudar o
+      // provider apagava `timeout_s`/`max_tokens`/`janela_mensagens` que
+      // estivessem no JSON, e o bloco voltava aos valores de fabrica sem aviso.
+      ["esforco", "formato_json", "timeout_s", "max_tokens", "cache_ttl_s",
+       "janela_mensagens", "max_chars"].forEach(function (k) {
+        if (actual[k] !== undefined && actual[k] !== "") novo[k] = actual[k];
+      });
       if (campo === "esforco" && !valor) delete novo.esforco;
       else novo[campo] = valor;
       aplicar(perfil, novo);
@@ -495,6 +534,16 @@
           },
             [["", "esforço: não declarado"], ["baixo", "esforço: baixo"],
              ["medio", "esforço: médio"], ["alto", "esforço: alto"]]
+              .map(function (o) { return h("option", { key: o[0], value: o[0] }, o[1]); })
+          ) : null,
+          proprio ? h("select", {
+            className: "vmm-select",
+            title: "resposta em JSON: auto pede response_format e repete sem ele se o provider recusar",
+            value: bloco.formato_json || "auto",
+            onChange: function (e) { mudarCampo(perfil, "formato_json", e.target.value); },
+          },
+            [["auto", "formato: JSON automático"], ["on", "formato: JSON obrigatório"],
+             ["off", "formato: texto"]]
               .map(function (o) { return h("option", { key: o[0], value: o[0] }, o[1]); })
           ) : null
         );

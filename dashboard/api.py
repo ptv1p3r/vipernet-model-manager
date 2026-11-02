@@ -178,6 +178,7 @@ def _resumo_por_perfil(
     if not caminho.exists():
         return {}
     achados: dict[str, dict[str, Any]] = {}
+    ja_contados: set[tuple[Any, str]] = set()
     bloco = 64 * 1024
     lidas = 0
     with caminho.open("rb") as fh:
@@ -212,6 +213,9 @@ def _resumo_por_perfil(
                         "respostas": 0,
                         "classificador": None,
                         "classificador_erro": "",
+                        "classif_leituras": 0,
+                        "classif_falhas": 0,
+                        "classif_ultima_falha": "",
                     },
                 )
                 # O rasto do classificador vive nos eventos de troca/sem_troca, que
@@ -231,6 +235,22 @@ def _resumo_por_perfil(
                     }
                 if not reg["classificador_erro"] and ev.get("classificador_erro"):
                     reg["classificador_erro"] = str(ev["classificador_erro"])
+                # Taxa do classificador: um erro isolado nao e o mesmo que um
+                # modelo a falhar metade das vezes, e o mesmo `ts` aparece em
+                # varios eventos do turno (troca, sem_troca, resposta) — conta-se
+                # uma vez por timestamp.
+                if isinstance(ev.get("classificador"), dict):
+                    c_ev = ev["classificador"]
+                    tipo_ev = "ok" if c_ev.get("lido") else ("falha" if c_ev.get("falhou") else "")
+                    marca = (ev.get("ts"), tipo_ev)
+                    if tipo_ev and marca not in ja_contados:
+                        ja_contados.add(marca)
+                        if tipo_ev == "ok":
+                            reg["classif_leituras"] += 1
+                        else:
+                            reg["classif_falhas"] += 1
+                            if not reg["classif_ultima_falha"]:
+                                reg["classif_ultima_falha"] = ev.get("ts") or ""
                 if ev.get("evento") != "resposta":
                     continue
                 if reg["respostas"] >= por_perfil:
@@ -299,7 +319,16 @@ def estado() -> dict[str, Any]:
                 "origens": resumo.get("origens") or {},
                 "respostas": resumo.get("respostas", 0),
                 "rasto": resumo.get("classificador"),
-                "erro": resumo.get("classificador_erro") or "",
+                # O erro so acompanha o cartao quando a ULTIMA leitura falhou.
+                # Um erro de ha meia hora, ja recuperado, e historia — mostra-lo
+                # ao lado de um rasto bom faz o cartao mentir.
+                "erro": (resumo.get("classificador_erro") or "")
+                        if (resumo.get("classificador") or {}).get("falhou") else "",
+                "taxa": {
+                    "leituras": resumo.get("classif_leituras", 0),
+                    "falhas": resumo.get("classif_falhas", 0),
+                    "ultima_falha": resumo.get("classif_ultima_falha", ""),
+                },
             },
         }
 

@@ -1163,11 +1163,29 @@ def testes_indicador_analise() -> None:
     defeito que aqui se trava e o mais provavel: mostrar "desligado" a um perfil
     que herda um global ligado, ou "ligado" a um bloco que falha a validacao.
     """
+    am = g._analise_modelo()  # noqa: SLF001 - o modulo que decide a forma
+
+    print("\n== forma da resposta do classificador (json) ==")
+    check("classificador: formato_json existe no padrao", g._analise_modelo().PADRAO.get("formato_json") == "auto",
+          str(g._analise_modelo().PADRAO.get("formato_json")))
+    check("classificador: prompt pede json (o DeepSeek exige a palavra)",
+          "json" in g._analise_modelo().PROMPT.lower() and "json" in g._analise_modelo().PROMPT_LOTE.lower(), "sem a palavra json")
+    d_f, _ = g._analise_modelo().normalizar({"activo": True, "provider": "p", "modelo": "m",
+                            "formato_json": "OFF"})
+    check("classificador: formato_json normalizado", d_f["formato_json"] == "off",
+          str(d_f.get("formato_json")))
+    corpo_f = g._analise_modelo()._corpo("p", "m", "texto", d_f, formato_json=None)
+    check("classificador: formato off nao pede response_format",
+          "response_format" not in corpo_f, str(sorted(corpo_f)))
+    corpo_auto = g._analise_modelo()._corpo("p", "m", "texto", g._analise_modelo().PADRAO)
+    check("classificador: formato auto pede response_format",
+          corpo_auto.get("response_format") == {"type": "json_object"}, str(sorted(corpo_auto)))
+
     print("\n== indicador do cartao: modelo ou heuristica, e o motivo ==")
     LIGADO = {"activo": True, "provider": "inception", "modelo": "mercury-3",
               "esforco": "baixo"}
-    CHAVES = {"modo", "activo", "provider", "modelo", "esforco", "origem", "motivo"}
-
+    CHAVES = {"modo", "activo", "provider", "modelo", "esforco", "formato_json",
+              "origem", "motivo"}
     def cfg(global_c=None, pessoal_c=None, com_global=True):
         base = _cfg_base()
         if com_global:
@@ -1370,6 +1388,64 @@ def testes_esforco() -> None:
         servidor.shutdown()
 
 
+def testes_recarga_de_modulo() -> None:
+    """O hot reload e a peca que evita reiniciar o gateway — prova-se a serio.
+
+    Cria-se um modulo temporario, carrega-se, muda-se o ficheiro e o `mtime`, e
+    verifica-se que a recarga devolve a versao nova; e que sem mudanca devolve
+    o mesmo objecto (nao reexecuta em cada turno).
+    """
+    import importlib.util as ilu
+    import tempfile
+    import time as _t
+
+    vmm = _mod("vmm_plugin_reload", AQUI / "__init__.py")
+
+    pasta = tempfile.mkdtemp(prefix="vmm-reload-")
+    alvo = os.path.join(pasta, "mod_teste.py")
+    with open(alvo, "w", encoding="utf-8") as fh:
+        fh.write("VALOR = 1\n")
+    spec = ilu.spec_from_file_location("vmm_mod_teste", alvo)
+    mod = ilu.module_from_spec(spec)
+    sys.modules["vmm_mod_teste"] = mod
+    spec.loader.exec_module(mod)
+    cache = [0]
+    from pathlib import Path as _Path
+    ficheiro = _Path(alvo)
+
+    primeiro = vmm._recarregar_modulo(mod, ficheiro, cache, "teste")
+    check("recarga: primeiro carregamento devolve modulo vivo",
+          getattr(primeiro, "VALOR", None) == 1)
+
+    mesmo = vmm._recarregar_modulo(primeiro, ficheiro, cache, "teste")
+    check("recarga: sem alteracao nao reexecuta (mesmo objecto)", mesmo is primeiro)
+
+    _t.sleep(0.01)
+    with open(alvo, "w", encoding="utf-8") as fh:
+        fh.write("VALOR = 2\n")
+    os.utime(alvo, None)
+    segundo = vmm._recarregar_modulo(primeiro, ficheiro, cache, "teste")
+    check("recarga: ficheiro alterado devolve a versao nova",
+          getattr(segundo, "VALOR", None) == 2)
+    check("recarga: o objecto antigo nao foi mutado",
+          getattr(primeiro, "VALOR", None) == 1)
+
+    # Fail-open: um ficheiro que rebenta nao pode partir o turno.
+    with open(alvo, "w", encoding="utf-8") as fh:
+        fh.write("raise RuntimeError('boom')\n")
+    os.utime(alvo, None)
+    terceiro = vmm._recarregar_modulo(segundo, ficheiro, cache, "teste")
+    check("recarga: modulo que rebenta mantem a versao em memoria", terceiro is segundo)
+
+    os.remove(alvo)
+    quarto = vmm._recarregar_modulo(terceiro, ficheiro, cache, "teste")
+    check("recarga: ficheiro ausente devolve o modulo em memoria", quarto is terceiro)
+    try:
+        os.rmdir(pasta)
+    except OSError:
+        pass
+
+
 def main() -> int:
     testes_gestor()
     testes_plugin()
@@ -1381,6 +1457,7 @@ def main() -> int:
     testes_esforco()
     testes_cli()
     testes_verificar()
+    testes_recarga_de_modulo()
     falhas = [n for n, ok, _ in _RESULTADOS if not ok]
     print(f"\n{len(_RESULTADOS) - len(falhas)}/{len(_RESULTADOS)} verificacoes OK")
     if falhas:

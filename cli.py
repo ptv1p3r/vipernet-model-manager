@@ -45,6 +45,20 @@ def _analise():
     return mod
 
 
+def _analise_modelo():
+    """O classificador por modelo — outra casa, outro modulo.
+
+    `_analise()` e a heuristica (`analise.py`) e nao tem `normalizar` nem
+    `classificar_lote`; confundir os dois da `AttributeError` em vez de um
+    resultado errado, mas o comando falha na mesma.
+    """
+    spec = importlib.util.spec_from_file_location("vmm_analise_modelo",
+                                                  _AQUI / "analise_modelo.py")
+    mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
+
+
 g = _gestor()
 
 
@@ -128,7 +142,7 @@ def cmd_classificador(args) -> int:
     perfis = cfg.get("perfis") or {}
 
     if args.cmd == "ver" or args.cmd is None:
-        linhas = [["perfil", "classificador", "provider", "modelo", "esforco", "origem"]]
+        linhas = [["perfil", "classificador", "provider", "modelo", "esforco", "formato", "origem"]]
         for nome in sorted(perfis):
             # Uma so casa para a pergunta: `classificador_efectivo` resolve a
             # heranca e o "e utilizavel?" — o CLI nao repete essa logica.
@@ -139,6 +153,7 @@ def cmd_classificador(args) -> int:
                 c["provider"] or "-",
                 c["modelo"] or "-",
                 c["esforco"] or "-",
+                c["formato_json"] or "auto",
                 c["origem"] + (f" ({c['motivo']})" if c["motivo"] else ""),
             ])
         print(_tabela(linhas))
@@ -149,6 +164,44 @@ def cmd_classificador(args) -> int:
         if not (global_c.get("provider") and global_c.get("modelo")):
             print("sem classificador definido: a complexidade e decidida pela heuristica.")
         return 1 if erros else 0
+
+    if args.cmd == "lote":
+        # Classificacao em lote: N pedidos num so pedido. Serve para medir um
+        # corpus inteiro sem pagar uma chamada por caso.
+        textos = list(getattr(args, "textos", None) or [])
+        if not textos:
+            return _erro("lote exige pelo menos um texto", 2)
+        perfil = args.perfil or "default"
+        if perfil not in perfis:
+            return _erro(f"perfil '{perfil}' nao esta na config (vmm perfis)", 3)
+        c = g.classificador_efectivo(cfg, perfil)
+        if c["modo"] != "modelo":
+            return _erro(f"perfil '{perfil}' sem classificador por modelo "
+                         f"({c['motivo'] or 'desligado'})", 1)
+        definicao, erros_d = _analise_modelo().normalizar(
+            (g.perfil_config(cfg, perfil).get("analise") or {}).get("classificador"))
+        if erros_d:
+            return _erro("; ".join(erros_d), 2)
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+        except Exception as exc:  # noqa: BLE001
+            return _erro(f"resolve_runtime_provider indisponivel: {exc}", 1)
+
+        def resolver(provider: str, modelo: str) -> dict:
+            rt = resolve_runtime_provider(requested=provider, target_model=modelo)
+            return {"base_url": rt.get("base_url") or "", "api_key": rt.get("api_key") or "",
+                    "source": rt.get("source") or ""}
+
+        r = _analise_modelo().classificar_lote(textos, definicao, resolver, perfil=perfil)
+        if r.get("erro"):
+            print(f"erro: {r['erro']}", file=sys.stderr)
+        for texto_pedido, nivel in zip(textos, r.get("niveis") or []):
+            print(f"{nivel or '?':6s}  {texto_pedido[:70]}")
+        print(f"\n{r['provider']}/{r['modelo']} · {r.get('pedidos')} pedido(s) · "
+              f"{r.get('ms')} ms · formato={r.get('formato')} · "
+              f"pedido={'json' if r.get('formato_pedido') == 'json' else 'texto'} · "
+              f"tokens {r.get('tokens_entrada')}→{r.get('tokens_saida')}")
+        return 1 if r.get("erro") else 0
 
     alvo = "global"
     if args.cmd in ("on", "off"):
@@ -177,6 +230,11 @@ def cmd_classificador(args) -> int:
                     if erro_c:
                         return _erro(erro_c, 2)
                     bloco["esforco"] = esforco_c
+            if getattr(args, "formato", None) is not None:
+                valor_f = str(args.formato).strip().lower()
+                if valor_f not in ("auto", "on", "off"):
+                    return _erro("--formato deve ser auto, on ou off", 2)
+                bloco["formato_json"] = valor_f
             if not (bloco.get("provider") and bloco.get("modelo")):
                 return _erro("ligar exige --provider e --modelo", 2)
         try:
@@ -527,12 +585,15 @@ def build_parser() -> argparse.ArgumentParser:
         s.set_defaults(func=cmd_on_off)
 
     s = sub.add_parser("classificador", help="modelo que decide a complexidade")
-    s.add_argument("cmd", nargs="?", choices=["ver", "on", "off"], default="ver")
+    s.add_argument("cmd", nargs="?", choices=["ver", "on", "off", "lote"], default="ver")
+    s.add_argument("textos", nargs="*", help="textos a classificar (cmd=lote)")
     s.add_argument("--perfil", help="actua so neste perfil (por omissao: global)")
     s.add_argument("--provider", help="provider do modelo classificador")
     s.add_argument("--modelo", help="modelo que classifica leve/media/alta")
     s.add_argument("--esforco",
                    help="esforco do classificador: baixo|medio|alto ('-' limpa)")
+    s.add_argument("--formato", choices=["auto", "on", "off"],
+                   help="response_format json_object: auto (pede e degrada), on, off")
     s.set_defaults(func=cmd_classificador)
 
     s = sub.add_parser("perfis", help="perfis geridos e existentes")
