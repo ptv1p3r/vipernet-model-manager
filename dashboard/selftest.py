@@ -12,6 +12,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -255,6 +257,37 @@ def main() -> int:
     for cls in (".vmm-ok", ".vmm-editor-ok", ".vmm-btn-ok"):
         check(f"painel: CSS {cls}", cls in css)
     check("painel: verde com variante para tema escuro", "[data-theme=\"dark\"] .vmm-ok" in css)
+
+    # --- painel: classificador por modelo, editado no proprio editor -------
+    # Sem rota nova: a seccao muta o JSON que o editor ja carregou e grava-se
+    # pelo mesmo /config. Uma rota nova so seria montada a reiniciar o gateway.
+    check("painel: seccao do classificador existe", "function SecaoClassificador(props)" in js)
+    check("painel: seccao renderizada no editor", "h(SecaoClassificador, {" in js)
+    check("painel: tres modos por perfil (herdar/desligado/modelo)",
+          "\"herdar do global\"" in js and "desligado (heurística)" in js
+          and "\"decide um modelo\"" in js)
+    check("painel: herdar apaga o bloco do perfil",
+          "if (modo === \"herdar\") return aplicar(perfil, null);" in js)
+    check("painel: escreve no JSON, nao numa rota nova",
+          "props.onMudar(JSON.stringify(comBloco(cfg, perfil, bloco), null, 2))" in js)
+    check("painel: campos com sugestoes do catalogo", "id: \"vmm-modelos\"" in js and "id: \"vmm-pares\"" in js)
+    for cls in (".vmm-classif", ".vmm-classif-linha", ".vmm-classif-nome"):
+        check(f"painel: CSS {cls}", cls in css)
+
+    # A logica pura do painel, corrida a serio em node (sem browser).
+    node = shutil.which("node")
+    if node:
+        teste = RAIZ / "dashboard" / "test_logica.js"
+        check("painel: test_logica.js existe", teste.is_file(), str(teste))
+        if teste.is_file():
+            r = subprocess.run([node, str(teste)], capture_output=True, text=True, timeout=60)
+            check("painel: logica pura passa em node (comBloco/herdar)",
+                  r.returncode == 0, (r.stdout or r.stderr)[-400:])
+        c = subprocess.run([node, "--check", str(RAIZ / "dashboard" / entry)],
+                           capture_output=True, text=True, timeout=60)
+        check("painel: entry servido e JS valido", c.returncode == 0, (c.stderr or "")[-300:])
+    else:
+        print("SEM node: teste da logica pura do painel nao corrido")
 
     print(f"\n{OK} verificacoes OK, {len(FALHAS)} falhas")
     for f in FALHAS:

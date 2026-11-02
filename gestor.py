@@ -73,20 +73,10 @@ ANALISE_PADRAO: dict[str, Any] = {
     "varredura_max_mensagens": 60,
     "limiares": {"media": 3, "alta": 7},
     "descer_apos": 2,
-    # Classificador por modelo. Desligado por omissao: sem `activo` e sem
-    # provider/modelo, a complexidade continua a ser decidida pela heuristica.
-    # Os limites (timeout, tokens, cache) sao aplicados por
-    # `analise_modelo.normalizar`, que e a unica casa desses numeros.
-    "classificador": {
-        "activo": False,
-        "provider": "",
-        "modelo": "",
-        "timeout_s": 8.0,
-        "max_tokens": 12,
-        "cache_ttl_s": 600,
-        "janela_mensagens": 8,
-        "max_chars": 4000,
-    },
+    # `classificador` e preenchido mais abaixo, a partir de
+    # `analise_modelo.PADRAO`: os limites do classificador (timeout, tokens,
+    # cache) tem UMA casa. Duplica-los aqui foi o que deixou a config viva com
+    # `max_tokens: 12` depois de o modulo passar a 320.
 }
 
 
@@ -334,17 +324,13 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         if por not in POR:
             erros.append(f"perfis.{nome}.rodizio.por invalido: {por}")
             por = "sessao"
-        panalise = copy.deepcopy(saida["analise"])
-        declaradas: set[str] = set()
+        # O perfil grava SO o que declara: a heranca faz-se na leitura
+        # (`perfil_config`). Gravar uma copia do global fixava o perfil ao valor
+        # do dia em que foi gravado — um global que mudasse depois deixava de
+        # chegar-lhe. Isto vale para a `analise` inteira, nao so para o
+        # classificador: qualquer chave herdada e a mesma armadilha.
+        panalise: dict[str, Any] = {}
         if isinstance(pcfg.get("analise"), dict):
-            declaradas = set(pcfg["analise"])
-            # O perfil so grava o que declara: a heranca faz-se na leitura
-            # (`perfil_config`). Gravar uma copia do global fixava o perfil ao
-            # valor do dia em que foi gravado — e um global que mudasse depois
-            # deixava de chegar a esse perfil.
-            for herdada in ("classificador", "limiares"):
-                if herdada not in declaradas:
-                    panalise.pop(herdada, None)
             for chave, valor in pcfg["analise"].items():
                 if chave == "limiares" and isinstance(valor, dict):
                     # So as chaves declaradas: o que falta vem do global.
@@ -358,9 +344,8 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
                     erros.extend(erros_c)
                     if limpo == saida["analise"].get("classificador"):
                         # Igual ao global: nao se grava copia (ver acima).
-                        panalise.pop("classificador", None)
-                    else:
-                        panalise["classificador"] = limpo
+                        continue
+                    panalise["classificador"] = limpo
                 else:
                     panalise[chave] = valor
         catalogo: list[dict[str, Any]] = []
@@ -563,6 +548,11 @@ def perfil_atual(agente: Any = None) -> str:
         return str(get_active_profile_name() or "default")
     except Exception:
         return "default"
+
+
+# O bloco por omissao do classificador vem de `analise_modelo.PADRAO` — uma so
+# casa para os numeros — e nao de uma copia literal que envelhece em silencio.
+ANALISE_PADRAO["classificador"] = dict(_analise_modelo().PADRAO)
 
 
 def perfil_config(cfg: dict[str, Any], perfil: str) -> dict[str, Any] | None:

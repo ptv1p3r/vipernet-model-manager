@@ -239,3 +239,52 @@
 @media (max-width: 720px) {
   .vmm-grelha { grid-template-columns: 1fr; }
 }
+
+/* Classificador da complexidade: bloco dentro do editor. Uma linha por ambito
+   (global + um por perfil), alinhada em grelha para os selects e os campos
+   ficarem na mesma coluna. */
+.vmm-classif {
+  margin-bottom: 0.75rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--muted, rgba(127, 127, 127, 0.06));
+}
+
+.vmm-classif-titulo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.vmm-classif-linha {
+  display: grid;
+  grid-template-columns: minmax(9rem, 1.1fr) minmax(10rem, 1.2fr) minmax(7rem, 1fr) minmax(10rem, 1.6fr);
+  gap: 0.4rem;
+  align-items: center;
+  padding: 0.18rem 0;
+}
+
+.vmm-classif-nome {
+  font-size: 0.82rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vmm-classif .vmm-select,
+.vmm-classif .vmm-input {
+  font-size: 0.8rem;
+  padding: 0.2rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--background, transparent);
+  color: inherit;
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .vmm-classif-linha { grid-template-columns: 1fr; }
+}

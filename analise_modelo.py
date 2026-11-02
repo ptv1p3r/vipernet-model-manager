@@ -43,7 +43,11 @@ PADRAO: dict[str, Any] = {
     "provider": "",
     "modelo": "",
     "timeout_s": 8.0,
-    "max_tokens": 12,
+    # 12 tokens chegavam a um modelo que responde directamente e nao chegavam a
+    # um de raciocinio: medido no deepseek-flash, os 12 tokens de saida eram
+    # todos `reasoning_tokens` e o `content` vinha vazio. 320 deixa pensar e
+    # ainda responder — a uma classificacao de uma palavra e sobra.
+    "max_tokens": 320,
     "cache_ttl_s": 600,
     "janela_mensagens": 8,
     "max_chars": 4000,
@@ -51,7 +55,12 @@ PADRAO: dict[str, Any] = {
 
 # Limites duros: um `timeout_s` de 300 na config nao pode parar um turno 5 min.
 _TIMEOUT_MIN, _TIMEOUT_MAX = 1.0, 30.0
-_MAX_TOKENS_MIN, _MAX_TOKENS_MAX = 2, 256
+_MAX_TOKENS_MIN, _MAX_TOKENS_MAX = 2, 1024
+# Orcamento por omissao ate 3.5. Ficou gravado em configs antigas e trunca
+# modelos de raciocinio (os 12 tokens gastam-se a pensar e o `content` vem
+# vazio). 12 nao era alcancavel por nenhuma interface — so como omissao — logo
+# um 12 gravado e a omissao antiga, e migra-se para o novo valor.
+_MAX_TOKENS_ANTIGO = 12
 _FALHAS_PARA_SUSPENDER = 3
 _SUSPENSAO_S = 300.0
 
@@ -99,7 +108,10 @@ def normalizar(bruto: Any, prefixo: str = "analise.classificador") -> tuple[dict
     if saida["activo"] and not (saida["provider"] and saida["modelo"]):
         erros.append(f"{prefixo}: activo exige provider e modelo")
     saida["timeout_s"] = _num(bruto.get("timeout_s"), _TIMEOUT_MIN, _TIMEOUT_MAX, PADRAO["timeout_s"])
-    saida["max_tokens"] = int(_num(bruto.get("max_tokens"), _MAX_TOKENS_MIN,
+    tokens = bruto.get("max_tokens")
+    if tokens is not None and _num(tokens, -1, 10**9, -1) == _MAX_TOKENS_ANTIGO:
+        tokens = None  # migracao da omissao antiga
+    saida["max_tokens"] = int(_num(tokens, _MAX_TOKENS_MIN,
                                    _MAX_TOKENS_MAX, PADRAO["max_tokens"]))
     saida["cache_ttl_s"] = int(_num(bruto.get("cache_ttl_s"), 0, 86400, PADRAO["cache_ttl_s"]))
     saida["janela_mensagens"] = int(_num(bruto.get("janela_mensagens"), 1, 60,
@@ -211,9 +223,18 @@ _RE_NIVEL = re.compile(r"\b(leve|m[eé]dia|alta)\b", re.IGNORECASE)
 
 
 def _extrair_nivel(payload: dict[str, Any]) -> tuple[str, str]:
-    """(nivel, texto-lido). Aceita JSON `{"nivel": ...}` e texto livre curto."""
+    """(nivel, texto-lido). Aceita JSON {"nivel": ...} e texto livre curto.
+
+    Modelos de raciocinio gastam o orcamento a pensar: medido no `deepseek-flash`
+    com `max_tokens: 12`, os 12 tokens de saida eram todos `reasoning_tokens` e
+    `content` vinha vazio. Por isso, quando o `content` esta vazio, le-se o
+    `reasoning_content` — a ultima palavra de nivel que o modelo escreveu antes
+    de ser cortado e o que ele ia responder. O orcamento por omissao foi subido
+    (ver `_LIMITES`) para o caso normal terminar com `content` limpo.
+    """
     escolhas = payload.get("choices")
     conteudo = ""
+    raciocinio = ""
     if isinstance(escolhas, list) and escolhas:
         primeira = escolhas[0] if isinstance(escolhas[0], dict) else {}
         msg_bruta = primeira.get("message")
@@ -223,6 +244,11 @@ def _extrair_nivel(payload: dict[str, Any]) -> tuple[str, str]:
             conteudo = " ".join(b.get("text", "") for b in valor if isinstance(b, dict))
         elif isinstance(valor, str):
             conteudo = valor
+        for campo in ("reasoning_content", "reasoning"):
+            r = msg.get(campo)
+            if isinstance(r, str) and r.strip():
+                raciocinio = r.strip()
+                break
     conteudo = (conteudo or "").strip()
     if conteudo.startswith("{"):
         try:
@@ -234,6 +260,12 @@ def _extrair_nivel(payload: dict[str, Any]) -> tuple[str, str]:
         except json.JSONDecodeError:
             pass
     achado = _RE_NIVEL.search(conteudo[:400])
+    if not achado and not conteudo and raciocinio:
+        # cortado a meio do raciocinio: vale o ultimo nivel que ele escreveu
+        achados = _RE_NIVEL.findall(raciocinio[-600:])
+        if achados:
+            nivel = achados[-1].lower().replace("é", "e")
+            return nivel, "raciocinio:" + raciocinio[-120:]
     if not achado:
         raise ValueError("resposta sem nivel reconhecivel")
     nivel = achado.group(1).lower().replace("é", "e")

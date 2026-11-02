@@ -16,10 +16,67 @@ Três frases que resumem o contrato:
 3. Cada **perfil** decide se usa o plugin, como usa (estratégia) e com que lista.
    Um perfil ausente da config não é tocado.
 
-## Analise de complexidade (3.4)
+## Analise de complexidade (3.5)
 
-O classificador pontua sinais independentes e corta em dois limiares:
-`leve` (< media), `media` (>= 3) e `alta` (>= 6). Quatro regras o mantem honesto:
+Duas vias, e a segunda e opcional:
+
+1. **Heuristica** (sempre disponivel, sem custo): pontua sinais independentes e
+   corta em dois limiares — `leve` (< media), `media` (>= 3) e `alta` (>= 6).
+2. **Modelo classificador** (opt-in): um modelo escolhido pelo dono responde
+   `leve`/`media`/`alta`. Definido globalmente ou por perfil, com interruptor
+   proprio em cada ambito. Sem modelo definido, ou com o interruptor em baixo,
+   vale a heuristica — o comportamento nao muda.
+
+Ordem de decisao por turno, do mais forte para o mais fraco:
+**marcador explicito** (`complexidade: alta` na mensagem) **> associacao de
+tarefa > modelo classificador > heuristica**. As tres primeiras fontes so
+decidem o nivel; a rota (provider+modelo) sai sempre do catalogo do perfil.
+
+O bloco vive em `analise.classificador` (global) e em
+`perfis.<nome>.analise.classificador` (por perfil). O bloco do perfil
+**substitui por inteiro** o global — e o que permite a um perfil desligar
+(`{"activo": false}`) o que a config global liga. Um perfil que nao declare o
+bloco herda-o; e o que se grava nunca e uma copia do global (uma copia fixava o
+perfil ao valor do dia e deixava de acompanhar mudancas do global).
+
+```json
+"classificador": {
+  "activo": false, "provider": "deepseek", "modelo": "deepseek-flash",
+  "timeout_s": 8.0, "max_tokens": 320, "cache_ttl_s": 600,
+  "janela_mensagens": 8, "max_chars": 4000
+}
+```
+
+**Fail-open por desenho**: erro de rede, `HTTP != 200`, resposta sem um dos tres
+niveis, ou `timeout_s` excedido devolvem `None` — decide a heuristica e o motivo
+fica em `classificador_erro` no ledger. Tres falhas seguidas abrem disjuntor e
+param de tentar (nao se paga uma chamada falhada em cada turno). A resposta e
+descarregada por `max_tokens` (320) e a mesma ultima mensagem nao e paga duas
+vezes dentro de `cache_ttl_s`.
+
+**Orcamento de saida e modelos de raciocinio** (medido 2026-11-02): o
+`deepseek-flash` pensa antes de responder. Com `max_tokens: 12`, os 12 tokens de
+saida foram todos `reasoning_tokens` e o `content` voltou vazio — o classificador
+falhava por orcamento, nao por qualidade. Com 320, a mesma mensagem devolve
+`alta` em 1,3 s (196 tokens de entrada, 59 de saida, ~0,00008 USD). Um modelo de
+raciocinio cortado a meio ainda entrega o nivel: quando o `content` vem vazio,
+le-se o `reasoning_content` e vale o ultimo nivel que o modelo escreveu.
+
+Ligar/desligar, sem editar JSON:
+
+```sh
+vmm classificador                            # estado efectivo por perfil
+vmm classificador on --provider deepseek --modelo deepseek-flash
+vmm classificador off --perfil pessoal       # desliga so neste perfil
+vmm classificador on --perfil trabalho --provider openrouter --modelo x/y
+```
+
+No painel, a seccao **Analise da complexidade** (dentro do editor) tem uma linha
+por ambito — global e cada perfil — com tres estados por perfil: *herdar do
+global*, *desligado (heuristica)* e *decide um modelo* (com provider e modelo).
+Grava pelo mesmo `/config`, depois de validado.
+
+Sinais da heuristica e o que os separa:
 
 - **Verificar nao e analisar.** "testa o plugin", "adiciona um teste" — o verbo e
   confirmacao, nao trabalho de analise; `_ANALISE` ignora verbos de verificacao.
@@ -249,6 +306,7 @@ vmm rota add PERFIL PROVIDER MODELO --complexidade leve,media [--id ID] [--acess
 vmm rota rm PERFIL ID
 vmm simular PERFIL "texto"           classifica e mostra as candidatas
 vmm verificar [PERFIL]               resolve credenciais de cada rota (sem as imprimir)
+vmm classificador [ver|on|off] [--perfil NOME] [--provider P] [--modelo M]
 vmm log [-n N] [--perfil NOME] [--provider P] [--sessao S] [--evento E]
 vmm caminho                          caminhos de config e ledger
 vmm recarregar                       recarrega plugins no gateway
@@ -322,11 +380,18 @@ processos diferentes.
 ## Auto-teste
 
 ```sh
-PYTHONPATH=/opt/hermes python3 /opt/data/plugins/vipernet-model-manager/selftest.py
-PYTHONPATH=/opt/hermes python3 /opt/data/plugins/vipernet-model-manager/test_tarefas.py
+P=/opt/hermes/.venv/bin/python
+$P /opt/data/plugins/vipernet-model-manager/selftest.py            # 137
+$P /opt/data/plugins/vipernet-model-manager/test_analise.py        # 38
+$P /opt/data/plugins/vipernet-model-manager/test_tarefas.py        # 16
+$P /opt/data/plugins/vipernet-model-manager/test_classificador.py  # 29
+$P /opt/data/plugins/vipernet-model-manager/dashboard/selftest.py  # 69 (exige fastapi)
+node /opt/data/plugins/vipernet-model-manager/dashboard/test_logica.js  # 15
 ```
 
-106 verificações no selftest e 16 testes de tarefas: validação do esquema
+137 verificações no selftest, 29 no classificador por modelo (servidor HTTP
+local a serio, sem mocks), 69 no painel — incluindo a lógica pura do editor
+corrida em node — e 16 de tarefas: validação do esquema
 (incluindo o `acesso` e os casos negativos), semântica de perfil não
 gerido/desligado, complexidade por modelo, rodízio, histerese, troca com
 credencial do perfil, salto de rota sem credencial, resposta com provider/

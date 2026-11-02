@@ -1049,11 +1049,81 @@ def testes_classificador() -> None:
         servidor.server_close()
 
 
+def testes_heranca_classificador() -> None:
+    """Heranca global -> perfil: o que se grava e so o que o perfil declara.
+
+    O que aqui se prova e a correcao de um defeito real: o validador semeava a
+    `analise` de cada perfil com uma copia do global e gravava-a, logo um perfil
+    "que nao declarava nada" ficava fixo ao valor do dia — e mudar o global
+    deixava de chegar-lhe. As provas usam `perfil_config` (a leitura que o
+    middleware faz), nao o dicionario cru.
+    """
+    print("\n== heranca do classificador: global, perfil, e a mudanca do global ==")
+    am = g._analise_modelo()  # noqa: SLF001
+    LIGADO = {"activo": True, "provider": "deepseek", "modelo": "deepseek-flash"}
+
+    def cfg(global_c, pessoal_c=None):
+        base = _cfg_base()
+        base["analise"]["classificador"] = global_c
+        if pessoal_c is not None:
+            base["perfis"]["pessoal"].setdefault("analise", {})["classificador"] = pessoal_c
+        return base
+
+    def efectiva(config, perfil):
+        return am.efectiva((g.perfil_config(config, perfil) or {}).get("analise") or {})
+
+    DIR = _dir_com(cfg(LIGADO))
+    os.environ["VMM_DIR"] = str(DIR)
+    try:
+        limpo, erros = g.validar(cfg(LIGADO))
+        check("validar aceita classificador global", not erros, str(erros))
+        check("perfil que nao declara herda o global",
+              (efectiva(limpo, "trabalho") or {}).get("modelo") == "deepseek-flash",
+              str(efectiva(limpo, "trabalho")))
+        check("validar nao grava copia do global no perfil",
+              not ((limpo["perfis"]["trabalho"].get("analise") or {}).get("classificador")),
+              str(limpo["perfis"]["trabalho"].get("analise")))
+
+        # a prova do defeito: mudar o global chega a um perfil ja gravado
+        novo = cfg({"activo": True, "provider": "openrouter",
+                    "modelo": "thinkingmachines/inkling:free"})
+        novo["perfis"]["trabalho"] = limpo["perfis"]["trabalho"]
+        limpo2, _ = g.validar(novo)
+        check("mudar o global chega ao perfil que ja estava gravado",
+              (efectiva(limpo2, "trabalho") or {}).get("provider") == "openrouter",
+              str(efectiva(limpo2, "trabalho")))
+
+        limpo3, _ = g.validar(cfg(LIGADO, {"activo": False}))
+        check("perfil que declara desligado vence o global ligado",
+              efectiva(limpo3, "pessoal") is None
+              and (efectiva(limpo3, "trabalho") or {}).get("modelo") == "deepseek-flash",
+              str(efectiva(limpo3, "pessoal")))
+        check("perfil que declara modelo proprio vence o global",
+              (efectiva(g.validar(cfg(LIGADO, {"activo": True, "provider": "openrouter",
+                                               "modelo": "x/y"}))[0], "pessoal") or {}
+               ).get("provider") == "openrouter")
+        check("perfil que declara igual ao global nao fica com copia",
+              not ((g.validar(cfg(LIGADO, dict(LIGADO)))[0]["perfis"]["pessoal"]
+                    .get("analise") or {}).get("classificador")))
+
+        # limiares: o perfil declara so o que quer mudar
+        parcial = _cfg_base()
+        parcial["perfis"]["pessoal"].setdefault("analise", {})["limiares"] = {"alta": 7}
+        limpo4, erros4 = g.validar(parcial)
+        lim = ((g.perfil_config(limpo4, "pessoal") or {}).get("analise") or {}).get("limiares") or {}
+        check("limiar parcial do perfil herda o resto do global",
+              lim.get("alta") == 7 and lim.get("media") == 3 and not erros4,
+              f"{lim} {erros4}")
+    finally:
+        os.environ.pop("VMM_DIR", None)
+
+
 def main() -> int:
     testes_gestor()
     testes_plugin()
     testes_realimentacao()
     testes_classificador()
+    testes_heranca_classificador()
     testes_cli()
     testes_verificar()
     falhas = [n for n, ok, _ in _RESULTADOS if not ok]

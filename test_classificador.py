@@ -122,7 +122,7 @@ class TestNormalizar(Base):
                               "timeout_s": 999, "max_tokens": 100000,
                               "cache_ttl_s": -5, "max_chars": 5})
         self.assertEqual(d["timeout_s"], 30.0)
-        self.assertEqual(d["max_tokens"], 256)
+        self.assertEqual(d["max_tokens"], am._MAX_TOKENS_MAX)  # tecto duro, nao um literal
         self.assertEqual(d["cache_ttl_s"], 0)
         self.assertEqual(d["max_chars"], 200)
         d2, _ = am.normalizar({"timeout_s": 0.1})
@@ -203,7 +203,7 @@ class TestClassificar(Base):
         self.assertEqual(len(PEDIDOS), 1)
         pedido = PEDIDOS[0]
         self.assertEqual(pedido["corpo"]["model"], "thinkingmachines/inkling:free")
-        self.assertEqual(pedido["corpo"]["max_tokens"], 12)
+        self.assertEqual(pedido["corpo"]["max_tokens"], am.PADRAO["max_tokens"])
         self.assertFalse(pedido["corpo"]["stream"])
         self.assertEqual(pedido["corpo"]["temperature"], 0)
         self.assertEqual(pedido["caminho"], "/api/v1/chat/completions")
@@ -332,6 +332,66 @@ class TestTexto(Base):
         msgs = [{"role": "user", "content": [{"type": "text", "text": "olá bloco"}]}]
         _, ultima = am.texto(msgs)
         self.assertEqual(ultima, "olá bloco")
+
+
+class TestExtracao(Base):
+    """O leitor da resposta — o sitio onde o modelo de raciocinio nos apanhou.
+
+    Medido com o `deepseek-flash`: com `max_tokens: 12`, os 12 tokens de saida
+    eram todos `reasoning_tokens` e o `content` vinha vazio. O orcamento subiu
+    para 320, mas a leitura do raciocinio fica como rede: um modelo de raciocinio
+    cortado devolve o ultimo nivel que escreveu, em vez de custar um turno.
+    """
+
+    def test_orcamento_por_omissao_cobre_raciocinio(self):
+        d, erros = am.normalizar({"activo": True, "provider": "p", "modelo": "m"})
+        self.assertEqual(d["max_tokens"], am.PADRAO["max_tokens"])
+        self.assertGreaterEqual(am.PADRAO["max_tokens"], 256)  # raciocinio precisa de espaco
+        self.assertFalse(erros)
+        # e o tecto permite subir mais, para modelos que pensam muito
+        alto, _ = am.normalizar({"max_tokens": 5000})
+        self.assertEqual(alto["max_tokens"], am._MAX_TOKENS_MAX)
+
+    def test_texto_simples(self):
+        nivel, lido = am._extrair_nivel(
+            {"choices": [{"message": {"content": "alta"}}]})
+        self.assertEqual((nivel, lido), ("alta", "alta"))
+
+    def test_acento(self):
+        nivel, _ = am._extrair_nivel(
+            {"choices": [{"message": {"content": "MÉDIA"}}]})
+        self.assertEqual(nivel, "media")
+
+    def test_json(self):
+        nivel, _ = am._extrair_nivel(
+            {"choices": [{"message": {"content": '{"nivel": "leve"}'}}]})
+        self.assertEqual(nivel, "leve")
+
+    def test_raciocinio_cortado_sem_conteudo(self):
+        payload = {"choices": [{"message": {
+            "content": "",
+            "reasoning_content": "We need answer only one word: media likely. Need classify",
+        }}]}
+        nivel, lido = am._extrair_nivel(payload)
+        self.assertEqual(nivel, "media")
+        self.assertTrue(lido.startswith("raciocinio:"))
+
+    def test_ultimo_nivel_do_raciocinio_manda(self):
+        payload = {"choices": [{"message": {
+            "content": None,
+            "reasoning_content": "talvez alta? nao: e manutencao leve",
+        }}]}
+        nivel, _ = am._extrair_nivel(payload)
+        self.assertEqual(nivel, "leve")
+
+    def test_raciocinio_sem_nivel_levanta(self):
+        with self.assertRaises(ValueError):
+            am._extrair_nivel({"choices": [{"message": {
+                "content": "", "reasoning_content": "pensar sem decidir"}}]})
+
+    def test_resposta_vazia_levanta(self):
+        with self.assertRaises(ValueError):
+            am._extrair_nivel({"choices": [{"message": {"content": ""}}]})
 
 
 if __name__ == "__main__":

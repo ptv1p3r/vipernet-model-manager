@@ -170,6 +170,41 @@ class Regras(unittest.TestCase):
         d = a.decidir(m("complexidade: alta", "complexidade: auto"))
         self.assertEqual(d["nivel"], "")
 
+    def test_marcador_nao_vem_do_contexto_injectado(self):
+        """Contexto injectado nao e texto do utilizador.
+
+        Medido no ledger de 2026-11-02: um resumo de compactacao que citava
+        `complexidade: leve|media|alta` foi lido como marcador e fixou o turno em
+        `leve` com origem `marcador`. O corte ao contexto injectado ja existia na
+        heuristica; passou a valer tambem para o marcador.
+        """
+        injectado = ("lista os ficheiros\n[CONTEXT COMPACTION — REFERENCE ONLY]\n"
+                     "a ordem era complexidade: alta e depois tarefa")
+        d = a.decidir(m(injectado))
+        self.assertNotEqual(d["origem"], "marcador")
+        self.assertEqual(d["nivel"], "leve")
+        # e um marcador a serio, antes do bloco injectado, continua a valer
+        d2 = a.decidir(m("complexidade: media\n[CONTEXT COMPACTION] complexidade: alta"))
+        self.assertEqual((d2["nivel"], d2["origem"]), ("media", "marcador"))
+
+    def test_bloco_no_inicio_nao_apaga_o_pedido(self):
+        """`[resumo][pedido]` na mesma mensagem: o pedido tem de sobreviver.
+
+        Medido a 2026-11-02: cortar do marcador para a frente deixava a analise
+        com zero caracteres e o turno ia para `leve` mesmo pedindo uma
+        implementacao. O bloco remove-se inteiro, o pedido fica.
+        """
+        texto = ("[CONTEXT COMPACTION — REFERENCE ONLY] resumo que cita "
+                 "complexidade: alta\n--- END OF CONTEXT SUMMARY — respond below ---\n"
+                 "implementa o refactor do modulo de billing com testes e rollback")
+        limpo = a.limpar_contexto_injectado(texto)
+        self.assertIn("implementa o refactor", limpo)
+        self.assertNotIn("CONTEXT COMPACTION", limpo)
+        d = a.decidir(m(texto))
+        self.assertEqual(d["origem"], "analise")
+        self.assertGreater(d["caracteres"], 40)
+        self.assertEqual(d["nivel"], "alta")
+
     def test_trabalho_em_curso_soma(self):
         """Ferramentas de escrita recentes indicam trabalho a decorrer."""
         com_escrita = m("continua o trabalho") + [

@@ -241,6 +241,169 @@
     );
   }
 
+  // ---- classificador da complexidade (dentro do editor) -------------------
+  // O bloco vive em `analise.classificador` (global) e em
+  // `perfis.<nome>.analise.classificador` (por perfil). Edita-se o JSON que ja
+  // esta no editor: nao ha rota nova, logo nao exige reiniciar o gateway —
+  // grava-se pelo mesmo /config, depois de validado.
+  const CLASSIF_OFF = { activo: false, provider: "", modelo: "" };
+
+  function lerJSON(texto) {
+    try {
+      const c = JSON.parse(texto);
+      if (!c || typeof c !== "object" || Array.isArray(c)) return null;
+      return c;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function blocoDe(cfg, perfil) {
+    if (perfil === null) {
+      return (cfg.analise && cfg.analise.classificador) || null;
+    }
+    const p = (cfg.perfis || {})[perfil] || {};
+    return (p.analise && p.analise.classificador) || null;
+  }
+
+  // perfil === null -> global; bloco === null -> nao declarado (herda)
+  function comBloco(cfg, perfil, bloco) {
+    const novo = JSON.parse(JSON.stringify(cfg));
+    if (perfil === null) {
+      novo.analise = novo.analise || {};
+      if (bloco === null) delete novo.analise.classificador;
+      else novo.analise.classificador = bloco;
+      return novo;
+    }
+    novo.perfis = novo.perfis || {};
+    novo.perfis[perfil] = novo.perfis[perfil] || {};
+    const p = novo.perfis[perfil];
+    if (bloco === null) {
+      if (p.analise) {
+        delete p.analise.classificador;
+        if (!Object.keys(p.analise).length) delete p.analise;
+      }
+      return novo;
+    }
+    p.analise = p.analise || {};
+    p.analise.classificador = bloco;
+    return novo;
+  }
+
+  function paresModelo(cfg) {
+    const vistos = {};
+    const saida = [];
+    Object.keys(cfg.perfis || {}).forEach(function (n) {
+      const cat = (cfg.perfis[n] || {}).catalogo || [];
+      cat.forEach(function (m) {
+        if (!m || !m.provider || !m.modelo) return;
+        const chave = m.provider + "/" + m.modelo;
+        if (vistos[chave]) return;
+        vistos[chave] = true;
+        saida.push({ provider: m.provider, modelo: m.modelo });
+      });
+    });
+    return saida;
+  }
+
+  function SecaoClassificador(props) {
+    const cfg = lerJSON(props.configJSON);
+    if (!cfg) {
+      return h("div", { className: "vmm-classif" },
+        h("div", { className: "vmm-mudo" }, "Classificador por modelo: corrija o JSON para poder editar aqui."));
+    }
+    const pares = paresModelo(cfg);
+    const globalBloco = blocoDe(cfg, null);
+    const linhas = [null].concat(Object.keys(cfg.perfis || {}).sort());
+
+    function aplicar(perfil, bloco) {
+      props.onMudar(JSON.stringify(comBloco(cfg, perfil, bloco), null, 2));
+    }
+
+    function mudarModo(perfil, modo) {
+      const actual = blocoDe(cfg, perfil) || {};
+      if (modo === "herdar") return aplicar(perfil, null);
+      if (modo === "desligado") {
+        return aplicar(perfil, {
+          activo: false,
+          provider: actual.provider || "",
+          modelo: actual.modelo || "",
+        });
+      }
+      const primeiro = pares[0] || { provider: "", modelo: "" };
+      aplicar(perfil, {
+        activo: true,
+        provider: actual.provider || primeiro.provider,
+        modelo: actual.modelo || primeiro.modelo,
+      });
+    }
+
+    function mudarCampo(perfil, campo, valor) {
+      const actual = blocoDe(cfg, perfil) || CLASSIF_OFF;
+      const novo = {
+        activo: !!actual.activo,
+        provider: actual.provider || "",
+        modelo: actual.modelo || "",
+      };
+      novo[campo] = valor;
+      aplicar(perfil, novo);
+    }
+
+    return h("div", { className: "vmm-classif" },
+      h("div", { className: "vmm-classif-titulo" },
+        h("strong", null, "Análise da complexidade"),
+        h("span", { className: "vmm-mudo" },
+          "  sem modelo (ou desligado) decide a heurística; com modelo, decide o modelo — "
+          + "a associação de tarefa continua a ganhar.")
+      ),
+      linhas.map(function (perfil) {
+        const bloco = blocoDe(cfg, perfil);
+        const modo = !bloco ? "herdar" : (bloco.activo ? "ligado" : "desligado");
+        const proprio = bloco && bloco.activo;
+        const herda = perfil !== null && !bloco && globalBloco && globalBloco.activo;
+        return h("div", { key: perfil === null ? "@global" : perfil, className: "vmm-classif-linha" },
+          h("span", { className: "vmm-classif-nome" },
+            (perfil === null ? "global" : perfil),
+            herda ? h("span", { className: "vmm-mudo" },
+              " · herda " + globalBloco.provider + "/" + globalBloco.modelo) : null
+          ),
+          h("select", {
+            className: "vmm-select",
+            value: modo,
+            onChange: function (e) { mudarModo(perfil, e.target.value); },
+          },
+            (perfil === null
+              ? [["desligado", "desligado (heurística)"], ["ligado", "decide um modelo"]]
+              : [["herdar", "herdar do global"], ["desligado", "desligado (heurística)"],
+                 ["ligado", "decide um modelo"]]
+            ).map(function (o) { return h("option", { key: o[0], value: o[0] }, o[1]); })
+          ),
+          proprio ? h("input", {
+            className: "vmm-input",
+            list: "vmm-modelos",
+            placeholder: "provider",
+            value: bloco.provider || "",
+            onChange: function (e) { mudarCampo(perfil, "provider", e.target.value); },
+          }) : null,
+          proprio ? h("input", {
+            className: "vmm-input",
+            list: "vmm-pares",
+            placeholder: "modelo",
+            value: bloco.modelo || "",
+            onChange: function (e) { mudarCampo(perfil, "modelo", e.target.value); },
+          }) : null
+        );
+      }),
+      h("datalist", { id: "vmm-modelos" },
+        pares.map(function (p) { return h("option", { key: "p" + p.provider, value: p.provider }); })),
+      h("datalist", { id: "vmm-pares" },
+        pares.map(function (p) {
+          return h("option", { key: "m" + p.provider + p.modelo, value: p.modelo,
+                               label: p.provider });
+        }))
+    );
+  }
+
   function Pagina() {
     const [estado, setEstado] = useState(null);
     const [log, setLog] = useState([]);
@@ -441,6 +604,15 @@
           h(
             "div",
             { className: "vmm-editor-corpo" },
+            h(SecaoClassificador, {
+              configJSON: configJSON,
+              onMudar: function (novo) {
+                setConfigJSON(novo);
+                // o texto mudou: o "validado" anterior deixa de ser verdade
+                setValidacaoOk(null);
+                setErrosValidacao([]);
+              },
+            }),
             h("textarea", {
               value: configJSON,
               onChange: function (e) {
@@ -534,4 +706,14 @@
   }
 
   window.__HERMES_PLUGINS__.register(NOME, Pagina);
+
+  // Exposicao para teste: as funcoes que decidem o que vai para o JSON da
+  // configuracao sao puras (sem React) e sao o sitio onde um erro se paga caro
+  // — escrevem no bloco que o middleware le. Testadas em node, sem browser.
+  if (typeof window !== "undefined" && window.__VMM_TEST__) {
+    window.__VMM_TEST__.lerJSON = lerJSON;
+    window.__VMM_TEST__.blocoDe = blocoDe;
+    window.__VMM_TEST__.comBloco = comBloco;
+    window.__VMM_TEST__.paresModelo = paresModelo;
+  }
 })();
