@@ -258,7 +258,8 @@ def cmd_simular(args) -> int:
     decisao = a.decidir([{"role": "user", "content": args.texto}],
                         limiares=analise.get("limiares"),
                         janela=int(analise.get("janela_mensagens", 8) or 8),
-                        maximo=int(analise.get("varredura_max_mensagens", 60) or 60))
+                        maximo=int(analise.get("varredura_max_mensagens", 60) or 60),
+                        pesos=analise.get("pesos"))
     nivel = decisao["nivel"] or "(reset)"
     print(f"perfil: {args.perfil}")
     print(f"nivel: {nivel} (origem={decisao['origem']}, score={decisao.get('score')}, "

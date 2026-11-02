@@ -4,12 +4,24 @@ Recebe as mensagens que vao seguir para o provider (o historico todo, tal como o
 Hermes o monta) e devolve um nivel (`leve`|`media`|`alta`), a pontuacao e os
 sinais que a produziram. Nao ve o pedido, nao ve o agente: e so texto.
 
-Regras de desenho:
+Regras de desenho (v2):
 
 - **So a mensagem do utilizador conta para o tamanho.** O prompt de sistema
   desta instalacao tem ~38 KB e o contexto injectado (wiki, memoria, notas do
   gateway) entra no turno: pontuar isso daria sempre `alta`. O texto e cortado
   ao primeiro marcador de contexto injectado conhecido.
+- **A complexidade mede-se pelo trabalho pedido, nao pela idade da sessao.**
+  Na v1, `conversa_longa` somava +2 a partir do 8.o turno e nunca descia: ao
+  fim de 40 turnos, "lista os ficheiros" ia para `media`. A v2 nao pontua a
+  duracao da conversa. Pontua o que o turno pede, mais o *trabalho em curso*
+  (ferramentas de escrita nas ultimas mensagens), que decai com a janela.
+- **Continuacoes herdam.** "continua", "faz", "aplica" valem 0 por si: o nivel
+  do turno e o do pedido que estao a continuar. Sem isto, o turno caro de uma
+  implementacao era seguido de um turno barato a meio do mesmo trabalho.
+- **Intencao antes de palavras soltas.** Produzir (implementa, escreve, migra),
+  decidir (arquitetura, trade-off, ADR), auditar e depurar sao categorias
+  distintas com pesos distintos. Na v1 todos os verbos vinham do mesmo saco e
+  `implementa o parser com testes` valia menos que tres consultas seguidas.
 - **Sinais explicitos, nao um modelo.** Um LLM a classificar custaria uma
   chamada por turno e falharia em silencio; aqui cada ponto tem nome e o registo
   guarda os nomes, por isso a decisao e auditavel e reproduzivel.
@@ -43,19 +55,122 @@ _MARCA = re.compile(
 _MARCA_TRADUZ = {"low": "leve", "medium": "media", "high": "alta",
                  "leve": "leve", "media": "media", "alta": "alta", "auto": "auto"}
 
-_VERBOS = re.compile(
-    r"\b(implement\w*|refactor\w*|refator\w*|arquitect\w*|arquitet\w*|desenh\w*|depur\w*|"
-    r"diagnostic\w*|investig\w*|analis\w*|compar\w*|migr\w*|optimiz\w*|"
-    r"otimiz\w*|corrig\w*|revis\w*|test\w*|integr\w*|document\w*|audit\w*|"
-    r"debug\w*|redesign\w*|benchmark\w*|prov(?:ar|a|e|o|ou|ado|ada|ando|ei|aste|amos|aram)\b|"
-    r"med(?:ir|e|iu|ido|ida|ição|imos|em|iram)\b)\b",
+# --- categorias de intencao -------------------------------------------------
+
+# Produzir/alterar: o que justifica o modelo caro. Sem acentos (texto normalizado).
+_TRABALHO = re.compile(
+    r"\b(implement\w*|refactor\w*|refator\w*|reescrev\w*|reescreve\w*|migr\w*|"
+    r"substitu\w*|convert\w*|otimiz\w*|optimiz\w*|corrig\w*|corrige\w*|"
+    r"depur\w*|debug\w*|integr\w*|constru\w*|constroi\w*|cri\w*|cria\w*|"
+    r"escrev\w*|escreve\w*|ger\w*|gera\w*|desenh\w*|desenha\w*|mont\w*|monta\w*|"
+    r"produz\w*|entreg\w*|entreg\w*|prepar\w*|prepara\w*|projet\w*|projeta\w*|"
+    r"plane\w*|planeia\w*|configur\w*|configura\w*|instal\w*|instala\w*|"
+    r"deploy\w*|provision\w*|automatiz\w*|automatiza\w*|adicion\w*|adiciona\w*|"
+    r"acrescent\w*|acrescenta\w*|atualiz\w*|atualiza\w*|aplic\w*|aplica\w*)\b"
+)
+# Analisar/comparar: trabalho intelectual, mas consultivo.
+_ANALISE = re.compile(
+    r"\b(analis\w*|analisa\w*|compar\w*|compar\w*|investig\w*|investiga\w*|"
+    r"avali\w*|avalia\w*|revis\w*|rev\w*|med\w*|mede\w*|estud\w*|estuda\w*|"
+    r"examin\w*|examina\w*|verific\w*|verifica\w*|valid\w*|valida\w*|"
+    r"test\w*|testa\w*)\b"
+)
+# Auditar/diagnosticar: procura de defeito num sistema vivo.
+_AUDITORIA = re.compile(
+    r"\b(audit\w*|auditoria\w*|diagnostic\w*|diagnostica\w*|triag\w*|"
+    r"root cause\w*|rca\w*)\b|"
+    r"(o que (?:esta|está) mal|porque (?:e que )?falha|porque falhou|"
+    r"o que se passa|encontra o problema|qual (?:e )?o problema)"
+)
+# Decidir/desenhar: o caso mais caro, pede raciocinio e alternativas.
+_ARQUITETURA = re.compile(
+    r"\b(arquitetur\w*|arquitectur\w*|trade-?off\w*|adr\b|parecer\w*|"
+    r"decisao tecnica|decisão técnica|desenho tecnico|desenho técnico|"
+    r"ladd\b|tsd\b|aad\b|abordagem\w*|justifica\w*|justifique\w*|"
+    r"proposta de|avaliar opcoes|avaliar opções|comparar opcoes|comparar opções|"
+    r"melhor opcao|melhor opção|viabilidade\w*|blueprint\w*)\b",
     re.IGNORECASE,
 )
-_TRACO_ERRO = re.compile(r"(Traceback \(most recent call last\)|\b[A-Z]\w*Error\b|\bexit code\b|"
-                         r"\bat line \d+|\bpanic:|\bsegfault\b)", re.IGNORECASE)
-_CAMINHO = re.compile(r"(?:^|\s)(?:/[\w.\-]+/[\w./\-]+|[A-Za-z]:\\\\|~/[\w./\-]+)")
-_MULTI = re.compile(r"(e também|e depois|alem disso|além disso|por outro lado|"
-                    r"\b1[.)]\s|\b2[.)]\s|\b3[.)]\s)", re.IGNORECASE)
+# Avaria concreta: o modelo tem de raciocinar sobre evidencia.
+_STACK = re.compile(
+    r"(Traceback \(most recent call last\)|stack ?trace|\bexit code\b|"
+    r"\bat line \d+|\bpanic:|\bsegfault\b|\b[A-Z]\w*(?:Error|Exception)\b|"
+    r"\bexception\b)",
+    re.IGNORECASE,
+)
+_AVARIA = re.compile(
+    r"(\bfalha\b|\bfalhou\b|\bcrash\w*|\brebent\w*|"
+    r"n[aã]o (?:funciona|devolve|arranca|responde|recuper\w*|sub\w*|volt\w*|"
+    r"sincroniz\w*|lig\w*|carrega\w*|deteta\w*|aparece\w*|abre|passa)\b|"
+    r"est[aá] a falhar|d[aá] (?:este |um )?erro|est[aá] mal)",
+    re.IGNORECASE,
+)
+# Consulta hipotetica: "como se cria", "o que e", "qual e" — pergunta, nao pedido
+# de producao. Sem isto, "como se cria um proxy?" contava como trabalho.
+_CONSULTA = re.compile(
+    r"\b(?:como (?:se|e que se|é que se)|o que (?:e|é)(?: que| um| uma)?|"
+    r"qual (?:e|é)|quais (?:sao|são)|para que serve|existe[m]? .*\?)\b",
+    re.IGNORECASE,
+)
+_EXPLICACAO = re.compile(
+    r"\b(explica\w*|explicar\w*|explicita\w*|como funciona|como se faz|"
+    r"porque|porqu[eê]|o que [eé] que|para que serve|qual a diferen[cç]a)\b"
+)
+_CODIGO = re.compile(r"```|^\s*(?:def |class |import |from |function |"
+                     r"SELECT |CREATE |curl |docker |kubectl |ansible )",
+                     re.MULTILINE)
+_CAMINHO = re.compile(r"(?:^|[\s\"'(])(?:/[\w.\-]+/[\w./\-]+|[A-Za-z]:\\\\|~/[\w./\-]+)")
+_DOMINIO = re.compile(
+    r"\b(api|docker|kubernetes|k8s|yaml|json|python|javascript|typescript|sql|regex|"
+    r"gateway|proxy|nginx|keepalived|dashboard|plugin|script|automa[cç][aã]o|c[oó]digo|"
+    r"bateria|inversor|modbus|zigbee|mqtt|vlan|dns|tls|certificado|"
+    r"home assistant|entidades?|sensores?|automa[cç][oõ]es|parser|testes|migra[cç][aã]o|config|logs?|ficheiros?|"
+    r"base de dados|query|endpoint|deploy|commit|branch|repo|jira|confluence|"
+    r"diagrama|lat[eê]ncia|custo|pre[cç]o|tokens?|desempenho|performance|"
+    r"\bpr\b|pull request|diff|patch|merge|commit)\b",
+    re.IGNORECASE,
+)
+_LISTA = re.compile(r"^\s*(?:\d{1,2}[.)]|[-*])\s+\S", re.MULTILINE)
+_CONECTOR = re.compile(r"\b(e tamb[eé]m|al[eé]m disso|por outro lado|e depois|"
+                       r"assim como|bem como)\b", re.IGNORECASE)
+_DUAS_PARTES = re.compile(r"(?:,\s*e\s|\se\s(?:onde|como|quando|porque|que|qual)\s)",
+                          re.IGNORECASE)
+# Continuacao: curta e a apontar para o pedido anterior.
+_CONTINUACAO = re.compile(
+    r"^(?:continua\w*|segue\w*|avanc\w*|vai (?:com isso|em frente|la|para a frente)|"
+    r"faz(?: isso| o mesmo| igual)?|aplica(?: isso| o mesmo)?|forca|força|bora|"
+    r"corrige|resolve|executa|implementa|"
+    r"podes (?:fazer|aplicar|avancar|continuar)|sim[,!.]?(?: faz| aplica| continua)?|"
+    r"ok[,!.]?(?: faz| aplica| continua)?|vamos a isso|prossegue)\s*[.!]*$",
+    re.IGNORECASE,
+)
+_FERRAMENTAS_ESCRITA = {
+    "write_file", "patch", "str_replace_editor", "edit_file", "create_file",
+    "apply_patch", "multiedit", "write", "create", "edit",
+}
+
+# Pesos. Todos substituiveis por config (`analise.pesos`) sem tocar no codigo.
+PESOS = {
+    "trabalho": 5,        # produzir/alterar
+    "analise": 2,         # analisar/comparar
+    "auditoria": 6,       # auditar/diagnosticar sistema vivo
+    "arquitetura": 6,     # decidir/desenhar (o topo)
+    "erro_stack": 5,      # avaria com evidencia (traceback, excecao)
+    "erro_avaria": 3,     # sintoma sem evidencia
+    "codigo": 2,          # bloco de codigo
+    "caminho": 1,         # ficheiro concreto
+    "dominio": 1,         # termos tecnicos (1, +1 se >=3 distintos)
+    "multi": 2,           # lista numerada com 2+ itens
+    "conector": 1,        # "e tambem", "alem disso"
+    "duas_partes": 1,     # duas sub-perguntas
+    "explicacao": 1,      # pedido de explicacao com 2+ partes
+    "varias_perguntas": 1,
+    "trabalho_em_curso": 2,
+    "texto_medio": 1,
+    "texto_longo": 3,
+    "texto_muito_longo": 4,
+}
+LIMIARES = {"media": 3, "alta": 6}
 
 
 def _sem_acentos(texto: str) -> str:
@@ -117,80 +232,195 @@ def marcador(mensagens: list[Any], maximo: int = 60) -> str | None:
     return None
 
 
-def pontuar(mensagens: list[Any], janela: int = 8) -> dict[str, Any]:
-    """Pontuacao de complexidade + sinais. Ver o docstring do modulo."""
+def _pesos(pesos: dict[str, Any] | None) -> dict[str, int]:
+    p = dict(PESOS)
+    for chave, valor in (pesos or {}).items():
+        try:
+            p[chave] = int(valor)
+        except (TypeError, ValueError):
+            continue
+    return p
+
+
+def _e_continuacao(texto: str) -> bool:
+    """Pedido curto que aponta para o turno anterior (sem conteudo proprio)."""
+    t = texto.strip()
+    return 0 < len(t) <= 120 and bool(_CONTINUACAO.match(t))
+
+
+_SUFIXO_NOMINAL = re.compile(r"(?:cao|coes|mento|gem|dor|dura|ncia)$")
+
+
+def _primeiro_verbo(padrao: re.Pattern[str], texto: str) -> str | None:
+    """Primeiro verbo real do padrao — substantivos derivados nao contam.
+
+    `instalacao`, `configuracao`, `migracao`, `automacao` casam com
+    `instal\\w*`, `configur\\w*`, ... e davam trabalho de producao a uma simples
+    mencao ("audita a instalacao do HA"). Um sufixo nominal desqualifica o match.
+    """
+    for m in padrao.finditer(texto):
+        achado = m.group(0)
+        if _SUFIXO_NOMINAL.search(achado):
+            continue
+        return achado
+    return None
+
+
+def _ferramentas_de_escrita(mensagens: list[Any], janela: int) -> int:
+    """Chamadas de escrita/edicao recentes — o trabalho em curso, com decaimento."""
+    recentes = (mensagens or [])[-max(1, janela * 4):]
+    total = 0
+    for m in recentes:
+        if not isinstance(m, dict):
+            continue
+        for chave in ("tool_calls", "tool_call"):
+            for chamada in (m.get(chave) or []) if isinstance(m.get(chave), list) else [m.get(chave)]:
+                if not isinstance(chamada, dict):
+                    continue
+                nome = ((chamada.get("function") or {}).get("name")
+                        or chamada.get("name") or "")
+                if str(nome).lower() in _FERRAMENTAS_ESCRITA:
+                    total += 1
+        nome = m.get("name")
+        if m.get("role") in ("tool", "function") and str(nome).lower() in _FERRAMENTAS_ESCRITA:
+            total += 1
+    return total
+
+
+def _pontuar_texto(texto: str, pesos: dict[str, int], ferramentas_escrita: int,
+                   turnos: int, ferramentas: int) -> tuple[int, list[str]]:
+    """Nucleo da pontuacao, sobre texto ja limpo e normalizado."""
+    sinais: list[str] = []
+    score = 0
+    n = len(texto)
+
+    if n >= 2400:
+        score += pesos["texto_muito_longo"]
+        sinais.append("texto_muito_longo")
+    elif n >= 900:
+        score += pesos["texto_longo"]
+        sinais.append("texto_longo")
+    elif n >= 300:
+        score += pesos["texto_medio"]
+        sinais.append("texto_medio")
+
+    # Categorias de intencao: cada uma contribui no maximo uma vez.
+    if _ARQUITETURA.search(texto):
+        score += pesos["arquitetura"]
+        sinais.append("arquitetura_decisao")
+    if _AUDITORIA.search(texto):
+        score += pesos["auditoria"]
+        sinais.append("auditoria_diagnostico")
+    # "como se cria", "o que e" — pergunta, nao pedido de producao.
+    consulta = bool(_CONSULTA.search(texto))
+    verbo_trabalho = None if consulta else _primeiro_verbo(_TRABALHO, texto)
+    if verbo_trabalho:
+        score += pesos["trabalho"]
+        sinais.append(f"trabalho_producao={verbo_trabalho}")
+    elif not consulta and _primeiro_verbo(_ANALISE, texto):
+        score += pesos["analise"]
+        sinais.append(f"analise={_primeiro_verbo(_ANALISE, texto)}")
+    if _STACK.search(texto):
+        score += pesos["erro_stack"]
+        sinais.append("erro_com_evidencia")
+    elif _AVARIA.search(texto):
+        score += pesos["erro_avaria"]
+        sinais.append("avaria_sem_evidencia")
+
+    # Amplitude.
+    if _CODIGO.search(texto):
+        score += pesos["codigo"]
+        sinais.append("codigo")
+    if _CAMINHO.search(texto):
+        score += pesos["caminho"]
+        sinais.append("caminho_de_ficheiro")
+    distintos = {m.group(0).lower() for m in _DOMINIO.finditer(texto)}
+    if distintos:
+        score += pesos["dominio"] + (pesos["dominio"] if len(distintos) >= 3 else 0)
+        sinais.append(f"dominio_tecnico={len(distintos)}")
+    itens = len(_LISTA.findall(texto))
+    if itens >= 2:
+        score += pesos["multi"]
+        sinais.append(f"lista_de_pedidos={itens}")
+    elif _CONECTOR.search(texto):
+        score += pesos["conector"]
+        sinais.append("pedido_encadeado")
+    varias = texto.count("?") >= 2
+    duas = bool(_DUAS_PARTES.search(texto))
+    if varias:
+        # `varias_perguntas` e `duas_partes` medem o mesmo; contar os dois
+        # punha uma consulta de duas perguntas em `media`.
+        score += pesos["varias_perguntas"]
+        sinais.append("varias_perguntas")
+    elif duas:
+        score += pesos["duas_partes"]
+        sinais.append("duas_partes")
+    if duas and _EXPLICACAO.search(texto):
+        score += pesos["explicacao"]
+        sinais.append("pedido_de_explicacao")
+
+    # Trabalho em curso: escreveu/alterou ficheiros nas ultimas mensagens.
+    if ferramentas_escrita:
+        score += pesos["trabalho_em_curso"]
+        sinais.append(f"trabalho_em_curso={ferramentas_escrita}")
+
+    return score, sinais
+
+
+def pontuar(mensagens: list[Any], janela: int = 8,
+            pesos: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Pontuacao de complexidade + sinais do ultimo pedido do utilizador.
+
+    Nao pontua a duracao da conversa: `turnos` e `ferramentas` sao devolvidos
+    como informacao, nunca como pontos.
+    """
+    p = _pesos(pesos)
     utilizadores = [m for m in (mensagens or [])
                     if isinstance(m, dict) and m.get("role") == "user"]
     if not utilizadores:
         return {"score": 0, "sinais": ["sem_texto"], "caracteres": 0,
-                "turnos": 0, "ferramentas": 0}
+                "turnos": 0, "ferramentas": 0, "herdado_de": None}
+
     bruto = texto_de(utilizadores[-1].get("content"))
-    texto = limpar_contexto_injectado(bruto).strip()
-    sinais: list[str] = []
-    score = 0
-
-    n = len(texto)
-    if n >= 2400:
-        score += 4
-        sinais.append("texto_muito_longo")
-    elif n >= 900:
-        score += 3
-        sinais.append("texto_longo")
-    elif n >= 300:
-        score += 1
-        sinais.append("texto_medio")
-
-    verbos = {m.group(0).lower() for m in _VERBOS.finditer(texto)}
-    if verbos:
-        peso = min(len(verbos), 3)
-        score += peso
-        sinais.append(f"verbos_pesados={','.join(sorted(verbos)[:3])}")
-
-    if "```" in texto:
-        score += 2
-        sinais.append("codigo")
-    if _TRACO_ERRO.search(texto):
-        score += 3
-        sinais.append("erro_ou_traceback")
-    if _CAMINHO.search(texto):
-        score += 1
-        sinais.append("caminho_de_ficheiro")
-    if texto.count("?") >= 2:
-        score += 1
-        sinais.append("varias_perguntas")
-    if _MULTI.search(texto):
-        score += 1
-        sinais.append("multi_pedido")
-
+    texto = _sem_acentos(limpar_contexto_injectado(bruto)).strip()
+    texto = " ".join(texto.split())
     turnos = len(utilizadores)
-    if turnos >= 8:
-        score += 2
-        sinais.append(f"conversa_longa={turnos}")
-    elif turnos >= 4:
-        score += 1
-        sinais.append(f"conversa_media={turnos}")
-
     janela_msgs = (mensagens or [])[-max(1, janela * 4):]
     ferramentas = sum(1 for m in janela_msgs if isinstance(m, dict)
                       and m.get("role") in ("tool", "function"))
-    if ferramentas >= 6:
-        score += 1
-        sinais.append(f"muitas_ferramentas={ferramentas}")
+    escrita = _ferramentas_de_escrita(mensagens, janela)
 
-    return {"score": score, "sinais": sinais, "caracteres": n,
-            "turnos": turnos, "ferramentas": ferramentas}
+    score, sinais = _pontuar_texto(texto, p, escrita, turnos, ferramentas)
+    herdado_de = None
+
+    # Continuacao curta: herda o nivel do pedido que esta a continuar.
+    if _e_continuacao(texto):
+        for anterior in reversed(utilizadores[:-1][-6:]):
+            texto_ant = " ".join(_sem_acentos(
+                limpar_contexto_injectado(texto_de(anterior.get("content")))).split())
+            if not texto_ant or _e_continuacao(texto_ant):
+                continue
+            score_ant, _ = _pontuar_texto(texto_ant, p, escrita, turnos, ferramentas)
+            if score_ant > score:
+                score, herdado_de = score_ant, texto_ant[:80]
+                sinais = ["continuacao_herda"] + [s for s in sinais if s != "sem_texto"]
+            break
+
+    return {"score": score, "sinais": sinais, "caracteres": len(texto),
+            "turnos": turnos, "ferramentas": ferramentas, "herdado_de": herdado_de}
 
 
 def nivel_de_score(score: int, limiares: dict[str, Any] | None = None) -> str:
     """`score` -> nivel, com limiares configuraveis (`media`, `alta`)."""
-    lim = limiares or {}
-    try:
-        media = int(lim.get("media", 3))
-        alta = int(lim.get("alta", 7))
-    except (TypeError, ValueError):
-        media, alta = 3, 7
+    lim = dict(LIMIARES)
+    for chave, valor in (limiares or {}).items():
+        try:
+            lim[chave] = int(valor)
+        except (TypeError, ValueError):
+            continue
+    media, alta = lim["media"], lim["alta"]
     if alta <= media:  # config incoerente nao pode apagar o nivel `alta`
-        alta = media + 4
+        alta = media + 3
     if score >= alta:
         return "alta"
     if score >= media:
@@ -219,14 +449,18 @@ def detectar_tarefa(mensagens: list[Any], regras: dict[str, Any]) -> str | None:
 
 
 def decidir(mensagens: list[Any], *, limiares: dict[str, Any] | None = None,
-            janela: int = 8, maximo: int = 60) -> dict[str, Any]:
-    """Nivel final do turno: marcador explicito > pontuacao."""
+            janela: int = 8, maximo: int = 60,
+            pesos: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Nivel final do turno: marcador explicito > pontuacao (com heranca)."""
     explicito = marcador(mensagens, maximo)
     if explicito in NIVEIS:
-        return {"nivel": explicito, "origem": "marcador", "score": None, "sinais": ["marcador"]}
+        return {"nivel": explicito, "origem": "marcador", "score": None,
+                "sinais": ["marcador"], "herdado_de": None}
     if explicito == "auto":
-        return {"nivel": "", "origem": "reset", "score": None, "sinais": ["marcador_auto"]}
-    p = pontuar(mensagens, janela)
-    return {"nivel": nivel_de_score(p["score"], limiares), "origem": "analise",
-            "score": p["score"], "sinais": p["sinais"], "caracteres": p["caracteres"],
-            "turnos": p["turnos"], "ferramentas": p["ferramentas"]}
+        return {"nivel": "", "origem": "reset", "score": None,
+                "sinais": ["marcador_auto"], "herdado_de": None}
+    ponto = pontuar(mensagens, janela, pesos)
+    return {"nivel": nivel_de_score(ponto["score"], limiares), "origem": "analise",
+            "score": ponto["score"], "sinais": ponto["sinais"],
+            "caracteres": ponto["caracteres"], "turnos": ponto["turnos"],
+            "ferramentas": ponto["ferramentas"], "herdado_de": ponto["herdado_de"]}

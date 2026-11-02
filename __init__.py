@@ -388,6 +388,7 @@ def middleware_llm_request(
             limiares=analise.get("limiares"),
             janela=int(analise.get("janela_mensagens", 8) or 8),
             maximo=int(analise.get("varredura_max_mensagens", 60) or 60),
+            pesos=analise.get("pesos"),
         )
         tarefa = _detectar_tarefa(_mensagens(request), pcfg.get("tarefas") or {})
         associada = tarefa if any(tarefa in e.get("tarefas", [])

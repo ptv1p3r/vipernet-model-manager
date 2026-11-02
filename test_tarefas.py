@@ -95,7 +95,9 @@ class Tarefas(unittest.TestCase):
             return original(perfil, provider, modelo)
         with patch.object(p, 'resolver_rota', side_effect=resolve):
             e = self.run_turn('Faz uma análise de arquitetura.')
-        self.assertEqual(e['entrada'], 'flash')
+        # A v2 classifica "análise de arquitetura" como `alta` (era o defeito da v1,
+        # que lhe dava score 1). O fallback cai na análise e chega ao modelo de alta.
+        self.assertEqual(e['entrada'], 'pro')
         self.assertEqual(e['origem'], 'analise_fallback_tarefa')
         self.assertTrue(e['falhadas_tarefa'])
 
@@ -117,7 +119,10 @@ class Tarefas(unittest.TestCase):
         self.cfg['perfis']['trabalho']['catalogo'][2]['tarefas'] = []
         self.cfg['perfis']['pessoal'] = copy.deepcopy(config()['perfis']['trabalho'])
         e = self.run_turn('Faz uma análise de arquitetura.')
-        self.assertEqual(e['entrada'], 'flash')
+        # Sem a associacao de tarefa, decide a analise: arquitetura -> alta -> `pro`.
+        # O que este teste prova e' o isolamento (perfil trabalho), nao o modelo barato.
+        self.assertEqual(e['entrada'], 'pro')
+        self.assertEqual(e['perfil'], 'trabalho')
 
     def test_injected_context_does_not_classify_task(self):
         e = self.run_turn('Bom dia.\n<memory-context>análise de arquitetura</memory-context>')
