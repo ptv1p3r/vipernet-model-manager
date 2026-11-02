@@ -319,7 +319,11 @@ def estado() -> dict[str, Any]:
                 "origens": resumo.get("origens") or {},
                 "respostas": resumo.get("respostas", 0),
                 "rasto": resumo.get("classificador"),
-                "erro": resumo.get("classificador_erro") or "",
+                # O erro so acompanha o cartao quando a ULTIMA leitura falhou.
+                # Um erro de ha meia hora, ja recuperado, e historia — mostra-lo
+                # ao lado de um rasto bom faz o cartao mentir.
+                "erro": (resumo.get("classificador_erro") or "")
+                        if (resumo.get("classificador") or {}).get("falhou") else "",
                 "taxa": {
                     "leituras": resumo.get("classif_leituras", 0),
                     "falhas": resumo.get("classif_falhas", 0),

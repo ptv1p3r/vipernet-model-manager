@@ -1381,6 +1381,8 @@ def testes_recarga_de_modulo() -> None:
     import tempfile
     import time as _t
 
+    vmm = _mod("vmm_plugin_reload", AQUI / "__init__.py")
+
     pasta = tempfile.mkdtemp(prefix="vmm-reload-")
     alvo = os.path.join(pasta, "mod_teste.py")
     with open(alvo, "w", encoding="utf-8") as fh:
