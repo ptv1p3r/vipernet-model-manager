@@ -58,6 +58,16 @@ def _corpo_objeto(corpo: Any, *, obrigatorio: bool = True) -> Optional[dict[str,
     """
     if isinstance(corpo, dict):
         return corpo
+    if isinstance(corpo, bytes):
+        try:
+            corpo = corpo.decode("utf-8")
+        except (UnicodeDecodeError, ValueError):
+            if obrigatorio:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"corpo nao e um objecto JSON (recebido bytes, nao e utf-8)",
+                )
+            return None
     if isinstance(corpo, str):
         try:
             lido = json.loads(corpo)
