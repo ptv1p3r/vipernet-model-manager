@@ -47,6 +47,15 @@ _CORTES = (
     "\n<memory-context>",
 )
 
+# Blocos de contexto injectado com fim conhecido: removem-se inteiros, porque
+# vem antes do pedido dentro da mesma mensagem (ver `limpar_contexto_injectado`).
+_BLOCOS_FECHADOS = (
+    ("[CONTEXT COMPACTION", "--- END OF CONTEXT SUMMARY"),
+    ("<memory-context>", "</memory-context>"),
+    ("[conhecimento local", "Regra: ler o que aqui aponta"),
+    ("[conhecimento local — Vipernet", "Regra: ler o que aqui aponta"),
+)
+
 # `complexidade: alta`, `Complexidade = MÉDIA`, `**complexidade:** alta`, `complexity=high`
 _MARCA = re.compile(
     r"(?:complexidade|complexity)\s*[:=]\s*\*{0,2}\s*(leve|m[eé]dia|media|alta|auto|low|medium|high)\b",
@@ -262,13 +271,45 @@ def texto_de(conteudo: Any, profundidade: int = 0) -> str:
 
 
 def limpar_contexto_injectado(texto: str) -> str:
-    """Corta o texto ao primeiro bloco de contexto que o Hermes acrescenta."""
-    corte = len(texto)
+    """Tira o contexto que o Hermes injecta e deixa so o texto do utilizador.
+
+    Duas armadilhas medidas a 2026-11-02, ambas visiveis no ledger:
+
+    1. Estes blocos vem muitas vezes **antes** do pedido, na mesma mensagem (a
+       mensagem de continuacao pos-compactacao e `[resumo][pedido]`). Cortar
+       "do marcador para a frente" apagava o pedido real e a analise ficava com
+       zero caracteres.
+    2. Os marcadores antigos exigiam `\\n` antes, porque no meio do texto o bloco
+       vem depois de uma quebra de linha. No **inicio** da mensagem nao ha quebra,
+       o corte nao acontecia, e o resumo — que cita `complexidade: leve|media|alta`
+       — passava por marcador do utilizador.
+
+    Por isso os blocos conhecidos removem-se inteiros (do inicio ao fim
+    conhecido), onde quer que estejam; um marcador sem fim conhecido continua a
+    cortar dali para a frente, que e o comportamento conservador.
+    """
+    limpo = texto
+    for inicio, fim in _BLOCOS_FECHADOS:
+        while True:
+            i = limpo.find(inicio)
+            if i == -1:
+                break
+            j = limpo.find(fim, i)
+            if j == -1:
+                break
+            # o fim e o fim da linha do marcador: o resto da linha faz parte do
+            # bloco ("--- END OF CONTEXT SUMMARY — respond to the message below")
+            nl = limpo.find("\n", j)
+            fim_corte = (nl + 1) if nl != -1 else len(limpo)
+            limpo = limpo[:i] + limpo[fim_corte:]
+    corte = len(limpo)
     for marca in _CORTES:
-        pos = texto.find(marca)
+        pos = limpo.find(marca)
         if pos != -1:
             corte = min(corte, pos)
-    return texto[:corte]
+        if limpo.lstrip().startswith(marca.lstrip("\n")):
+            corte = 0
+    return limpo[:corte]
 
 
 def _marcadores(texto: str) -> list[str]:
@@ -288,12 +329,17 @@ def marcador(mensagens: list[Any], maximo: int = 60) -> str | None:
     users = users[-max(1, maximo):]
     if not users:
         return None
-    ultima = _marcadores(texto_de(users[-1].get("content")))
+    # O contexto injectado (resumo de compactacao, memoria, wiki) pode conter a
+    # propria palavra `complexidade:` — medido no ledger de 2026-11-02 18:44, um
+    # resumo de compactacao com `complexidade: leve|media|alta` foi lido como
+    # marcador e fixou o turno em `leve` com origem `marcador`. O marcador so
+    # vale do texto do utilizador; o injectado corta-se como na heuristica.
+    ultima = _marcadores(limpar_contexto_injectado(texto_de(users[-1].get("content"))))
     if ultima:
         alvo = _sem_acentos(ultima[-1]).lower()
         return _MARCA_TRADUZ.get(alvo, alvo)
     for msg in reversed(users[:-1]):
-        achados = _marcadores(texto_de(msg.get("content")))
+        achados = _marcadores(limpar_contexto_injectado(texto_de(msg.get("content"))))
         if achados:
             alvo = _sem_acentos(achados[-1]).lower()
             traduzido = _MARCA_TRADUZ.get(alvo, alvo)
