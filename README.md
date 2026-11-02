@@ -41,10 +41,50 @@ Medicao que fixou os limiares (2026-11-02, dois holdouts, 42 casos):
 | `media=4` | 20/24 | 14/18 | 34/42 (81%) |
 | `media=3` + regra dos 2 sinais | 21/24 | 14/18 | 35/42 (83%) |
 
-A regra dos dois sinais (`media_sinais: 2`) fica implementada e **inativa**: so
+A regra dos dois sinais (`media_sinais: 2`) fica implementada e **inactiva**: so
 actua quando a chave existe nos limiares. `test_holdout.py` versiona o holdout2
 com baseline 17/18 — o unico erro conhecido ("NPM ou Traefik, justifica") e
 discutivel no rotulo e **nao se calibra contra ele**.
+
+## v4.3 — o que separa agora
+
+Correccoes de conceito, cada uma nascida de um caso real falhado:
+
+- **`justificacao` (3)**: "justifica" pede razao, nao desenha. Antes valia 6 e
+  mandava "NPM ou Traefik? justifica" para o modelo caro.
+- **`explicacao_conceito` (2)**: "explica como funciona X" e raciocinio de
+  dificuldade media.
+- **`avaria_de_servico` (+3)**: sintoma sobre um processo que devia estar a
+  correr (`_SERVICO_AVARIADO`). Uma lampada que nao acende nao e isto.
+- **Objecto vivo restrito**: sairam `ha`, `bateria`, `inversor`, `dashboard` e
+  `api`. `ha\b` casava com o verbo portugues "ha" (texto normalizado sem
+  acentos) e promovia um typo a trabalho de producao.
+- **Verbos genericos** (`prepar`, `gera`, `faz`, `produz`): herdam o peso do
+  objecto; "gera o relatorio mensal" e relatorio (3), nao engenharia (5).
+- **`mudar` em pergunta nao e ordem**: so `muda`/`mude` contam como manutencao.
+- **Vocabulario de infra**: `lxc`, `proxmox`, `portainer`, `backup`, `retencao`,
+  `snapshot`, `vlan`, `skills`, `n8n`, `sqlite`, `postgres`, `firmware`,
+  `ota`, `consumo`, `standby`, `energia`, `seguranca`, `exposicao`, `homelab`.
+
+### Protocolo de medicao (importante)
+
+Os holdouts `test_holdout{,2,3,4}.py` somam 79 casos. Cada vez que se afina o
+vocabulario contra um deles, esse conjunto **deixa de ser amostra independente**.
+A ordem que se cumpriu: medir cego, corrigir conceitos, medir num conjunto novo.
+
+| conjunto | casos | antes da v4.3 | depois |
+|---|---|---|---|
+| holdout2 | 22 | 22/22 (treino) | 22/22 |
+| holdout3 (cego na altura) | 20 | 12/20 (60%) | 20/20 |
+| holdout4 (cego na altura) | 19 | **11/19 (57%)** | 19/19 |
+
+O numero honesto e o **57% cego**, nao os 100%. As 8 falhas eram todas de
+vocabulario — nenhuma de limiar — e e por isso que o gargalo do classificador
+nao e o `media`, e sim o alcance lexical. Uma frase nova com palavras que nao
+estao nas regexes cai em `leve`. O caminho para sair disto nao e mais regex:
+e um classificador que generalize (modelo local pequeno ou um modelo gratuito
+de contexto grande a responder `leve|media|alta`).
+
 
 ## Painel no dashboard (3.3)
 

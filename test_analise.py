@@ -239,5 +239,63 @@ class Regras(unittest.TestCase):
         self.assertEqual(a.decidir(m("testa o plugin"))["nivel"], "leve")
 
 
+class Regras_v4_2(unittest.TestCase):
+    """Conceitos que a v4.2 separa — cada um foi um falso positivo ou negativo real."""
+
+    def test_justificar_nao_e_arquitetura(self):
+        """"justifica" pede razao: media, nao o modelo mais caro."""
+        d = a.decidir(m("NPM ou Traefik para este homelab? justifica"))
+        self.assertEqual(d["nivel"], "media", d)
+        self.assertIn("justificacao_pedida", d["sinais"])
+        self.assertNotIn("arquitetura_decisao", d["sinais"])
+
+    def test_arquitetura_continua_a_ganhar(self):
+        d = a.decidir(m("justifica a abordagem de automacao solar"))
+        self.assertEqual(d["nivel"], "alta", d)
+        self.assertIn("arquitetura_decisao", d["sinais"])
+
+    def test_justificar_com_e_que(self):
+        """"porque e que escolheste" tem de casar como "porque escolheste"."""
+        d = a.decidir(m("porque e que escolheste o flash para isto?"))
+        self.assertIn("justificacao_pedida", d["sinais"], d)
+
+    def test_explicar_conceito_e_media(self):
+        d = a.decidir(m("explica como funciona o keepalived"))
+        self.assertEqual(d["nivel"], "media", d)
+        self.assertIn("explicacao_conceito", d["sinais"])
+
+    def test_ha_nao_e_home_assistant(self):
+        """O verbo "ha" nao pode valer como objeto vivo (HA)."""
+        d = a.decidir(m("ha um typo na descricao da skill"))
+        self.assertNotIn("trabalho_producao=ha", d["sinais"], d)
+        self.assertEqual(d["nivel"], "media", d)
+
+    def test_avaria_de_servico_e_alta(self):
+        d = a.decidir(m("o container do n8n nao arranca depois do reboot"))
+        self.assertIn("avaria_de_servico", d["sinais"], d)
+        self.assertEqual(d["nivel"], "alta", d)
+
+    def test_sintoma_simples_nao_e_alta(self):
+        """Uma lampada que nao acende nao e um servico em baixo."""
+        d = a.decidir(m("a luz da sala nao acende"))
+        self.assertNotIn("avaria_de_servico", d["sinais"], d)
+        self.assertLess(d["score"], 6, d)
+
+    def test_relatorio_com_verbo_generico(self):
+        """"gera/prepara o relatorio" herda o peso do objeto, nao do verbo."""
+        for texto in ("gera o relatorio mensal de energia",
+                      "prepara o resumo semanal do consumo"):
+            d = a.decidir(m(texto))
+            self.assertEqual(d["nivel"], "media", (texto, d))
+            self.assertNotIn("trabalho_producao=gera", d["sinais"], d)
+
+    def test_mudar_em_pergunta_nao_e_ordem(self):
+        """"diz o que mudar" e pergunta; "muda a ordem" e ordem."""
+        self.assertNotIn("manutencao_increm",
+                         a.decidir(m("revê o PR 42 e diz o que mudar"))["sinais"])
+        self.assertIn("manutencao_increm",
+                      a.decidir(m("muda a ordem dos cartoes"))["sinais"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
