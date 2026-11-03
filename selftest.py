@@ -1209,7 +1209,7 @@ def testes_indicador_analise() -> None:
     LIGADO = {"activo": True, "provider": "inception", "modelo": "mercury-3",
               "esforco": "baixo"}
     CHAVES = {"modo", "activo", "provider", "modelo", "esforco", "formato_json",
-              "via", "confianca_min", "origem", "motivo"}
+              "via", "confianca_min", "estado", "origem", "motivo"}
     def cfg(global_c=None, pessoal_c=None, com_global=True):
         base = _cfg_base()
         if com_global:

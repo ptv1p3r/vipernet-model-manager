@@ -82,6 +82,11 @@ PADRAO: dict[str, Any] = {
     # que e o comportamento de escalonamento prescrito para modelos System One.
     # 0.0 aceita tudo (comportamento identico ao de um LLM classificador).
     "confianca_min": 0.0,
+    # Forma do `state` no transporte de decisoes (`ESTADOS_DECISAO`). `medidas`
+    # por omissao: medido a 2026-11-03, o transcrito cru dava kappa de alta
+    # 0,3604 e 127 de 129 leituras abstinham em producao; com as medidas o mesmo
+    # pedido subiu a 0,5479 e a confianca deixou de viver nos 0,18.
+    "estado": "medidas",
 }
 
 
@@ -92,25 +97,113 @@ VIAS = {"chat": "chat", "decisoes": "decisoes", "decisions": "decisoes",
 
 #: Criterios do `choice` no transporte de decisoes. E a rubrica dos tres niveis
 #: na unica forma que o endpoint aceita: mapa opcao -> descricao (uma lista de
-#: `options` e recusada). As duas contra-ancoras que a rubrica do avaliador ja
-#: proibe entraram aqui por escrito, porque sao exactamente os dois vicios
-#: medidos nos juizes LLM: comprimento/artefacto colado como nivel e ambito
-#: aberto ("faz tudo") como alta.
+#: `options` e recusada).
+#:
+#: A rubrica curta que aqui estava custava caro, e foi medido a 2026-11-03 nos
+#: 250 casos do gold: kappa de alta 0,5599 com precisao 0,49 e 26 altas falsas.
+#: Com esta rubrica (tres eixos, seis contra-ancoras, regra de bolso) os mesmos
+#: casos deram 0,5952 / 0,606 / 13. O que faltava era o que a rubrica do
+#: avaliador ja dizia e a versao curta tinha perdido na compressao: o nivel e o
+#: MAXIMO de tres eixos, e as seis armadilhas estao nomeadas uma a uma.
 CRITERIOS_DECISAO: dict[str, str] = {
-    "leve": "conversa, confirmacao, pergunta directa de uma linha, extrair um valor, "
-            "sim/nao, pedir esclarecimento",
-    "media": "explicar um conceito, comparar opcoes, rever algo pequeno, alterar um "
-             "ficheiro ja identificado, correr um comando com contexto",
-    "alta": "desenhar ou decidir arquitetura, diagnosticar avaria com evidencia, "
-            "implementar ou refactorizar codigo, plano com janela e rollback, auditoria",
+    "leve": "Saudacao, confirmacao, agradecimento; pedir esclarecimento; extrair um valor; "
+            "pergunta de sim/nao; reformular; correr um comando ja conhecido; pergunta "
+            "factual de uma linha.",
+    "media": "Resumir texto longo; traduzir; redigir email; corrigir erro com sintoma claro; "
+             "diagnosticar com mensagem de erro dada; alterar um ficheiro identificado; "
+             "escrever um teste para funcao nomeada; atualizar ou limpar um sistema vivo; "
+             "plano de tarefa concreta.",
+    "alta": "Desenhar arquitetura ou decidir trade-offs; depurar sem reproducao nem mensagem "
+            "de erro; migrar com rollback e compatibilidade; analisar em conjunto varios "
+            "ficheiros ou servicos; otimizar um algoritmo; provar correcao; fechar um "
+            "parecer com consequencias.",
 }
 
 INSTRUCOES_DECISAO = (
-    "Nivel de complexidade do pedido: o modelo mais barato que o resolve com qualidade. "
-    "O comprimento do texto e a presenca de artefactos colados (logs, codigo, JSON) nao "
-    "mudam o nivel. Ambito aberto (\"faz tudo\", \"implementa o necessario\") nao e alta "
-    "sem um dos sinais de alta."
+    "Classifica o nivel MINIMO de modelo que resolve o pedido com qualidade aceitavel. "
+    "O nivel e o MAXIMO de tres eixos: raciocinio, contexto e especialidade. "
+    "Contexto so promove: 24k-100k tokens sobe um nivel, acima de 100k e alta. "
+    "CONTRA-ANCORAS que NAO sao complexidade: (1) avaria ou urgencia nao e complexidade; "
+    "(2) jargao tecnico nao e complexidade; (3) pedir esclarecimento e leve; "
+    "(4) ambito aberto ('faz tudo', 'resolve isto') NAO e alta por si; "
+    "(5) comprimento do texto NAO e nivel; (6) log ou artefacto colado NAO e nivel, "
+    "conta o contexto que o pedido obriga a carregar. "
+    "Regra de bolso: media e 'sei o que fazer, preciso de executar bem'; alta e 'tenho de "
+    "descobrir o que fazer antes de executar'."
 )
+
+#: Modos de `state` para o transporte de decisoes.
+#: `medidas` (por omissao) entrega ao modelo o pedido isolado, com um bloco de
+#: factos neutros, e marca o transcrito anterior como "nao e o pedido".
+#: `simples` entrega o transcrito tal e qual -- fica para comparar e para voltar
+#: atras por configuracao, sem reverter codigo.
+ESTADOS_DECISAO = ("medidas", "simples")
+
+
+def _medidas_pedido(texto: str) -> str:
+    """Factos verificaveis sobre o pedido, sem os interpretar.
+
+    Nao diz "ambito aberto: sim" nem "parece complexo": os dois vicios medidos
+    nos juizes foram exactamente ler ambito aberto e comprimento como nivel. So
+    medidas que o modelo pode cruzar com a rubrica.
+    """
+    blocos = texto.count("```")
+    artefactos = []
+    if blocos:
+        artefactos.append(f"{blocos // 2} bloco(s) de codigo")
+    if any(s in texto for s in ("Traceback", "ERROR", "Exception", "error code",
+                               "stack trace", "at line", "log:")):
+        artefactos.append("stack trace / log de erro")
+    if texto.lstrip().startswith(("{", "[")):
+        artefactos.append("JSON ou lista colada")
+    return (
+        "[MEDIDAS DO PEDIDO]\n"
+        f"caracteres: {len(texto)}\n"
+        f"linhas: {texto.count(chr(10)) + 1}\n"
+        f"tokens estimados: {len(texto) // 4}\n"
+        f"artefactos colados: {', '.join(artefactos) if artefactos else 'nenhum'}\n"
+        "[/MEDIDAS DO PEDIDO]\n\n"
+    )
+
+
+def _estado_decisoes(corpo_texto: str, modo: str = "medidas") -> str:
+    """`state` do endpoint de decisoes.
+
+    Medido a 2026-11-03, 250 casos, e a razao de ser desta funcao: o transcrito
+    que o plugin enviava (sete mensagens anteriores de outros assuntos + o
+    pedido) dava kappa de alta 0,3604 e precisao 0,339 -- e em producao 127 de
+    129 leituras abstiveram por confianca baixa, com p50 0,18. As mesmas
+    mensagens com o bloco de medidas deram 0,5479 / 0,525, e com o transcrito
+    anterior marcado como contexto (nao como pedido) 0,5965.
+
+    O modelo julga o pedido; o transcrito anterior fica como contexto curto e
+    rotulado, para continuacoes ("continua", "faz isso") nao perderem o sentido.
+    """
+    if modo not in ESTADOS_DECISAO:
+        modo = "medidas"
+    if modo == "simples":
+        return corpo_texto
+    marca = "[pedido] "
+    corte = corpo_texto.rfind(marca)
+    if corte < 0:
+        return _medidas_pedido(corpo_texto) + "[PEDIDO A CLASSIFICAR]\n" + corpo_texto
+    anterior, pedido = corpo_texto[:corte].strip(), corpo_texto[corte + len(marca):]
+    partes = [_medidas_pedido(pedido)]
+    if anterior:
+        # Duas anteriores no maximo, cortadas a 300 chars. Medido: sete
+        # anteriores inteiras (a forma que o `texto()` produz com a janela de 8)
+        # davam kappa de alta 0,5479; tres pares curtos davam 0,6528. O contexto
+        # serve para "continua" e "faz isso" -- para isso chegam duas.
+        linhas = [ln for ln in anterior.splitlines() if ln.startswith("[anterior] ")]
+        linhas = [ln[:300] for ln in linhas[-2:]]
+        if linhas:
+            partes.append(
+                "[CONTEXTO ANTERIOR, NAO E O PEDIDO A CLASSIFICAR]\n"
+                + "\n".join(linhas)
+                + "\n[/CONTEXTO ANTERIOR]\n\n"
+            )
+    partes.append("[PEDIDO A CLASSIFICAR]\n" + pedido)
+    return "".join(partes)
 
 
 def _gestor():
@@ -339,6 +432,17 @@ def normalizar(bruto: Any, prefixo: str = "analise.classificador") -> tuple[dict
         saida["via"] = "chat"
     saida["confianca_min"] = _num(bruto.get("confianca_min"), 0.0, 1.0,
                                   float(PADRAO["confianca_min"]))
+    # Forma do `state` no transporte de decisoes. `medidas` isola o pedido e
+    # entrega factos neutros; `simples` manda o transcrito como esta. Um valor
+    # desconhecido nao cai em silencio: quem pediu `simples` para comparar tem
+    # de saber que nao foi aceite.
+    bruto_estado = str(bruto.get("estado") or "medidas").strip().lower()
+    if bruto_estado in ESTADOS_DECISAO:
+        saida["estado"] = bruto_estado
+    else:
+        erros.append(f"{prefixo}: estado deve ser " + ", ".join(ESTADOS_DECISAO)
+                     + f" (recebido {bruto_estado!r})")
+        saida["estado"] = "medidas"
     return saida, erros
 
 
@@ -515,7 +619,7 @@ def _pedir_decisoes(rota: dict[str, Any], definicao: dict[str, Any],
     """
     corpo = {
         "model": str(definicao["modelo"]),
-        "state": corpo_texto,
+        "state": _estado_decisoes(corpo_texto, str(definicao.get("estado") or "medidas")),
         "questions": {
             "nivel": {
                 "type": "choice",
@@ -548,7 +652,8 @@ def _pedir_decisoes(rota: dict[str, Any], definicao: dict[str, Any],
     ms = round((time.monotonic() - inicio) * 1000, 1)
     try:
         return {"json": json.loads(bruto.decode("utf-8", "replace")), "ms": ms,
-                "formato_pedido": "decisoes"}
+                "formato_pedido": "decisoes", "estado_chars": len(corpo["state"]),
+                "estado_modo": str(definicao.get("estado") or "medidas")}
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ValueError(f"resposta nao e JSON ({type(exc).__name__})") from exc
 
@@ -649,6 +754,11 @@ def _classificar_decisoes(*, alvo: str, base: dict[str, Any], definicao: dict[st
         "formato_pedido": "decisoes",
         "tokens_entrada": uso.get("input_tokens"),
         "tokens_saida": uso.get("output_tokens"),
+        # Tamanho e modo do `state` que foi mesmo enviado. Sem estes dois
+        # numeros no ledger, uma mudanca de forma mede-se pelo `tokens_entrada`
+        # e confunde-se com a rubrica: foi o que aconteceu a 2026-11-03.
+        "estado_chars": resposta.get("estado_chars"),
+        "estado_modo": resposta.get("estado_modo"),
         "tentativas": 1,
     }
     if confianca is not None and confianca < piso:

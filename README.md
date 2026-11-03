@@ -336,6 +336,60 @@ o turno segue num modelo de `media`, com `degradado_de` no ledger. É o
 comportamento desejado — mas é uma dependência de um só provider, e deve ser
 lembrada quando se decidir o catálogo.
 
+### O `state` do transporte de decisões e o piso de confiança (3.14.2)
+
+Medido a 2026-11-03 sobre os 250 casos do gold, com o `~typesafe/jev-latest`.
+A conclusão muda a política: **o que estava a estragar o Jev não era a rubrica,
+era o `state` — e o piso de confiança não compra qualidade nenhuma.**
+
+O que o plugin enviava era o transcrito do `texto()`: sete mensagens anteriores
+de outros assuntos (até 400 chars cada) mais o pedido, 4 000 caracteres no total.
+Numa sessão real as anteriores são pedidos de outros temas, e o modelo passa a
+julgar o conjunto. Medido, na mesma rubrica:
+
+| `state` | kappa | kappa `alta` | precisão `alta` | confiança p50 |
+|---|---|---|---|---|
+| transcrito de produção (7 anteriores) | 0,4007 | 0,3604 | 0,339 | 0,47 |
+| transcrito + bloco de medidas | 0,4935 | 0,5479 | 0,525 | 0,57 |
+| **medidas + duas anteriores rotuladas (publicado)** | **0,5094** | **0,6349** | **0,667** | **0,655** |
+| medidas + pedido isolado | 0,4666 | 0,6591 | 0,677 | 0,72 |
+
+O `state` publicado passa a ser `[MEDIDAS DO PEDIDO]` (caracteres, linhas, tokens
+estimados, artefactos colados — factos verificáveis, sem os interpretar) +
+`[CONTEXTO ANTERIOR, NÃO É O PEDIDO A CLASSIFICAR]` com no máximo **duas**
+anteriores cortadas a 300 chars + `[PEDIDO A CLASSIFICAR]`. Fica em ~490 chars
+em vez de 4 000: mais barato, mais rápido e mais certo. A chave é
+`analise.classificador.estado` (`medidas` por omissão, `simples` para voltar ao
+transcrito sem reverter código).
+
+As medidas são neutras de propósito. Não dizem «âmbito aberto: sim» nem «parece
+complexo» — os dois vícios medidos nos juízes foram exactamente ler âmbito aberto
+e comprimento como nível.
+
+**O piso.** Em produção, com o transcrito, **127 de 129 leituras abstiveram**
+(`confianca_baixa`), confiança p50 **0,18**, e o modelo nunca leu `media` — só
+alternava entre `leve` e `alta`. Com o `state` novo a confiança sobe (p50 0,655) e
+o piso passa a ser uma escolha, não uma necessidade. E a escolha medida é
+surpreendente — a cascata «modelo acima do piso, heurística abaixo»:
+
+| piso | turnos decididos pelo modelo | acerto | kappa `alta` | altas falsas |
+|---|---|---|---|---|
+| **0,00** | 250/250 | **0,700** | 0,6349 | **10** |
+| 0,40 | 184/250 | 0,692 | 0,6098 | 23 |
+| 0,70 | 115/250 | 0,632 | 0,5072 | 34 |
+| 0,90 | 48/250 | 0,588 | 0,4079 | 45 |
+
+(heurística sozinha, no mesmo corpus: **0,564** de acerto.)
+
+Subir o piso **piora** o acerto e aumenta as altas falsas, porque abster devolve
+o turno à heurística, que sobrestima `alta` (precisão ~0,45). O piso foi
+desenhado para poupar quando o modelo está inseguro; medido, o modelo inseguro
+continua a ser melhor juiz do que o fallback. Por isso o `confianca_min` do
+transporte de decisões fica em **0,0**: a abstenção passa a servir só o que devia
+servir — falha de transporte, resposta fora dos níveis, rota suspensa — e não a
+mera incerteza. Quem quiser poupar chamadas pode usar 0,40 (perde 0,008 de
+acerto e corta 26% das decisões).
+
 ### Juiz do ciclo de aprendizagem
 
 O juiz que rotula o corpus de treino é **`inception/mercury-3`** (decisão do dono,
