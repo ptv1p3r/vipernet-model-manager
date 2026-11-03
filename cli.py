@@ -141,18 +141,26 @@ def cmd_classificador(args) -> int:
     perfis = cfg.get("perfis") or {}
 
     if args.cmd == "ver" or args.cmd is None:
-        linhas = [["perfil", "classificador", "provider", "modelo", "esforco", "formato", "origem"]]
+        linhas = [["perfil", "classificador", "provider", "modelo", "via", "esforco/confianca",
+                   "origem"]]
         for nome in sorted(perfis):
             # Uma so casa para a pergunta: `classificador_efectivo` resolve a
             # heranca e o "e utilizavel?" — o CLI nao repete essa logica.
             c = g.classificador_efectivo(cfg, nome)
+            # Com `via: decisoes` o esforco e o formato nao existem; o que ha e
+            # um piso de confianca. Mostrar os dois na mesma coluna evita uma
+            # tabela larga cheia de celulas vazias.
+            if c["via"] == "decisoes":
+                alavanca = f"conf>={c['confianca_min']:.2f}"
+            else:
+                alavanca = c["esforco"] or "-"
             linhas.append([
                 nome,
                 "ligado" if c["modo"] == "modelo" else "desligado",
                 c["provider"] or "-",
                 c["modelo"] or "-",
-                c["esforco"] or "-",
-                c["formato_json"] or "auto",
+                c["via"],
+                alavanca,
                 c["origem"] + (f" ({c['motivo']})" if c["motivo"] else ""),
             ])
         print(_tabela(linhas))
@@ -200,8 +208,9 @@ def cmd_classificador(args) -> int:
             print(f"{nivel or '?':6s}  {texto_pedido[:70]}")
         print(f"\n{r['provider']}/{r['modelo']} · {r.get('pedidos')} pedido(s) · "
               f"{r.get('ms')} ms · formato={r.get('formato')} · "
-              f"pedido={'json' if r.get('formato_pedido') == 'json' else 'texto'} · "
-              f"tokens {r.get('tokens_entrada')}→{r.get('tokens_saida')}")
+              f"pedido={r.get('formato_pedido') or 'texto'} · "
+              f"tokens {r.get('tokens_entrada')}→{r.get('tokens_saida')}"
+              + (f" · {r['custo_usd']:.6f} USD" if r.get("custo_usd") is not None else ""))
         return 1 if r.get("erro") else 0
 
     alvo = "global"
@@ -236,6 +245,22 @@ def cmd_classificador(args) -> int:
                 if valor_f not in ("auto", "on", "off"):
                     return _erro("--formato deve ser auto, on ou off", 2)
                 bloco["formato_json"] = valor_f
+            if getattr(args, "via", None) is not None:
+                valor_v = str(args.via).strip().lower()
+                if valor_v in ("", "-"):
+                    bloco.pop("via", None)
+                elif valor_v in _analise_modelo().VIAS:
+                    bloco["via"] = _analise_modelo().VIAS[valor_v]
+                else:
+                    return _erro("--via deve ser chat ou decisoes", 2)
+            if getattr(args, "confianca_min", None) is not None:
+                try:
+                    piso = float(args.confianca_min)
+                except (TypeError, ValueError):
+                    return _erro("--confianca-min deve ser um numero entre 0 e 1", 2)
+                if not (0.0 <= piso <= 1.0):
+                    return _erro("--confianca-min deve estar entre 0 e 1", 2)
+                bloco["confianca_min"] = piso
             if not (bloco.get("provider") and bloco.get("modelo")):
                 return _erro("ligar exige --provider e --modelo", 2)
         try:
@@ -605,6 +630,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--modelo", help="modelo que classifica leve/media/alta")
     s.add_argument("--esforco",
                    help="esforco do classificador: baixo|medio|alto ('-' limpa)")
+    s.add_argument("--via", help="transporte: chat|decisoes ('-' repoe chat)")
+    s.add_argument("--confianca-min", dest="confianca_min", type=float,
+                   help="piso de confianca da decisao (0-1; 0 aceita tudo)")
     s.add_argument("--formato", choices=["auto", "on", "off"],
                    help="response_format json_object: auto (pede e degrada), on, off")
     s.set_defaults(func=cmd_classificador)

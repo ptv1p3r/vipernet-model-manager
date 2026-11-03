@@ -212,14 +212,25 @@
     if (c.modo === "modelo") {
       const onde = c.origem === "proprio" ? "próprio do perfil" : "herdado do global";
       const extra = [];
-      if (c.esforco) extra.push("esforço " + c.esforco);
-      // O formato so se mostra quando nao e o de fabrica: `auto` e o normal e
-      // nao vale um chip. `texto` e uma escolha, e essa ve-se.
-      if (c.formato_json && c.formato_json !== "auto") extra.push("formato " + c.formato_json);
+      // Com o transporte de decisoes o esforco e o formato nao existem: o modelo
+      // devolve escolha e confianca, nao texto livre. Mostrar "esforço baixo"
+      // seria descrever uma alavanca que nao esta ligada a nada.
+      if (c.via === "decisoes") {
+        extra.push("via decisões");
+        if (c.confianca_min) extra.push("confiança ≥ " + c.confianca_min);
+      } else {
+        if (c.esforco) extra.push("esforço " + c.esforco);
+        // O formato so se mostra quando nao e o de fabrica: `auto` e o normal e
+        // nao vale um chip. `texto` e uma escolha, e essa ve-se.
+        if (c.formato_json && c.formato_json !== "auto") extra.push("formato " + c.formato_json);
+      }
       extra.push(onde);
       if (motivoConfig) extra.push("sem efeito — " + motivoConfig);
       if (rasto.lido) {
-        extra.push("leu " + rasto.lido + (rasto.ms ? " em " + Math.round(rasto.ms) + " ms" : ""));
+        const conf = rasto.confianca;
+        const confTxt = (typeof conf === "number") ? " (" + Math.round(conf * 100) + "%)" : "";
+        extra.push("leu " + rasto.lido + confTxt
+          + (rasto.ms ? " em " + Math.round(rasto.ms) + " ms" : ""));
       }
       // Uma leitura de outro classificador (ou anterior ao erro actual) nao e
       // estado: vai rotulada como historico, com a idade e quem a produziu.

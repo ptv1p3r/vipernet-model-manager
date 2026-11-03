@@ -441,6 +441,12 @@ def _resumo_por_perfil(
                         "ms": c.get("ms") if c.get("ms") is not None else ev.get("ms"),
                         "cache": c.get("cache"),
                         "tokens_saida": c.get("tokens_saida"),
+                        # Transporte de decisoes: a confianca e a evidencia que o
+                        # cartao mostra ao lado do nivel, e sem ela o leitor nao
+                        # sabe se a leitura foi um empate ou uma escolha clara.
+                        "via": c.get("via") or "",
+                        "confianca": c.get("confianca"),
+                        "custo_usd": c.get("custo_usd"),
                         "falhou": c.get("falhou") or "",
                         "ts": ev.get("ts"),
                     }

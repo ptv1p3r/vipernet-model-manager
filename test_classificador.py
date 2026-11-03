@@ -680,5 +680,168 @@ class TestLote(Base):
         self.assertLessEqual(am.PADRAO["timeout_s"], 15.0, am.PADRAO["timeout_s"])
 
 
+class TestTransporteDecisoes(Base):
+    """`via: decisoes` — modelo System One, escolha tipada com confianca.
+
+    O que se prova: o endpoint e derivado do `base_url` (o OpenRouter serve as
+    decisoes sem o `/v1`), o corpo nao tem nada do chat, a escolha e a confianca
+    sao lidas, o piso de confianca abstem em vez de adivinhar, e um id de modelo
+    inexistente e tratado como config e nao como avaria.
+    """
+
+    def resposta(self, choice: str = "alta", conf: Any = 0.93) -> dict:
+        return {"answers": {"nivel": {"type": "choice", "choice": choice,
+                                      "confidence": conf,
+                                      "probabilities": {"leve": 0.02, "media": 0.05,
+                                                        "alta": 0.93}}},
+                "usage": {"input_tokens": 400, "output_tokens": 38, "cost": 1.7346e-05},
+                "model": "typesafe/jev-1.14-20261014", "provider": "TypeSafe"}
+
+    def test_url_deriva_do_base_url(self):
+        """A base do chat leva a rota de decisoes; a base ja certa nao duplica."""
+        self.assertEqual(am._url_decisoes("https://openrouter.ai/api/v1"),
+                         "https://openrouter.ai/api/alpha/decisions")
+        self.assertEqual(am._url_decisoes("https://openrouter.ai/api/v1/"),
+                         "https://openrouter.ai/api/alpha/decisions")
+        self.assertEqual(am._url_decisoes("https://openrouter.ai/api"),
+                         "https://openrouter.ai/api/alpha/decisions")
+        self.assertEqual(am._url_decisoes("https://openrouter.ai/api/alpha/decisions"),
+                         "https://openrouter.ai/api/alpha/decisions")
+        self.assertEqual(am._url_decisoes("https://gateway.local/v1/chat/completions"),
+                         "https://gateway.local/alpha/decisions")
+        with self.assertRaises(ValueError):
+            am._url_decisoes("")
+
+    def test_via_normalizada(self):
+        for bruto, esperado in (("decisoes", "decisoes"), ("decisions", "decisoes"),
+                                ("Decisões", "decisoes"), ("chat", "chat"), ("", "chat")):
+            d, erros = am.normalizar({"via": bruto})
+            self.assertEqual(d["via"], esperado, bruto)
+            self.assertEqual(erros, [], bruto)
+        d, erros = am.normalizar({"via": "telepatia"})
+        self.assertEqual(d["via"], "chat")
+        self.assertTrue(any("via" in e for e in erros), erros)
+
+    def test_confianca_min_limites(self):
+        self.assertEqual(am.normalizar({})[0]["confianca_min"], 0.0)
+        self.assertEqual(am.normalizar({"confianca_min": 0.75})[0]["confianca_min"], 0.75)
+        self.assertEqual(am.normalizar({"confianca_min": 5})[0]["confianca_min"], 1.0)
+        self.assertEqual(am.normalizar({"confianca_min": -1})[0]["confianca_min"], 0.0)
+
+    def test_corpo_e_endpoint(self):
+        RESPOSTA.update({"json": self.resposta(), "codigo": 200, "atraso": 0.0})
+        r = am.classificar(self.mensagens("troca o certificado do proxy"), self.definicao(
+            modelo="~typesafe/jev-latest", via="decisoes"), lambda p, m: self.rota())
+        self.assertEqual(r["nivel"], "alta")
+        self.assertEqual(r["origem"], "modelo")
+        enviado = PEDIDOS[0]
+        self.assertEqual(enviado["caminho"], "/api/alpha/decisions")
+        self.assertEqual(enviado["corpo"]["model"], "~typesafe/jev-latest")
+        self.assertIn("troca o certificado", enviado["corpo"]["state"])
+        perguntas = enviado["corpo"]["questions"]
+        self.assertEqual(perguntas["nivel"]["type"], "choice")
+        # O criteria e um mapa opcao -> descricao. Uma lista e recusada pelo
+        # endpoint (medido), logo o teste guarda a forma.
+        self.assertIsInstance(perguntas["nivel"]["criteria"], dict)
+        self.assertEqual(sorted(perguntas["nivel"]["criteria"]), ["alta", "leve", "media"])
+        # Nada do contrato do chat pode ir no corpo.
+        for proibido in ("messages", "max_tokens", "response_format", "reasoning_effort",
+                         "temperature"):
+            self.assertNotIn(proibido, enviado["corpo"])
+
+    def test_le_confianca_e_custo(self):
+        RESPOSTA.update({"json": self.resposta("media", 0.71), "codigo": 200})
+        r = am.classificar(self.mensagens(), self.definicao(modelo="~typesafe/jev-latest",
+                                                            via="decisoes"),
+                           lambda p, m: self.rota())
+        c = r["classificador"]
+        self.assertEqual(r["nivel"], "media")
+        self.assertEqual(c["via"], "decisoes")
+        self.assertEqual(c["confianca"], 0.71)
+        self.assertEqual(c["formato_pedido"], "decisoes")
+        self.assertEqual(c["modelo_resolvido"], "typesafe/jev-1.14-20261014")
+        self.assertAlmostEqual(c["custo_usd"], 1.7346e-05)
+        self.assertEqual(c["tentativas"], 1)
+        self.assertEqual(sorted(c["probabilidades"]), ["alta", "leve", "media"])
+
+    def test_escolha_em_texto_directo(self):
+        """Um proxy pode devolver `{"nivel": "alta"}` em vez do objecto tipado."""
+        nivel, lido, conf, probs = am._extrair_decisao({"answers": {"nivel": "alta"}})
+        self.assertEqual((nivel, lido), ("alta", "alta"))
+        self.assertIsNone(conf)
+        self.assertEqual(probs, {})
+        for lixo in ({}, {"answers": {}}, {"answers": {"nivel": {"type": "choice"}}},
+                     {"answers": {"nivel": {"choice": "enorme"}}}):
+            with self.assertRaises(ValueError):
+                am._extrair_decisao(lixo)
+
+    def test_piso_de_confianca_abstem(self):
+        """Abaixo do piso o turno nao e adivinhado: `sem_efeito` + heuristica."""
+        RESPOSTA.update({"json": self.resposta("media", 0.49), "codigo": 200})
+        r = am.classificar(self.mensagens(), self.definicao(
+            modelo="~typesafe/jev-latest", via="decisoes", confianca_min=0.7),
+            lambda p, m: self.rota())
+        self.assertIsNone(r.get("nivel"))
+        self.assertEqual(r["sem_efeito"], "confianca_baixa")
+        self.assertEqual(r["origem"], "modelo_abstencao")
+        self.assertIn("0.49", r["motivo"])
+        self.assertEqual(r["classificador"]["abstencao"], "confianca_baixa")
+        # Abstenção nao e falha: nada de disjuntor nem de cache negativa.
+        self.assertNotIn("falhou", r)
+        self.assertEqual(am._falhas.get(""), None)
+
+    def test_piso_zero_aceita_tudo(self):
+        RESPOSTA.update({"json": self.resposta("leve", 0.34), "codigo": 200})
+        r = am.classificar(self.mensagens(), self.definicao(modelo="~typesafe/jev-latest",
+                                                           via="decisoes"),
+                           lambda p, m: self.rota())
+        self.assertEqual(r["nivel"], "leve")
+
+    def test_modelo_invalido_e_config_nao_avaria(self):
+        """400 "not a valid model ID" suspende 1 h e nao conta como falha."""
+        RESPOSTA.update({"codigo": 400, "json": {"error": {
+            "message": "typesafe/jev-latest is not a valid model ID", "code": 400}}})
+        r = am.classificar(self.mensagens("a"), self.definicao(
+            modelo="typesafe/jev-latest", via="decisoes"), lambda p, m: self.rota())
+        self.assertIsNone(r.get("nivel"))
+        self.assertEqual(r["sem_efeito"], "modelo_indisponivel")
+        self.assertIn("not a valid model ID", r["motivo"])
+        # Suspensao de uma hora: a segunda chamada nao chega a bater no servidor.
+        antes = len(PEDIDOS)
+        r2 = am.classificar(self.mensagens("b"), self.definicao(
+            modelo="typesafe/jev-latest", via="decisoes"), lambda p, m: self.rota())
+        self.assertIsNone(r2, "suspenso devolve None sem nivel")
+        self.assertEqual(len(PEDIDOS), antes, "suspenso nao volta a chamar")
+
+    def test_transporte_errado_diz_qual_e_o_erro(self):
+        """O id certo no endpoint do chat devolve 'is a decisions model'."""
+        RESPOSTA.update({"codigo": 400, "json": {"error": {
+            "message": "~typesafe/jev-latest is a decisions model and cannot be used "
+                       "with the chat/completions endpoint. Use /api/alpha/decisions.",
+            "code": 400}}})
+        r = am.classificar(self.mensagens("a"), self.definicao(
+            modelo="~typesafe/jev-latest", via="chat"), lambda p, m: self.rota())
+        self.assertEqual(r["sem_efeito"], "modelo_indisponivel")
+
+    def test_lote_decisoes_um_pedido_por_caso(self):
+        """Sem cache: um lote em cache media o cache, nao o modelo."""
+        RESPOSTA.update({"json": self.resposta("alta", 0.9), "codigo": 200})
+        r = am.classificar_lote(["a", "b", "c"], self.definicao(
+            modelo="~typesafe/jev-latest", via="decisoes"), lambda p, m: self.rota())
+        self.assertEqual(r["niveis"], ["alta", "alta", "alta"])
+        self.assertEqual(r["via"], "decisoes")
+        self.assertEqual(len(PEDIDOS), 3)
+        self.assertEqual(r["pedidos"], 3)
+        self.assertAlmostEqual(r["custo_usd"], round(1.7346e-05 * 3, 8))
+
+    def test_dashboard_le_a_confianca_do_evento(self):
+        """A confianca tem de chegar ao cartao, nao ficar no ledger."""
+        origem = (AQUI / "dashboard" / "api.py").read_text(encoding="utf-8")
+        trecho = origem[origem.index('reg["classificador"] = {'):]
+        trecho = trecho[:trecho.index("}") + 1]
+        for campo in ("\"via\"", "\"confianca\"", "\"custo_usd\""):
+            self.assertIn(campo, trecho)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
