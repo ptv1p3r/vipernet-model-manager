@@ -52,6 +52,9 @@ PADRAO: dict[str, Any] = {
     "janela_mensagens": 8,
     "max_chars": 4000,
     "esforco": "",
+    # Variante do prompt do classificador (`PROMPTS`). O ciclo de aprendizagem
+    # compara variantes e promove a vencedora gravando esta chave.
+    "prompt_variante": "v1",
     # Forma da resposta. `auto` pede `response_format: json_object` e, se o
     # provider recusar (400/422) ou devolver algo que nao e json, repete o
     # pedido sem ele — nao depende de uma lista de providers que envelhece.
@@ -117,9 +120,56 @@ PROMPT_LOTE = (
     "implementar ou refactorizar codigo, plano com janela e rollback, auditoria."
 )
 
+#: Variantes do prompt do classificador, para o ciclo de aprendizagem poder
+#: comparar e promover sem alterar codigo. `v1` e o prompt original; `v2` e a
+#: rubrica com exemplos por classe; `v3` acrescenta a `v2` as contra-ancoras
+#: que ja se mediu falharem (avaria nao e complexidade, pedir esclarecimento e
+#: `leve`). A escolha vive na config (`analise.classificador.prompt_variante`).
+PROMPT_V2 = (
+    "Classificas a complexidade de um pedido feito a um agente de engenharia.\n"
+    "Responde APENAS com um objecto json valido, sem texto fora dele e sem explicar:\n"
+    '{"nivel": "<leve|media|alta>"}\n'
+    "O nivel e o modelo MAIS BARATO que resolve o pedido bem: nao e quao dificil "
+    "o texto parece nem o trabalho que deu responder.\n"
+    "leve - conversa, confirmacao, agradecimento, pergunta directa de uma linha, "
+    "extrair um valor, sim/nao, pedir esclarecimento.\n"
+    "media - resumir ou traduzir texto, redigir, corrigir com sintoma claro, "
+    "alterar um ficheiro identificado, escrever um teste para uma funcao nomeada, "
+    "manter um sistema vivo, plano de uma tarefa concreta, explicar um conceito.\n"
+    "alta - desenhar arquitetura ou decidir trade-offs, depurar sem reproducao nem "
+    "mensagem de erro, migrar com rollback, analisar varios ficheiros ou servicos "
+    "em conjunto, otimizar um algoritmo, provar correcao, auditoria de sistema.\n"
+    "Exemplos de `media`, que e a classe mais frequente e a mais confundida:\n"
+    "- \"o cert do nginx expirou ontem, renova pf\" -> media\n"
+    "- \"escreve um teste para a funcao de normalizar slugs\" -> media\n"
+    "- \"explica-me o que e um reverse proxy\" -> media\n"
+    "Exemplos de `leve` e `alta` para contraste:\n"
+    "- \"bom dia, ja esta?\" -> leve;  \"isso nao me parece bem\" -> leve\n"
+    "- \"desenha a arquitetura do barramento e justifica o trade-off\" -> alta\n"
+    "Classifica o trabalho pedido, nunca a forma: registo informal, giria, "
+    "abreviaturas ou erros ortograficos nao mudam o nivel."
+)
+
+PROMPT_V3 = PROMPT_V2 + (
+    "\nContra-ancoras (medidas em casos reais que falharam):\n"
+    "- algo ter avariado, estar urgente ou o utilizador estar irritado NAO sobe o "
+    "nivel; o que conta e o trabalho pedido;\n"
+    "- pedir esclarecimento ou dizer que falta informacao e `leve`;\n"
+    "- um pedido curto pode ser `alta` e um pedido longo pode ser `leve`.\n"
+    "A mesma intencao escrita de outra maneira tem de dar o mesmo nivel."
+)
+
+PROMPTS: dict[str, str] = {"v1": PROMPT, "v2": PROMPT_V2, "v3": PROMPT_V3}
+
+
+def _prompt_variante(definicao: dict[str, Any] | None) -> str:
+    nome = str((definicao or {}).get("prompt_variante") or "v1")
+    return PROMPTS.get(nome, PROMPT)
+
+
 _cache: dict[str, tuple[float, dict[str, Any]]] = {}
 # Cache negativo: a mesma mensagem gera varios `llm_request` no mesmo turno (um
-# por volta de ferramentas). Sem isto, uma falha do modelo repete a chamada 2-3
+# por volta de ferramentas. Sem isto, uma falha do modelo repete a chamada 2-3
 # vezes — medido a 2026-11-02: 19 falhas em rajadas de 2-3 no mesmo segundo.
 _cache_erro: dict[str, tuple[float, dict[str, Any]]] = {}
 _TTL_ERRO_S = 60.0
@@ -176,6 +226,14 @@ def normalizar(bruto: Any, prefixo: str = "analise.classificador") -> tuple[dict
             erros.append(f"{prefixo}: {erro_e}")
         elif esforco:
             saida["esforco"] = esforco
+    # Variante do prompt: validada contra o vocabulario real (`PROMPTS`), para
+    # que um nome invalido nao caia em silencio no prompt v1.
+    variante = str(bruto.get("prompt_variante") or "v1").strip().lower()
+    if variante not in PROMPTS:
+        erros.append(f"{prefixo}: prompt_variante deve ser "
+                     + ", ".join(sorted(PROMPTS)) + f" (recebido {variante!r})")
+        variante = "v1"
+    saida["prompt_variante"] = variante
     # Forma da resposta: `auto` (pede json e degrada sozinho), `on` ou `off`.
     bruto_formato = str(bruto.get("formato_json") or "auto").strip().lower()
     if bruto_formato in ("on", "sim", "true", "1"):
@@ -430,7 +488,7 @@ def _corpo(provider: str, modelo: str, corpo_texto: str, definicao: dict[str, An
     corpo: dict[str, Any] = {
         "model": modelo,
         "messages": [
-            {"role": "system", "content": prompt or PROMPT},
+            {"role": "system", "content": prompt or _prompt_variante(definicao)},
             {"role": "user", "content": corpo_texto},
         ],
         "max_tokens": int(definicao["max_tokens"]) if orcamento is None else int(orcamento),
@@ -519,12 +577,18 @@ def classificar(
     resolver_rota: Callable[[str, str], dict[str, Any]],
     *,
     perfil: str = "",
+    prompt: str | None = None,
 ) -> dict[str, Any] | None:
     """Nivel decidido pelo modelo, ou `None` para o chamador usar a heuristica.
 
     `resolver_rota(provider, modelo)` e injectado: o plugin passa o seu
     `resolver_rota(perfil, provider, modelo)`, que resolve a credencial no
     escopo do perfil servido. Assim este modulo nao sabe nada de segredos.
+
+    `prompt` substitui o prompt de sistema (por omissao, a variante declarada em
+    `definicao["prompt_variante"]`). Existe para o ciclo de aprendizagem poder
+    avaliar um juiz com uma rubrica diferente da do avaliado — um juiz com o
+    mesmo texto do classificador mede a concordancia do modelo consigo mesmo.
     """
     if not definicao:
         return None
@@ -568,7 +632,8 @@ def classificar(
             tentativas += 1
             resposta = _pedir_com_formato(rota, provider, modelo, corpo_texto, definicao,
                                           perfil=perfil, orcamento=orcamento,
-                                          esforco=esforco, formato_json=formato_json)
+                                          esforco=esforco, formato_json=formato_json,
+                                          prompt=prompt)
             ms_total += int(resposta.get("ms") or 0)
             try:
                 nivel, lido = _extrair_nivel(resposta["json"])

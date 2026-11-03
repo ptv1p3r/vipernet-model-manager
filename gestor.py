@@ -53,6 +53,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -60,6 +61,9 @@ from pathlib import Path
 from typing import Any
 
 NOME = "vipernet-model-manager"
+
+#: Nome de sinal aceite em `analise.pesos`: minusculas, digitos e `_`.
+_RE_SINAL = re.compile(r"^[a-z][a-z0-9_]*$")
 NIVEIS = ("leve", "media", "alta")
 ESTRATEGIAS = ("rodizio", "prioridade")
 POR = ("turno", "sessao")
@@ -425,8 +429,37 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
                 limpo, erros_c = _analise_modelo().normalizar(valor)
                 saida["analise"]["classificador"] = limpo
                 erros.extend(erros_c)
+            elif chave == "pesos":
+                # Medido a 2026-11-02: `pesos` passava intacto para a config e
+                # um valor nao inteiro chegava ao turno, onde `soma += peso`
+                # rebenta com TypeError a meio da decisao. Os pesos sao dados
+                # aprendidos por `eval/aprender.py`, logo a validacao tem de
+                # travar lixo aqui, antes de entrar em producao.
+                if not isinstance(valor, dict):
+                    erros.append("'analise.pesos' tem de ser um objecto")
+                else:
+                    limpos: dict[str, int] = {}
+                    for sinal, peso in valor.items():
+                        nome_sinal = str(sinal).strip()
+                        if not _RE_SINAL.match(nome_sinal):
+                            erros.append(f"'analise.pesos': sinal invalido '{nome_sinal}'")
+                            continue
+                        if isinstance(peso, bool) or not isinstance(peso, int):
+                            erros.append(f"'analise.pesos.{nome_sinal}' tem de ser inteiro")
+                            continue
+                        if not -20 <= peso <= 20:
+                            erros.append(f"'analise.pesos.{nome_sinal}' fora de [-20, 20]")
+                            continue
+                        limpos[nome_sinal] = peso
+                    saida["analise"]["pesos"] = limpos
+            elif chave == "aprendiz":
+                if not isinstance(valor, dict):
+                    erros.append("'analise.aprendiz' tem de ser um objecto")
+                else:
+                    saida["analise"]["aprendiz"] = valor
             else:
                 saida["analise"][chave] = valor
+
     perfis = cfg.get("perfis")
     if not isinstance(perfis, dict):
         erros.append("'perfis' ausente ou nao e um objecto")
