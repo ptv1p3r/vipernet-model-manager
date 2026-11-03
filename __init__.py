@@ -744,6 +744,7 @@ def middleware_llm_request(
     turn_id: Any = None,
     api_request_id: Any = None,
     api_call_count: Any = 0,
+    platform: str | None = None,
     **_: Any,
 ) -> dict[str, Any] | None:
     """Decide a rota do turno e troca-a no agente; `None` = pedido intacto."""
@@ -756,6 +757,22 @@ def middleware_llm_request(
                 return None
         config = _config()
         registar = bool(config.get("registar", True))
+        # Diagnostico opt-in (`VMM_DEBUG_SUP=1`): regista o que o core entrega
+        # a middleware. Existe porque um kwarg ausente faz a regra de
+        # superficie nunca disparar e o sintoma (rota escolhida pela analise)
+        # nao se distingue de "nao ha regra". Desligado por omissao.
+        if str(os.environ.get("VMM_DEBUG_SUP") or "").strip() in ("1", "on", "true"):
+            try:
+                with open(gestor.directorio() / "debug-sup.jsonl", "a",
+                          encoding="utf-8") as fh:
+                    fh.write(json.dumps({
+                        "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                        "platform": platform, "session_id": session_id,
+                        "model": model, "provider": provider,
+                        "turn_id": str(turn_id)[-12:] if turn_id else None,
+                    }, ensure_ascii=False) + "\n")
+            except Exception:  # noqa: BLE001
+                pass
         if not config.get("activo", True):
             if _uma_vez(("desligado", session_id, "")):
                 _registar({"evento": "desligado", "sessao": session_id}, registar=registar)
@@ -779,6 +796,20 @@ def middleware_llm_request(
                            "sessao": session_id}, registar=registar)
             return None
         analise = pcfg.get("analise") or {}
+        # Superficie: o core entrega `platform` a esta middleware
+        # (`turn_api_request.py`: `platform=agent.platform or ""`). E o unico
+        # contexto de sessao deterministico que existe — `cron`, `api_server`,
+        # `cli`. Medido a 2026-11-03 em 7118 respostas: `api_server` 6700,
+        # `cron` 173, `cli` 27. Uma regra de superficie ganha a tarefa (que se
+        # adivinha por palavra) e a analise de complexidade (que se estima);
+        # so o marcador explicito do utilizador manda mais.
+        superficie = (platform or "").strip().lower()
+        fonte_sup = "kwarg" if superficie else ""
+        if not superficie and agente is not None:
+            superficie = str(getattr(agente, "platform", "") or "").strip().lower()
+            fonte_sup = "agente" if superficie else ""
+        regra_sup = gestor.regra_de_superficie(pcfg, superficie) if superficie else None
+        nome_sup = superficie
         _recarregar_analise_se_mudou()
         _recarregar_analise_modelo_se_mudou()
         mensagens = _mensagens(request)
@@ -792,6 +823,11 @@ def middleware_llm_request(
         passo = api_call_count if isinstance(api_call_count, int) else 0
         identificador_turno = chave_turno.rsplit("\x1f", 1)[-1]
         pin = _pin_ler(chave_turno) if fixar_turno else None
+        # Uma ordem explicita do utilizador (`complexidade: alta` na mensagem)
+        # ganha a tudo, inclusive a regra de superficie. Calculado nos dois
+        # ramos (pin e decisao nova) porque o bloco que fixa a entrada da
+        # superficie corre depois dos dois.
+        marcador_manda = False
         if pin is not None and not pin.get("nivel"):
             pin = None
         if pin is not None and fonte_turno != "turn_id":
@@ -809,12 +845,17 @@ def middleware_llm_request(
             nivel = str(pin.get("nivel") or "")
             tarefa = str(pin.get("tarefa") or "")
             associada = pin.get("associada") or None
+            marcador_manda = (pin.get("origem") == "marcador")
             base = {"perfil": perfil, "sessao": session_id, "nivel": nivel,
                     "motor": _VERSAO_MOTOR, "inst": _INSTANCIA,
                     "origem": pin.get("origem") or "",
                     "tarefa": tarefa, "score": None, "sinais": None,
                     "turno": identificador_turno, "passo": passo,
-                    "pin": "reutilizado", "fonte_turno": fonte_turno}
+                    "pin": "reutilizado", "fonte_turno": fonte_turno,
+                    "superficie": superficie or None,
+                    "superficie_fonte": fonte_sup or None,
+                    "plataforma_kw": (platform or "").strip().lower() or None,
+                    "kw_platform": platform is not None}
             if pin.get("classificador") and (pin["classificador"] or {}).get("lido"):
                 # So a leitura se herda. Uma falha nao se herda: o cartao conta
                 # uma falha por (ts, tipo) e cada passo tem o seu `ts`, logo o
@@ -840,6 +881,19 @@ def middleware_llm_request(
             tarefa = _analise_mod.detectar_tarefa(mensagens, pcfg.get("tarefas") or {})
             associada = tarefa if any(tarefa in e.get("tarefas", [])
                                      for e in gestor.catalogo_utilizavel(pcfg)) else None
+            # A superficie manda sobre a tarefa e sobre a analise, mas nunca
+            # sobre um marcador explicito: se o utilizador escreveu
+            # `complexidade: alta` na mensagem, e ele que decide.
+            superficie_manda = regra_sup is not None and decisao.get("origem") != "marcador"
+            marcador_manda = decisao.get("origem") == "marcador"
+            if superficie_manda:
+                nivel_sup = regra_sup["regra"].get("nivel")
+                if nivel_sup:
+                    decisao = {**decisao, "nivel": nivel_sup,
+                               "origem": "superficie", "score": None}
+                else:
+                    # Entrada fixada: a tarefa nao pode escolher outra rota.
+                    associada = None
             # Classificador por modelo: entra quando o turno nao tem ordem explicita
             # (`complexidade: alta` na mensagem), quando nenhuma tarefa manda no
             # turno (a tarefa e a prioridade) e quando o perfil o tem ligado com
@@ -847,7 +901,7 @@ def middleware_llm_request(
             classificador: dict[str, Any] | None = None
             classificador_erro = ""
             classificador_motivo = ""
-            if not associada and decisao.get("origem") != "marcador":
+            if not associada and not superficie_manda and decisao.get("origem") != "marcador":
                 definicao = _analise_modelo_mod.efectiva(analise)
                 if definicao is not None:
                     resultado_m = _analise_modelo_mod.classificar(
@@ -873,7 +927,11 @@ def middleware_llm_request(
                     "tarefa": tarefa, "score": decisao.get("score"),
                     "sinais": decisao.get("sinais"),
                     "turno": identificador_turno, "passo": passo,
-                    "pin": "novo", "fonte_turno": fonte_turno}
+                    "pin": "novo", "fonte_turno": fonte_turno,
+                    "superficie": superficie or None,
+                    "superficie_fonte": fonte_sup or None,
+                    "plataforma_kw": (platform or "").strip().lower() or None,
+                    "kw_platform": platform is not None}
             primeira_da_instancia = _primeira_decisao_da_instancia()
             if fixar_turno and passo > 1 and primeira_da_instancia:
                 # Nao e oscilacao do classificador: o store de pins vive na
@@ -982,6 +1040,36 @@ def middleware_llm_request(
                         base["excecao"] = "rota"
                         base["excecao_motivo"] = f"rota_pinada:{type(exc).__name__}"
                         entrada = rota = None
+        if (entrada is None or rota is None) and not marcador_manda \
+                and regra_sup is not None \
+                and regra_sup.get("entrada") is not None:
+            # Superficie com entrada fixada: e uma ordem, nao uma preferencia.
+            # So cede a capacidade (o pedido nao cabe no modelo) ou a uma rota
+            # que falhou ha pouco — e nos dois casos fica marcado com
+            # `excecao`, senao parecia que a regra nunca disparou.
+            candidata = regra_sup["entrada"]
+            motivo_cap = gestor.rota_serve(candidata, needs) if needs else ""
+            chave_rota = (perfil, str(candidata["provider"]).lower(),
+                          candidata["modelo"])
+            with _lock:
+                morta = _maus_expira.get(chave_rota, 0.0) > time.monotonic()
+            if motivo_cap:
+                base["excecao"] = "capacidade"
+                base["excecao_motivo"] = f"superficie:{nome_sup}:{motivo_cap}"
+            elif morta:
+                base["excecao"] = "rota"
+                base["excecao_motivo"] = f"superficie:{nome_sup}:falhou_ha_pouco"
+            else:
+                try:
+                    entrada = candidata
+                    rota = resolver_rota(perfil, candidata["provider"],
+                                         candidata["modelo"])
+                    base["origem"] = "superficie"
+                    base["superficie_regra"] = regra_sup["motivo"]
+                except Exception as exc:  # noqa: BLE001
+                    base["excecao"] = "rota"
+                    base["excecao_motivo"] = f"superficie:{type(exc).__name__}"
+                    entrada = rota = None
         if entrada is None or rota is None:
             entrada, rota, falhadas = escolher_com_rota(
                 pcfg, nivel, perfil=perfil, sessao=session_id, tarefa=associada,

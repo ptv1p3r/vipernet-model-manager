@@ -542,6 +542,15 @@ def estado() -> dict[str, Any]:
             # global tem de mostrar os que estao a decidir, nao uma lista vazia.
             "limiares": (pcfg.get("analise") or {}).get("limiares") or {},
             "tarefas": dados.get("tarefas") or {},
+            # Superficies de sessao: o contexto (`cron`, `api_server`, `cli`)
+            # manda sobre a tarefa e sobre a analise. Vai o efectivo (perfil +
+            # herdado do global) e a origem de cada regra, senao o cartao
+            # mostra `cron` e o utilizador procura-a no perfil sem a encontrar.
+            "superficies": {
+                k: {**v, "origem_regra": ("perfil" if k in (
+                    (dados.get("analise") or {}).get("superficies") or {}) else "global")}
+                for k, v in ((pcfg.get("analise") or {}).get("superficies") or {}).items()
+            },
             "catalogo": catalogo,
             "ultimo": resumo.get("ultimo"),
             # O indicador do cartao: modelo (qual) ou heuristica, e a evidencia

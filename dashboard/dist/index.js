@@ -371,6 +371,38 @@
             )
           : h("div", { className: "vmm-mudo" }, "sem associacoes de tarefa — decide so a analise de complexidade"),
 
+        // Superficie de sessao (cron, api_server, cli...): e o criterio que
+        // ganha a tarefa e a analise, porque nao se adivinha — vem do core.
+        (function () {
+          const sups = perfil.superficies || {};
+          const nomes = Object.keys(sups);
+          if (!nomes.length) return null;
+          return h(
+            "div",
+            { className: "vmm-tarefas" },
+            h("span", { className: "vmm-rotulo" }, "Superficies de sessao"),
+            h(
+              "div",
+              { className: "vmm-chips" },
+              nomes.map(function (k) {
+                const r = sups[k] || {};
+                const alvo = r.activo === false
+                  ? "anulada"
+                  : r.entrada
+                    ? r.entrada
+                    : r.nivel
+                      ? "nivel " + r.nivel
+                      : (r.provider || "") + "/" + (r.modelo || "");
+                return h(
+                  Chip,
+                  { key: k, tone: "outline" },
+                  k + " → " + alvo + (r.origem_regra === "global" ? " · global" : "")
+                );
+              })
+            )
+          );
+        })(),
+
         h(
           "table",
           { className: "vmm-tabela" },
