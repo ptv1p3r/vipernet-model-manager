@@ -744,6 +744,7 @@ def middleware_llm_request(
     turn_id: Any = None,
     api_request_id: Any = None,
     api_call_count: Any = 0,
+    platform: str = "",
     **_: Any,
 ) -> dict[str, Any] | None:
     """Decide a rota do turno e troca-a no agente; `None` = pedido intacto."""
@@ -779,6 +780,17 @@ def middleware_llm_request(
                            "sessao": session_id}, registar=registar)
             return None
         analise = pcfg.get("analise") or {}
+        # Superficie: o core entrega `platform` a esta middleware
+        # (`turn_api_request.py`: `platform=agent.platform or ""`). E o unico
+        # contexto de sessao deterministico que existe — `cron`, `api_server`,
+        # `cli`. Medido a 2026-11-03 em 7118 respostas: `api_server` 6700,
+        # `cron` 173, `cli` 27. Uma regra de superficie ganha a tarefa (que se
+        # adivinha por palavra) e a analise de complexidade (que se estima);
+        # so o marcador explicito do utilizador manda mais.
+        superficie = (platform or "").strip().lower()
+        if not superficie and agente is not None:
+            superficie = str(getattr(agente, "platform", "") or "").strip().lower()
+        regra_sup = gestor.regra_de_superficie(pcfg, superficie) if superficie else None
         _recarregar_analise_se_mudou()
         _recarregar_analise_modelo_se_mudou()
         mensagens = _mensagens(request)

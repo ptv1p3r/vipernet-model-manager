@@ -97,6 +97,13 @@ ANALISE_PADRAO: dict[str, Any] = {
     # seguintes reutilizam-no; so a capacidade (contexto/modalidade) e a rota
     # que morre o podem mudar, e ficam marcadas com `excecao`.
     "fixar_nivel_por_turno": True,
+    # Superficie -> rota, por perfil. Uma superficie e o contexto de sessao
+    # que o core ja entrega ao middleware (`cron`, `api_server`, `cli`,
+    # `whatsapp`, `subagent`): e deterministica, nao se adivinha por texto.
+    # Medido a 2026-11-03: 7118 respostas, `api_server` 6700, `cron` 173,
+    # `cli` 27. Uma regra aqui ganha a tarefa e a analise de complexidade —
+    # so o marcador explicito do utilizador (`complexidade: alta`) manda mais.
+    "superficies": {},
     # `classificador` e preenchido mais abaixo, a partir de
     # `analise_modelo.PADRAO`: os limites do classificador (timeout, tokens,
     # cache) tem UMA casa. Duplica-los aqui foi o que deixou a config viva com
@@ -260,6 +267,129 @@ MODALIDADES = ("texto", "imagem", "audio", "ficheiro")
 # utilizavel — declarar e o que da a garantia, nao declarar nao proibe. So
 # `json_nativo: false` e uma proibicao explicita.
 _LIMITES_INTERNOS = ("contexto_max", "latencia_p95_ms")
+
+
+# Superficies que o core ja entrega ao middleware `llm_request` via
+# `agent.platform` (medidas em producao a 2026-11-03). Nao e uma lista
+# fechada: `superficies` aceita qualquer valor, porque um provider novo traz
+# superficies novas. A lista serve so para o aviso de gralha obvia.
+SUPERFICIES_CONHECIDAS = ("cron", "api_server", "cli", "whatsapp", "subagent",
+                          "tui", "desktop", "oneshot", "telegram", "discord")
+
+
+def normalizar_superficies(
+    valor: Any,
+    contexto: str,
+    erros: list[str],
+    *,
+    catalogo: list[dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Valida `analise.superficies`: superficie -> regra de rota.
+
+    Tres formas, e so tres:
+
+    - `{"entrada": "<id do catalogo>"}` — a forma preferida: o `acesso`, o
+      `esforco` e os limites vem da entrada, logo nao ha uma segunda copia
+      do modelo a divergir do catalogo.
+    - `{"provider": "<p>", "modelo": "<m>"}` — atalho; exige que exista uma
+      entrada com esse par no catalogo, senao a regra nunca resolve.
+    - `{"nivel": "leve|media|alta"}` — fixa o nivel e deixa o catalogo
+      escolher (util quando o mesmo nivel serve varias superficies).
+    - `{"activo": false}` — anula uma regra herdada do global sem apagar a
+      do global.
+
+    Com `catalogo` a validacao e estreita (a entrada tem de existir); sem
+    ele valida so a forma, que e o que o bloco global pode garantir — o
+    catalogo e por perfil.
+    """
+    if not isinstance(valor, dict):
+        erros.append(f"{contexto} tem de ser um objecto (superficie -> regra)")
+        return {}
+    saida: dict[str, dict[str, Any]] = {}
+    for bruto, regra in valor.items():
+        nome = str(bruto or "").strip().lower()
+        if not nome:
+            erros.append(f"{contexto}: superficie com nome vazio")
+            continue
+        if not isinstance(regra, dict):
+            erros.append(f"{contexto}.{nome} tem de ser um objecto")
+            continue
+        if regra.get("activo") is False:
+            saida[nome] = {"activo": False}
+            continue
+        limpa: dict[str, Any] = {}
+        if regra.get("entrada") not in (None, ""):
+            limpa["entrada"] = str(regra["entrada"]).strip()
+        if regra.get("nivel") not in (None, ""):
+            nivel = str(regra["nivel"]).strip().lower()
+            if nivel not in ("leve", "media", "alta"):
+                erros.append(f"{contexto}.{nome}.nivel invalido: {nivel}")
+            else:
+                limpa["nivel"] = nivel
+        provider = str(regra.get("provider") or "").strip()
+        modelo = str(regra.get("modelo") or "").strip()
+        if provider or modelo:
+            if not (provider and modelo):
+                erros.append(f"{contexto}.{nome}: provider e modelo vao juntos")
+            else:
+                limpa["provider"] = provider
+                limpa["modelo"] = modelo
+        if not limpa:
+            erros.append(f"{contexto}.{nome}: sem entrada, nivel nem provider/modelo")
+            continue
+        if catalogo is not None:
+            if limpa.get("entrada") and not any(
+                    str(e.get("id")) == limpa["entrada"] for e in catalogo):
+                erros.append(f"{contexto}.{nome}: entrada desconhecida "
+                             f"'{limpa['entrada']}' no catalogo do perfil")
+                continue
+            if limpa.get("provider") and not any(
+                    str(e.get("provider", "")).lower() == limpa["provider"].lower()
+                    and str(e.get("modelo", "")) == limpa["modelo"] for e in catalogo):
+                erros.append(f"{contexto}.{nome}: {limpa['provider']}/"
+                             f"{limpa['modelo']} nao esta no catalogo do perfil")
+                continue
+        elif nome not in SUPERFICIES_CONHECIDAS and nome.isalpha():
+            # Aviso, nao erro: um provider novo traz superficies novas, e a
+            # regra continua valida. Mas uma gralha (`corm`) nunca dispara.
+            erros.append(f"{contexto}.{nome}: superficie nao vista neste ambiente "
+                         f"(conhecidas: {', '.join(SUPERFICIES_CONHECIDAS)})")
+        saida[nome] = limpa
+    return saida
+
+
+def regra_de_superficie(pcfg: dict[str, Any], superficie: str) -> dict[str, Any] | None:
+    """A regra viva para esta superficie no perfil, ja resolvida a uma entrada.
+
+    Devolve `None` quando nao ha regra ou quando ela foi anulada com
+    `activo: false`. A resolucao para entrada do catalogo acontece aqui, na
+    leitura — nao na gravacao — para a regra sobreviver a mudanca do catalogo.
+    """
+    nome = str(superficie or "").strip().lower()
+    if not nome:
+        return None
+    regras = ((pcfg.get("analise") or {}).get("superficies") or {})
+    regra = regras.get(nome)
+    if not isinstance(regra, dict) or regra.get("activo") is False:
+        return None
+    catalogo = pcfg.get("catalogo") or []
+    if regra.get("entrada"):
+        for entrada in catalogo:
+            if str(entrada.get("id")) == regra["entrada"]:
+                return {"superficie": nome, "entrada": entrada,
+                        "regra": regra, "motivo": f"superficie:{nome}"}
+        return None
+    if regra.get("provider"):
+        for entrada in catalogo:
+            if (str(entrada.get("provider", "")).lower() == regra["provider"].lower()
+                    and str(entrada.get("modelo", "")) == regra["modelo"]):
+                return {"superficie": nome, "entrada": entrada,
+                        "regra": regra, "motivo": f"superficie:{nome}"}
+        return None
+    if regra.get("nivel"):
+        return {"superficie": nome, "entrada": None, "regra": regra,
+                "motivo": f"superficie:{nome}:nivel"}
+    return None
 
 
 def normalizar_limites(entrada: dict[str, Any], indice: int, erros: list[str]) -> dict[str, Any]:
@@ -485,6 +615,9 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
                     erros.append("'analise.aprendiz' tem de ser um objecto")
                 else:
                     saida["analise"]["aprendiz"] = valor
+            elif chave == "superficies":
+                saida["analise"]["superficies"] = normalizar_superficies(
+                    valor, "'analise.superficies'", erros)
             else:
                 saida["analise"][chave] = valor
 
@@ -539,6 +672,10 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
                         # Igual ao global: nao se grava copia (ver acima).
                         continue
                     panalise["classificador"] = limpo
+                elif chave == "superficies":
+                    # Guardado bruto: a validacao estreita precisa do
+                    # catalogo, que so existe depois deste laco.
+                    panalise["superficies"] = valor
                 else:
                     # Mesma regra para as chaves simples: um valor igual ao
                     # global nao e uma declaracao, e uma copia que fixa o perfil
@@ -584,6 +721,20 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
             for tid in entrada.get("tarefas", []):
                 if tid not in tarefas:
                     erros.append(f"perfis.{nome}: tarefa desconhecida '{tid}' em {entrada['id']}")
+        if "superficies" in panalise:
+            # Agora com o catalogo na mao: uma regra que aponte para uma
+            # entrada inexistente nunca resolveria, e o turno cairia na
+            # analise sem ninguem saber por que. Recusar aqui, como nas
+            # tarefas — o erro tem de aparecer no editor, nao no turno.
+            limpas_sup = normalizar_superficies(
+                panalise["superficies"], f"perfis.{nome}.analise.superficies",
+                erros, catalogo=catalogo)
+            global_sup = saida["analise"].get("superficies") or {}
+            if limpas_sup and limpas_sup != global_sup:
+                panalise["superficies"] = limpas_sup
+            else:
+                # Igual ao global (ou vazio): nao se grava copia.
+                panalise.pop("superficies", None)
         saida["perfis"][nome] = {
             "tarefas": tarefas,
             "activo": bool(pcfg.get("activo", True)),
