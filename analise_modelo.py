@@ -659,9 +659,14 @@ def classificar(
                 # e feita dentro de `_pedir_com_formato` e nao conta aqui.
                 if tentativas >= 2:
                     raise
+                # A partir do orcamento que foi mesmo enviado, nao do declarado:
+                # com o piso de esforco em 3000, `max(orcamento*4, piso)` dava
+                # 3000 duas vezes e a segunda tentativa nao tinha mais folga
+                # nenhuma — um retry que nao cresce nao e um retry.
+                anterior = max(orcamento, _MAX_TOKENS_COM_ESFORCO) if esforco else orcamento
                 esforco = ""
                 formato_json = False
-                orcamento = max(orcamento * 4, _MAX_TOKENS_COM_ESFORCO)
+                orcamento = min(max(anterior * 4, _MAX_TOKENS_COM_ESFORCO), _MAX_TOKENS_MAX)
         resposta["ms"] = ms_total
     except _RecusaHttp as exc:
         return _falhou(alvo, base, f"HTTP {exc.codigo}", exc.detalhe[:200],

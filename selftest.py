@@ -1387,7 +1387,8 @@ def testes_esforco() -> None:
               and corpo.get("reasoning_effort") == "high"
               and "extra_body" not in corpo, str(corpo))
         check("esforco: classificador com esforco sobe o orcamento de saida",
-              corpo.get("max_tokens") == 1200, str(corpo.get("max_tokens")))
+              corpo.get("max_tokens") == g._analise_modelo()._MAX_TOKENS_COM_ESFORCO,
+              str(corpo.get("max_tokens")))
         check("esforco: classificador classifica com o corpo alterado",
               (resultado or {}).get("nivel") == "media", str(resultado))
         sem = dict(g._analise_modelo().PADRAO, provider="deepseek",
