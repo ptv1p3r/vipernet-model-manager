@@ -33,6 +33,7 @@ import re
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Callable
 
@@ -68,15 +69,19 @@ PADRAO: dict[str, Any] = {
     # pedido sem ele — nao depende de uma lista de providers que envelhece.
     # `on` obriga, `off` nunca pede.
     "formato_json": "auto",
-    # Transporte do pedido: `chat` (chat/completions, qualquer LLM) ou
-    # `decisoes` (modelos System One, que nao geram texto — devolvem escolha e
-    # confianca tipadas). Medido a 2026-11-03 no `~typesafe/jev-latest`: o id
-    # existe mas recusa chat/completions com "is a decisions model and cannot be
-    # used with the chat/completions endpoint", e aceita o mesmo pedido em
-    # `POST /api/alpha/decisions`. Com `decisoes`, `max_tokens`, `esforco` e
-    # `formato_json` nao se aplicam (o modelo nao gera tokens livres) — ficam na
-    # config sem efeito, para a troca de transporte nao apagar os valores.
-    "via": "chat",
+    # Transporte do pedido: `chat` (chat/completions, qualquer LLM), `decisoes`
+    # (modelos System One, que nao geram texto — devolvem escolha e confianca
+    # tipadas) ou `auto`, que tenta o chat e muda sozinho quando o provider
+    # responde que o modelo e de decisoes. Medido a 2026-11-03 no
+    # `~typesafe/jev-latest`: o id existe mas recusa chat/completions com "is a
+    # decisions model and cannot be used with the chat/completions endpoint", e
+    # aceita o mesmo pedido em `POST /api/alpha/decisions`. Com `decisoes`,
+    # `max_tokens`, `esforco` e `formato_json` nao se aplicam (o modelo nao gera
+    # tokens livres) — ficam na config sem efeito, para a troca de transporte
+    # nao apagar os valores.
+    # `auto` e o default porque apontar o classificador a um modelo que o
+    # plugin nunca viu nao deve exigir saber de que tipo ele e.
+    "via": "auto",
     # Piso de confianca para aceitar a decisao do modelo. Abaixo disto o turno
     # nao e adivinhado: fica `sem_efeito` com o motivo e a heuristica decide,
     # que e o comportamento de escalonamento prescrito para modelos System One.
@@ -87,6 +92,34 @@ PADRAO: dict[str, Any] = {
     # 0,3604 e 127 de 129 leituras abstinham em producao; com as medidas o mesmo
     # pedido subiu a 0,5479 e a confianca deixou de viver nos 0,18.
     "estado": "medidas",
+    # --- Adaptacao a modelos desconhecidos ------------------------------
+    # A partir daqui esta o que faz o plugin aceitar QUALQUER modelo como
+    # classificador sem o utilizador ter de conhecer as particularidades do
+    # provider. Todos os campos sao opcionais e o default preserva o
+    # comportamento de um LLM de chat comum.
+    #
+    # Preset de comportamento (`PRESETS`). Vazio = inferir pelo id do modelo
+    # (ex.: `~typesafe/...` e um modelo System One); `nenhum` = nao usar preset.
+    "preset": "",
+    # Temperatura do pedido. `None` significa NAO ENVIAR o campo — e o que
+    # modelos de raciocinio (o1/o3/gpt-5 e afins) exigem: recusam `temperature`
+    # com 400. Aceita-se `omitir`/`null`/`-` na config.
+    "temperatura": 0.0,
+    # Nome do campo do orcamento de saida. Alguns providers so aceitam
+    # `max_completion_tokens`; a maioria usa `max_tokens`.
+    "max_tokens_campo": "max_tokens",
+    # Caminho HTTP do chat, quando o `base_url` da rota nao segue a convencao
+    # (`/v1/chat/completions`). Ex.: `/api/v1/messages`. Vazio = derivar.
+    "caminho": "",
+    # Caminho do endpoint de decisoes, idem. Separado do `caminho` para um
+    # override de chat nunca ser aplicado ao transporte errado.
+    "caminho_decisoes": "",
+    # Escape hatch: entra no corpo do pedido tal e qual, depois dos defaults e
+    # antes nada (ganha aos defaults, perde para `model`/`messages`, que sao
+    # obrigatorios). Serve para parametros que este plugin nao conhece.
+    "parametros_extra": {},
+    # Cabecalhos HTTP adicionais (ex.: `HTTP-Referer` do OpenRouter).
+    "headers_extra": {},
 }
 
 
@@ -138,6 +171,54 @@ INSTRUCOES_DECISAO = (
 #: `simples` entrega o transcrito tal e qual -- fica para comparar e para voltar
 #: atras por configuracao, sem reverter codigo.
 ESTADOS_DECISAO = ("medidas", "simples")
+
+#: Presets de adaptacao por familia de modelo.
+#:
+#: Existem para o caso que custou mais tempo a descobrir: um modelo que nao e um
+#: LLM de chat comum (ou que e de raciocinio) recusa o pedido por omissao com um
+#: 400 que se le como falta de credencial. O preset e uma PISTA, nao uma prisao:
+#: entra por baixo dos valores declarados, portanto o que o utilizador escrever
+#: no bloco ganha sempre sobre o preset.
+PRESETS: dict[str, dict[str, Any]] = {
+    # LLM de chat comum: os defaults do PADRAO servem.
+    "padrao": {},
+    # Modelos System One (TypeSafe Jev e afins): nao geram texto, devolvem
+    # escolha e confianca tipadas num endpoint proprio. `max_tokens`, `esforco`
+    # e `formato_json` ficam sem efeito por desenho do modelo.
+    "sistema-um": {"via": "decisoes"},
+    # Modelos de raciocinio: recusam `temperature` e alguns so aceitam
+    # `max_completion_tokens` como nome do orcamento de saida.
+    "raciocinio": {"temperatura": None, "max_tokens_campo": "max_completion_tokens"},
+}
+
+#: Prefixos de id de modelo -> preset inferido. A inferencia evita que um
+#: modelo novo exija configuracao para funcionar; quem souber melhor declara
+#: `preset` a mao, e `preset: nenhum` desliga a inferencia.
+_PRESET_POR_ID: tuple[tuple[str, str], ...] = (
+    ("~typesafe/", "sistema-um"),
+    ("typesafe/", "sistema-um"),
+    ("o1", "raciocinio"),
+    ("o3", "raciocinio"),
+    ("o4", "raciocinio"),
+    ("gpt-5", "raciocinio"),
+)
+
+
+def preset_para(modelo: str) -> str:
+    """Preset inferido do id do modelo; `padrao` quando nada casa.
+
+    O id pode chegar com prefixo de provider (`openrouter/~typesafe/jev-latest`)
+    ou a seco (`jev-latest`), por isso a comparacao e por segmento e nao por
+    `startswith` do id inteiro.
+    """
+    alvo = (modelo or "").strip().lower()
+    if not alvo:
+        return "padrao"
+    for prefixo, nome in _PRESET_POR_ID:
+        if alvo.startswith(prefixo) or f"/{prefixo}" in alvo:
+            return nome
+    return "padrao"
+
 
 
 def _medidas_pedido(texto: str) -> str:
@@ -349,6 +430,12 @@ _cache_erro: dict[str, tuple[float, dict[str, Any]]] = {}
 _TTL_ERRO_S = 60.0
 _falhas: dict[str, int] = {}
 _suspensos: dict[str, float] = {}
+#: Transporte descoberto por alvo (`perfil\x1fprovider\x1fmodelo`) quando
+#: `via: auto`. Vive so em memoria de proposito: e uma descoberta sobre o
+#: provider, nao configuracao do utilizador, e o custo de a repetir e uma
+#: chamada falhada uma vez por processo — escreve-la na config confundiria o
+#: que o dono declarou com o que o plugin aprendeu.
+_via_detectada: dict[str, str] = {}
 _lock = threading.Lock()
 
 
@@ -373,7 +460,28 @@ def normalizar(bruto: Any, prefixo: str = "analise.classificador") -> tuple[dict
         return saida, erros
     if not isinstance(bruto, dict):
         return saida, [f"{prefixo} deve ser um objecto"]
+    # O preset entra ANTES de tudo e por baixo: um modelo System One ou de
+    # raciocinio recusa o pedido por omissao com um 400 que se le como falta de
+    # credencial, e quem configura "qualquer modelo" nao tem de saber disso. O
+    # que o utilizador declarou ganha sempre sobre o preset, porque o preset e
+    # o primeiro dicionario e o bruto o segundo.
+    pedido_preset = str(bruto.get("preset") or "").strip().lower()
+    if pedido_preset in ("nenhum", "off", "nao", "não", "-"):
+        nome_preset = ""
+    elif pedido_preset:
+        if pedido_preset not in PRESETS:
+            erros.append(f"{prefixo}: preset deve ser " + ", ".join(sorted(PRESETS))
+                         + f" (recebido {pedido_preset!r})")
+            nome_preset = "padrao"
+        else:
+            nome_preset = pedido_preset
+    else:
+        nome_preset = preset_para(str(bruto.get("modelo") or ""))
+    if nome_preset:
+        bruto = {**PRESETS[nome_preset], **bruto}
+    saida["preset"] = nome_preset
     saida["activo"] = bool(bruto.get("activo", False))
+
     for chave in ("provider", "modelo"):
         valor = bruto.get(chave)
         saida[chave] = str(valor).strip() if valor is not None else ""
@@ -421,15 +529,22 @@ def normalizar(bruto: Any, prefixo: str = "analise.classificador") -> tuple[dict
         saida["formato_json"] = "auto"
     # Transporte. Um valor desconhecido nao pode cair em silencio no `chat`:
     # quem escreveu `decisoes` e estaria a falar com o endpoint errado.
-    bruto_via = str(bruto.get("via") or "chat").strip().lower()
-    if bruto_via in VIAS:
+    # `auto` tenta o chat e, quando o provider responde "is a decisions model",
+    # muda de transporte sozinho — e o que permite apontar o classificador a um
+    # modelo que o plugin nunca viu sem declarar `via`.
+    bruto_via = str(bruto.get("via") or PADRAO["via"]).strip().lower()
+    if bruto_via == "auto":
+        saida["via"] = "auto"
+    elif bruto_via in VIAS:
         saida["via"] = VIAS[bruto_via]
     elif bruto_via == "":
-        saida["via"] = "chat"
+        saida["via"] = "auto"
     else:
-        erros.append(f"{prefixo}: via deve ser " + ", ".join(sorted(set(VIAS.values())))
+        erros.append(f"{prefixo}: via deve ser auto, "
+                     + ", ".join(sorted(set(VIAS.values())))
                      + f" (recebido {bruto_via!r})")
         saida["via"] = "chat"
+
     saida["confianca_min"] = _num(bruto.get("confianca_min"), 0.0, 1.0,
                                   float(PADRAO["confianca_min"]))
     # Forma do `state` no transporte de decisoes. `medidas` isola o pedido e
@@ -443,6 +558,48 @@ def normalizar(bruto: Any, prefixo: str = "analise.classificador") -> tuple[dict
         erros.append(f"{prefixo}: estado deve ser " + ", ".join(ESTADOS_DECISAO)
                      + f" (recebido {bruto_estado!r})")
         saida["estado"] = "medidas"
+    # --- Adaptacao ao modelo: nada aqui e obrigatorio ---------------------
+    # Temperatura. Um valor numerico vai no corpo; `omitir`/`null`/`-` faz o
+    # campo NAO ser enviado, que e o que os modelos de raciocinio exigem (um
+    # `temperature` num o1/o3 e um 400). O preset `raciocinio` ja poe isto.
+    bruto_temp = bruto.get("temperatura", 0.0)
+    if bruto_temp is None or (isinstance(bruto_temp, str)
+                              and bruto_temp.strip().lower() in ("omitir", "omit", "null",
+                                                                 "none", "nao", "não", "-", "")):
+        saida["temperatura"] = None
+    else:
+        saida["temperatura"] = _num(bruto_temp, 0.0, 2.0, 0.0)
+    # Nome do campo do orcamento de saida: a maioria dos providers usa
+    # `max_tokens`, os mais recentes da OpenAI usam `max_completion_tokens`.
+    bruto_campo = str(bruto.get("max_tokens_campo") or "max_tokens").strip().lower()
+    if bruto_campo in ("max_tokens", "max_completion_tokens"):
+        saida["max_tokens_campo"] = bruto_campo
+    else:
+        erros.append(f"{prefixo}: max_tokens_campo deve ser max_tokens ou "
+                     f"max_completion_tokens (recebido {bruto_campo!r})")
+        saida["max_tokens_campo"] = "max_tokens"
+    # Caminho HTTP alternativo (ex.: `/api/v1/messages`). Vazio = derivar do
+    # `base_url` da rota, como sempre. Um caminho comeca por `/` e substitui o
+    # caminho inteiro da base, preservando esquema e host.
+    for chave in ("caminho", "caminho_decisoes"):
+        caminho = str(bruto.get(chave) or "").strip()
+        if caminho and not caminho.startswith("/"):
+            erros.append(f"{prefixo}: {chave} deve comecar por '/' (recebido {caminho!r})")
+            caminho = ""
+        saida[chave] = caminho
+    # Parametros e cabecalhos extra: escape hatch para o que este plugin nao
+    # conhece. Recusar um tipo errado aqui e melhor do que o deixar chegar ao
+    # corpo do pedido e falhar com um 400 do provider que ninguem relaciona
+    # com a config.
+    for chave in ("parametros_extra", "headers_extra"):
+        valor = bruto.get(chave)
+        if valor is None:
+            saida[chave] = {}
+        elif isinstance(valor, dict):
+            saida[chave] = {str(k): v for k, v in valor.items()}
+        else:
+            erros.append(f"{prefixo}: {chave} deve ser um objecto")
+            saida[chave] = {}
     return saida, erros
 
 
@@ -511,10 +668,26 @@ def _digest(perfil: str, definicao: dict[str, Any], ultima: str) -> str:
 # --------------------------------------------------------------------------- transporte
 
 
-def _url(base_url: str) -> str:
+def _origem(base: str) -> str:
+    """Esquema + host (+ porta) de um URL, sem o caminho."""
+    partes = urllib.parse.urlsplit(base)
+    if partes.scheme and partes.netloc:
+        return f"{partes.scheme}://{partes.netloc}"
+    return ""
+
+
+def _url(base_url: str, definicao: dict[str, Any] | None = None) -> str:
     base = (base_url or "").strip().rstrip("/")
     if not base:
         raise ValueError("rota sem base_url")
+    # Override declarado pelo utilizador: um endpoint que nao segue a convencao
+    # (`/api/v1/messages`, `/openai/v1/chat/completions`). Substitui o caminho
+    # inteiro e preserva esquema e host, para a credencial da rota continuar a
+    # valer para o mesmo destino.
+    caminho = str((definicao or {}).get("caminho") or "").strip()
+    if caminho:
+        origem = _origem(base)
+        return f"{origem}{caminho}" if origem else f"{base}{caminho}"
     if base.endswith("/chat/completions"):
         return base
     if base.endswith("/v1") or base.endswith("/beta"):
@@ -522,7 +695,7 @@ def _url(base_url: str) -> str:
     return f"{base}/v1/chat/completions"
 
 
-def _url_decisoes(base_url: str) -> str:
+def _url_decisoes(base_url: str, definicao: dict[str, Any] | None = None) -> str:
     """Endpoint de decisoes a partir do `base_url` da rota.
 
     Medido a 2026-11-03: o OpenRouter expoe as decisoes em
@@ -534,6 +707,10 @@ def _url_decisoes(base_url: str) -> str:
     base = (base_url or "").strip().rstrip("/")
     if not base:
         raise ValueError("rota sem base_url")
+    caminho = str((definicao or {}).get("caminho_decisoes") or "").strip()
+    if caminho:
+        origem = _origem(base)
+        return f"{origem}{caminho}" if origem else f"{base}{caminho}"
     if base.endswith("/alpha/decisions"):
         return base
     if base.endswith("/chat/completions"):
@@ -544,6 +721,21 @@ def _url_decisoes(base_url: str) -> str:
             break
     return f"{base}/alpha/decisions"
 
+
+
+#: Sinais de que o modelo recusa o transporte de chat por ser um modelo de
+#: decisoes. Medido a 2026-11-03 no `~typesafe/jev-latest` via OpenRouter:
+#: `HTTP 400`, "... is a decisions model and cannot be used with the
+#: chat/completions endpoint. Use the /api/alpha/decisions endpoint instead."
+#: So a direccao chat->decisoes e observada na pratica: um modelo de chat nao
+#: recusa o endpoint de decisoes com um aviso, simplesmente nao o tem (404).
+_RE_MODELO_DECISOES = re.compile(
+    r"decisions?\s+model|decisions?\s+endpoint|/api/alpha/decisions", re.I)
+
+#: Sinais de que o provider recusou um campo de amostragem. Modelos de
+#: raciocinio devolvem 400 "Unsupported value: 'temperature'" / "'top_p'"; sem
+#: esta degradacao, apontar o classificador a um deles exigia conhecer o preset.
+_RE_AMOSTRAGEM = re.compile(r"temperature|top_p", re.I)
 
 #: Codigos de erro que podem vir de um campo que o provider nao conhece.
 #: Um 401/402/429/5xx nao se resolve a retirar `response_format`.
@@ -581,16 +773,23 @@ def _quer_json(definicao: dict[str, Any]) -> bool:
 
 def _pedir(rota: dict[str, Any], definicao: dict[str, Any], corpo: dict[str, Any]) -> dict[str, Any]:
     dados = json.dumps(corpo).encode("utf-8")
+    cabecalhos = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {rota.get('api_key', '')}",
+        # O UA por omissao do urllib e recusado por varias bordas (1010).
+        "User-Agent": "vipernet-model-manager/classificador",
+    }
+    # Cabecalhos que o provider exige e este plugin nao conhece (ex.: o
+    # `HTTP-Referer`/`X-Title` do OpenRouter para ranking, ou um header de
+    # versao de API). Entram depois dos defaults, porque um pedido autenticado
+    # sem o header da versao certa e um 400 indistinguivel de falta de acesso.
+    for chave, valor in (definicao.get("headers_extra") or {}).items():
+        cabecalhos[str(chave)] = str(valor)
     req = urllib.request.Request(
-        _url(rota.get("base_url", "")),
+        _url(rota.get("base_url", ""), definicao),
         data=dados,
         method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {rota.get('api_key', '')}",
-            # O UA por omissao do urllib e recusado por varias bordas (1010).
-            "User-Agent": "vipernet-model-manager/classificador",
-        },
+        headers=cabecalhos,
     )
     inicio = time.monotonic()
     with urllib.request.urlopen(req, timeout=float(definicao["timeout_s"])) as resp:  # noqa: S310
@@ -629,15 +828,18 @@ def _pedir_decisoes(rota: dict[str, Any], definicao: dict[str, Any],
         },
     }
     dados = json.dumps(corpo).encode("utf-8")
+    cabecalhos = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {rota.get('api_key', '')}",
+        "User-Agent": "vipernet-model-manager/classificador",
+    }
+    for chave, valor in (definicao.get("headers_extra") or {}).items():
+        cabecalhos[str(chave)] = str(valor)
     req = urllib.request.Request(
-        _url_decisoes(rota.get("base_url", "")),
+        _url_decisoes(rota.get("base_url", ""), definicao),
         data=dados,
         method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {rota.get('api_key', '')}",
-            "User-Agent": "vipernet-model-manager/classificador",
-        },
+        headers=cabecalhos,
     )
     inicio = time.monotonic()
     try:
@@ -759,6 +961,7 @@ def _classificar_decisoes(*, alvo: str, base: dict[str, Any], definicao: dict[st
         # e confunde-se com a rubrica: foi o que aconteceu a 2026-11-03.
         "estado_chars": resposta.get("estado_chars"),
         "estado_modo": resposta.get("estado_modo"),
+        "preset": str(definicao.get("preset") or ""),
         "tentativas": 1,
     }
     if confianca is not None and confianca < piso:
@@ -893,11 +1096,19 @@ def _corpo(provider: str, modelo: str, corpo_texto: str, definicao: dict[str, An
             {"role": "system", "content": prompt or _prompt_variante(definicao)},
             {"role": "user", "content": corpo_texto},
         ],
-        "max_tokens": int(definicao["max_tokens"]) if orcamento is None else int(orcamento),
-        "temperature": 0,
-        "top_p": 1,
+        # O nome do campo de orcamento nao e universal: os modelos recentes da
+        # OpenAI so aceitam `max_completion_tokens` e recusam `max_tokens`.
+        str(definicao.get("max_tokens_campo") or "max_tokens"):
+            int(definicao["max_tokens"]) if orcamento is None else int(orcamento),
         "stream": False,
     }
+    # `temperature` e `top_p` so entram quando ha temperatura declarada: um
+    # modelo de raciocinio recusa-os com 400 e o preset `raciocinio` poe
+    # `temperatura: None` exactamente para os omitir.
+    temperatura = definicao.get("temperatura", 0.0)
+    if temperatura is not None:
+        corpo["temperature"] = float(temperatura)
+        corpo["top_p"] = 1
     if formato_json is None:
         formato_json = _quer_json(definicao)
     if formato_json:
@@ -905,8 +1116,19 @@ def _corpo(provider: str, modelo: str, corpo_texto: str, definicao: dict[str, An
     extra_e, topo_e = _gestor().extras_esforco(provider, modelo, esforco_efectivo, session_id=perfil)
     corpo.update(extra_e)
     corpo.update(topo_e)
-    if (extra_e or topo_e) and int(corpo["max_tokens"]) < _MAX_TOKENS_COM_ESFORCO:
-        corpo["max_tokens"] = _MAX_TOKENS_COM_ESFORCO
+    campos_orcamento = ("max_tokens", "max_completion_tokens")
+    for campo in campos_orcamento:
+        if campo in corpo and int(corpo[campo]) < _MAX_TOKENS_COM_ESFORCO:
+            if extra_e or topo_e:
+                corpo[campo] = _MAX_TOKENS_COM_ESFORCO
+    # Escape hatch por ultimo: o que o utilizador escreveu em `parametros_extra`
+    # entra tal e qual. `model` e `messages` ficam de fora — trocar o modelo ou
+    # o texto por configuracao nao e adaptacao, e sim perda de rasto do que foi
+    # pedido.
+    for chave, valor in (definicao.get("parametros_extra") or {}).items():
+        if chave in ("model", "messages"):
+            continue
+        corpo[chave] = valor
     return corpo
 
 
@@ -958,16 +1180,34 @@ def _pedir_com_formato(
     `formato_pedido` para o ledger poder dizer se o campo foi aceite.
     """
     pedir_json = _quer_json(definicao) if formato_json is None else bool(formato_json)
+    # Copia local: a degradacao abaixo mexe na definicao (tira `temperatura`), e
+    # a definicao do chamador e partilhada — suja-la faria o proximo turno
+    # nascer sem temperatura sem ninguem ter decidido isso.
+    local = dict(definicao)
     while True:
-        corpo = _corpo(provider, modelo, corpo_texto, definicao, perfil=perfil,
+        corpo = _corpo(provider, modelo, corpo_texto, local, perfil=perfil,
                        orcamento=orcamento, esforco=esforco, formato_json=pedir_json,
                        prompt=prompt)
         try:
-            resposta = _pedir(rota, definicao, corpo)
+            resposta = _pedir(rota, local, corpo)
         except urllib.error.HTTPError as exc:
             codigo, detalhe = _ler_http(exc)
+            # Recusa de transporte primeiro: um 400 "is a decisions model" nao
+            # se resolve a tirar `response_format`, e a degradacao de formato
+            # consumia a resposta e escondia a causa — o segundo pedido ia ao
+            # endpoint de chat outra vez. Este erro e definitivo para o
+            # transporte, nao para o corpo do pedido.
+            if _RE_MODELO_DECISOES.search(detalhe or ""):
+                raise _RecusaHttp(codigo, detalhe) from None
             if pedir_json and codigo in _HTTP_SEM_FORMATO:
                 pedir_json = False
+                continue
+            # Modelo de raciocinio que recusa os campos de amostragem: retira-os
+            # e repete uma vez, em vez de exigir que quem configura saiba de
+            # antemao qual e o modelo. Cada degradacao so acontece uma vez.
+            if (local.get("temperatura") is not None and codigo in _HTTP_SEM_FORMATO
+                    and _RE_AMOSTRAGEM.search(detalhe or "")):
+                local["temperatura"] = None
                 continue
             raise _RecusaHttp(codigo, detalhe) from None
         return {**resposta, "formato_pedido": "json" if pedir_json else "texto"}
@@ -1023,7 +1263,13 @@ def classificar(
     # Transporte de decisoes: contrato proprio, resposta tipada, e nenhuma das
     # alavancas do chat (mensagens, response_format, max_tokens, effort). Fica
     # num caminho separado para o codigo do chat nao ganhar ramos mortos.
-    if str(definicao.get("via") or "chat") == "decisoes":
+    # Com `auto`, parte-se do chat e so se muda quando o provider diz que o
+    # modelo e de decisoes; a descoberta fica memorizada por alvo.
+    via = str(definicao.get("via") or "auto")
+    if via == "auto":
+        with _lock:
+            via = _via_detectada.get(alvo, "chat")
+    if via == "decisoes":
         return _classificar_decisoes(
             alvo=alvo, base=base, definicao=definicao, corpo_texto=corpo_texto,
             resolver_rota=resolver_rota, chave=chave, ttl_erro=ttl_erro, agora=agora,
@@ -1072,6 +1318,19 @@ def classificar(
         resposta["ms"] = ms_total
     except _RecusaHttp as exc:
         detalhe = f"HTTP {exc.codigo}: {exc.detalhe[:200]}"
+        # `auto`: o provider disse que o modelo nao fala chat. Muda de
+        # transporte na mesma chamada e memoriza o achado, para o turno seguinte
+        # ir directo ao endpoint certo e nao pagar a sonda outra vez.
+        if str(definicao.get("via") or "") == "auto" and _RE_MODELO_DECISOES.search(exc.detalhe or ""):
+            with _lock:
+                _via_detectada[alvo] = "decisoes"
+            try:
+                return _classificar_decisoes(
+                    alvo=alvo, base=base, definicao=definicao, corpo_texto=corpo_texto,
+                    resolver_rota=resolver_rota, chave=chave, ttl_erro=ttl_erro, agora=agora,
+                )
+            except Exception:  # noqa: BLE001 - se a deteccao falhar, vale o erro do chat
+                pass
         # Uma recusa HTTP tambem pode ser config (id de modelo inexistente,
         # transporte errado): o `_RecusaHttp` nao passava pelo filtro e um 400
         # definitivo era contado como avaria transitoria.
@@ -1103,6 +1362,11 @@ def classificar(
             "tokens_entrada": uso.get("prompt_tokens"),
             "tokens_saida": uso.get("completion_tokens"),
             "tentativas": tentativas,
+            # Transporte e preset ficam no ledger: sem eles, trocar de modelo ou
+            # de forma do pedido le-se como mudanca de qualidade e nao se sabe
+            # o que mudou.
+            "via": "chat",
+            "preset": str(definicao.get("preset") or ""),
         },
     }
     with _lock:
@@ -1146,7 +1410,9 @@ def classificar_lote(
     # mapeamento caso->resposta exigiria um nome por indice. Um pedido por caso
     # custa ~250 ms e ~2e-05 USD medidos, sem cache — que e precisamente o que
     # uma medicao precisa (um lote em cache media o cache, nao o modelo).
-    if str(definicao.get("via") or "chat") == "decisoes":
+    if str(definicao.get("via") or "chat") == "decisoes" or (
+            str(definicao.get("via") or "") == "auto"
+            and preset_para(modelo) == "sistema-um"):
         sem_cache = {**definicao, "cache_ttl_s": 0}
         niveis_dec: list[str | None] = []
         motivos: list[str] = []
