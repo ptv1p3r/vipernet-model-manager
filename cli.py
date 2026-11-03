@@ -446,6 +446,106 @@ def cmd_rota_rm(args) -> int:
     return 0
 
 
+def cmd_superficie_list(args) -> int:
+    """Mostra as regras de superficie de um perfil e de onde vem cada uma."""
+    cfg, _ = _cfg()
+    perfis = [args.perfil] if args.perfil else sorted((cfg.get("perfis") or {}))
+    saida = False
+    for nome in perfis:
+        p = g.perfil_config(cfg, nome)
+        if p is None:
+            if args.perfil:
+                return _erro(f"perfil '{nome}' nao e gerido por este config", 3)
+            continue
+        regras = (p.get("analise") or {}).get("superficies") or {}
+        prop = ((cfg.get("perfis", {}).get(nome) or {}).get("analise") or {}).get("superficies") or {}
+        if not regras:
+            print(f"{nome}: sem regras de superficie")
+            saida = True
+            continue
+        print(f"{nome}:")
+        for sup, regra in sorted(regras.items()):
+            origem = "perfil" if sup in prop else "global"
+            if regra.get("activo") is False:
+                alvo = "(anulada)"
+            elif regra.get("entrada"):
+                alvo = f"entrada={regra['entrada']}"
+            elif regra.get("nivel"):
+                alvo = f"nivel={regra['nivel']}"
+            else:
+                alvo = f"{regra.get('provider')}/{regra.get('modelo')}"
+            print(f"  {sup:14s} -> {alvo:28s} [{origem}]")
+        saida = True
+    return 0 if saida else 0
+
+
+def _alvo_superficie(valor: str, perfil: str) -> tuple[dict | None, str]:
+    """Traduz o alvo escrito na linha de comando numa regra valida."""
+    texto = str(valor or "").strip()
+    if not texto:
+        return None, "alvo vazio (usa entrada:<id>, nivel:<leve|media|alta> ou provider/modelo)"
+    if texto.lower().startswith("nivel:"):
+        nivel = texto.split(":", 1)[1].strip().lower()
+        if nivel not in g.NIVEIS:
+            return None, f"nivel invalido: {nivel}"
+        return {"nivel": nivel}, ""
+    if texto.lower().startswith("entrada:"):
+        return {"entrada": texto.split(":", 1)[1].strip()}, ""
+    if "/" in texto:
+        prov, modelo = texto.split("/", 1)
+        if prov.strip() and modelo.strip():
+            return {"provider": prov.strip(), "modelo": modelo.strip()}, ""
+        return None, "provider/modelo incompleto"
+    return {"entrada": texto}, ""
+
+
+def cmd_superficie_add(args) -> int:
+    """Liga uma superficie (cron, api_server, cli...) a uma rota do perfil."""
+    cfg, _ = _cfg()
+    p = (cfg.get("perfis") or {}).get(args.perfil)
+    if not isinstance(p, dict):
+        return _erro(f"perfil '{args.perfil}' nao existe", 3)
+    regra, erro_a = _alvo_superficie(args.alvo, args.perfil)
+    if erro_a:
+        return _erro(erro_a, 2)
+    sup = str(args.superficie or "").strip().lower()
+    if not sup:
+        return _erro("superficie vazia", 2)
+    analise = p.setdefault("analise", {})
+    if not isinstance(analise, dict):
+        return _erro(f"perfis.{args.perfil}.analise nao e um objecto", 3)
+    superficies = analise.setdefault("superficies", {})
+    if not isinstance(superficies, dict):
+        return _erro(f"perfis.{args.perfil}.analise.superficies nao e um objecto", 3)
+    superficies[sup] = regra
+    try:
+        g.gravar(cfg)
+    except ValueError as exc:
+        return _erro(f"config recusada: {exc}")
+    print(f"{args.perfil}: superficie '{sup}' -> {regra}")
+    return 0
+
+
+def cmd_superficie_rm(args) -> int:
+    cfg, _ = _cfg()
+    p = (cfg.get("perfis") or {}).get(args.perfil)
+    if not isinstance(p, dict):
+        return _erro(f"perfil '{args.perfil}' nao existe", 3)
+    sup = str(args.superficie or "").strip().lower()
+    superficies = ((p.get("analise") or {}).get("superficies") or {})
+    if sup not in superficies:
+        return _erro(f"{args.perfil}: superficie '{sup}' nao tem regra propria", 3)
+    superficies.pop(sup)
+    if not superficies:
+        (p.get("analise") or {}).pop("superficies", None)
+    try:
+        g.gravar(cfg)
+    except ValueError as exc:
+        return _erro(f"config recusada: {exc}")
+    print(f"{args.perfil}: regra da superficie '{sup}' removida")
+    return 0
+
+
 def cmd_simular(args) -> int:
     cfg, _ = _cfg()
     p = g.perfil_config(cfg, args.perfil)
@@ -678,6 +778,25 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("perfil")
     a.add_argument("id")
     a.set_defaults(func=cmd_rota_rm)
+
+    # Superficie: o contexto de sessao (cron, api_server, cli...). Uma regra
+    # aqui e deterministica e ganha a tarefa e a analise; so o marcador
+    # explicito na mensagem (`complexidade: alta`) manda mais.
+    s = sub.add_parser("superficie",
+                       help="ligar uma superficie de sessao (cron, api_server...) a uma rota")
+    ss = s.add_subparsers(dest="sub", required=True)
+    a = ss.add_parser("list", help="ver as regras de um perfil (ou de todos)")
+    a.add_argument("perfil", nargs="?")
+    a.set_defaults(func=cmd_superficie_list)
+    a = ss.add_parser("add", help="criar/substituir uma regra")
+    a.add_argument("perfil")
+    a.add_argument("superficie", help="cron, api_server, cli, whatsapp...")
+    a.add_argument("alvo", help="entrada:<id> | nivel:<leve|media|alta> | provider/modelo")
+    a.set_defaults(func=cmd_superficie_add)
+    a = ss.add_parser("rm", help="remover a regra do perfil")
+    a.add_argument("perfil")
+    a.add_argument("superficie")
+    a.set_defaults(func=cmd_superficie_rm)
 
     s = sub.add_parser("simular", help="classificar um texto e ver a rota")
     s.add_argument("perfil")

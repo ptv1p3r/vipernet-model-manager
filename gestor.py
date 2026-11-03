@@ -721,20 +721,32 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
             for tid in entrada.get("tarefas", []):
                 if tid not in tarefas:
                     erros.append(f"perfis.{nome}: tarefa desconhecida '{tid}' em {entrada['id']}")
-        if "superficies" in panalise:
-            # Agora com o catalogo na mao: uma regra que aponte para uma
-            # entrada inexistente nunca resolveria, e o turno cairia na
-            # analise sem ninguem saber por que. Recusar aqui, como nas
-            # tarefas — o erro tem de aparecer no editor, nao no turno.
+        # Superficies: valida-se o que o perfil vai REALMENTE usar — o que ele
+        # declara mais o que herda do global — contra o catalogo do perfil. Uma
+        # regra global nao pode ser validada no global (o catalogo e por
+        # perfil), e uma regra herdada que aponte para uma entrada que este
+        # perfil nao tem nunca resolveria: o turno cairia na analise e ninguem
+        # saberia por que. Por isso o erro aparece aqui, no perfil.
+        global_sup = saida["analise"].get("superficies") or {}
+        bruto_sup = panalise.pop("superficies", None)
+        if bruto_sup is not None or global_sup:
+            efectivas = dict(global_sup)
+            if bruto_sup is not None:
+                if isinstance(bruto_sup, dict):
+                    efectivas.update({str(k).strip().lower(): v
+                                      for k, v in bruto_sup.items()})
+                else:
+                    erros.append(f"perfis.{nome}.analise.superficies tem de ser "
+                                 f"um objecto (superficie -> regra)")
             limpas_sup = normalizar_superficies(
-                panalise["superficies"], f"perfis.{nome}.analise.superficies",
-                erros, catalogo=catalogo)
-            global_sup = saida["analise"].get("superficies") or {}
-            if limpas_sup and limpas_sup != global_sup:
-                panalise["superficies"] = limpas_sup
-            else:
-                # Igual ao global (ou vazio): nao se grava copia.
-                panalise.pop("superficies", None)
+                efectivas, f"perfis.{nome}.analise.superficies", erros,
+                catalogo=catalogo)
+            # Grava-se so o delta: o que e igual ao global nao vira copia (a
+            # mesma armadilha das outras chaves da `analise`).
+            delta = {k: v for k, v in limpas_sup.items()
+                     if global_sup.get(k) != v}
+            if delta:
+                panalise["superficies"] = delta
         saida["perfis"][nome] = {
             "tarefas": tarefas,
             "activo": bool(pcfg.get("activo", True)),
