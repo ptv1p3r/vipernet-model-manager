@@ -1175,9 +1175,29 @@ check("cartao do perfil: um icone para criar modelo novo", novoBtn.length === 1,
 check("cartao do perfil: o icone novo nomeia o perfil",
       novoBtn.length === 1 && String(novoBtn[0].props.title).indexOf("trabalho") !== -1,
       novoBtn.length ? String(novoBtn[0].props.title) : "sem botao");
-check("cartao do perfil: a coluna de accoes existe no cabecalho da tabela",
-      comTag(arvoreCartao, "th").some(function (th) {
+check("cartao do perfil: o icone de edicao vive na celula do modelo",
+      (function () {
+        // O icone tem de estar na primeira coluna. Numa coluna a direita fica
+        // fora do cartao (517px) porque a tabela mede 671px, e o overflow do
+        // cartao cortava-o sem aviso — foi o defeito reportado.
+        const celulas = comTag(arvoreCartao, "td").filter(function (td) {
+          return String(td.props.className || "").indexOf("vmm-celula-modelo") !== -1;
+        });
+        if (!celulas.length) return false;
+        return celulas.every(function (td) {
+          return comTag({ filhos: td.filhos, tag: "raiz", props: {} }, "button").some(function (b) {
+            return textoPlano(b.filhos).trim() === "✎";
+          });
+        });
+      })(),
+      "celulas com vmm-celula-modelo: " + comTag(arvoreCartao, "td").filter(function (td) {
+        return String(td.props.className || "").indexOf("vmm-celula-modelo") !== -1;
+      }).length);
+check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
+      !comTag(arvoreCartao, "th").some(function (th) {
         return String(th.props.className || "").indexOf("vmm-th-accoes") !== -1;
+      }) && !comTag(arvoreCartao, "td").some(function (td) {
+        return String(td.props.className || "").indexOf("vmm-td-accoes") !== -1;
       }));
 
 

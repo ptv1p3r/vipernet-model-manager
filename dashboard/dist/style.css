@@ -103,6 +103,10 @@
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  /* Uma tabela larga (catalogo de 6 colunas com chips) excede o cartao de
+     28rem; sem isto o overflow:hidden do cartao corta a ultima coluna em
+     silencio. Com scroll, o que nao cabe fica alcancavel. */
+  overflow-x: auto;
 }
 
 .vmm-linha {
@@ -600,13 +604,28 @@
   font-size: 0.75rem;
 }
 
-/* Os icones por rota e por perfil: uma coluna estreita a direita, para que a
-   tabela nao ganhe uma coluna larga por causa de um botao. */
-.vmm-th-accoes,
-.vmm-td-accoes {
-  width: 1%;
+/* O icone de edicao vive na celula do modelo, a primeira coluna. Numa coluna
+   a direita ficava fora do cartao (grelha de 28rem, tabela de 578px) e o
+   overflow:hidden do cartao cortava-o sem aviso. */
+.vmm-celula-modelo {
   white-space: nowrap;
-  text-align: right;
+}
+
+.vmm-celula-modelo .vmm-icone {
+  margin-left: 0.3rem;
+  vertical-align: middle;
+}
+
+/* O provider e o campo mais largo; sem um teto a tabela excede o cartao.
+   O max-width tem de estar num span: num <td> em layout automatico e
+   ignorado. */
+.vmm-celula-provider {
+  display: inline-block;
+  max-width: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 
 .vmm-icone {

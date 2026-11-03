@@ -885,8 +885,7 @@
               h("th", null, "complexidade"),
               h("th", null, "tarefas"),
               h("th", null, "acesso"),
-              h("th", null, "esforço"),
-              h("th", { className: "vmm-th-accoes" }, "")
+              h("th", null, "esforço")
             )
           ),
           h(
@@ -898,20 +897,12 @@
               return h(
                 "tr",
                 { key: m.id },
-                h("td", { className: "vmm-mono" }, m.id),
-                h("td", { className: "vmm-mono vmm-mudo" }, m.provider + " / " + m.modelo),
-                h("td", null, cxLista.map(function (n) { return h(Chip, { key: n }, n); })),
-                h("td", null, (m.tarefas || []).length
-                  ? (m.tarefas || []).map(function (t) { return h(Chip, { key: t, tone: "outline" }, t); })
-                  : h("span", { className: "vmm-mudo" }, "—")),
-                h("td", null, h(Chip, { tone: m.acesso === "subscricao" ? "outline" : "secondary" }, m.acesso || "api")),
-                h("td", null, m.esforco
-                  ? h(Chip, { tone: "outline" }, m.esforco)
-                  : h("span", { className: "vmm-mudo" }, "—")),
-                // O icone da rota: abre a pagina desta rota, com todas as
-                // opcoes a vista. Nao ha escrita aqui — o cartao continua a
-                // ser leitura, o gesto abre uma pagina.
-                h("td", { className: "vmm-td-accoes" },
+                h("td", { className: "vmm-mono vmm-celula-modelo" },
+                  m.id,
+                  // O icone vive na primeira coluna, ao lado do id: a ultima
+                  // coluna de uma tabela de 7 colunas fica fora do cartao e o
+                  // overflow:hidden do cartao corta-a em silencio. Aqui nunca
+                  // sai do visivel.
                   h(Button, {
                     size: "sm",
                     variant: "ghost",
@@ -919,7 +910,17 @@
                     title: "Editar as opções de " + m.id,
                     "aria-label": "Editar as opções de " + m.id,
                     onClick: function () { props.onModelo(nome, m.id); },
-                  }, "✎"))
+                  }, "✎")),
+                h("td", null,
+                  h("span", { className: "vmm-mono vmm-mudo vmm-celula-provider" }, m.provider + " / " + m.modelo)),
+                h("td", null, cxLista.map(function (n) { return h(Chip, { key: n }, n); })),
+                h("td", null, (m.tarefas || []).length
+                  ? (m.tarefas || []).map(function (t) { return h(Chip, { key: t, tone: "outline" }, t); })
+                  : h("span", { className: "vmm-mudo" }, "—")),
+                h("td", null, h(Chip, { tone: m.acesso === "subscricao" ? "outline" : "secondary" }, m.acesso || "api")),
+                h("td", null, m.esforco
+                  ? h(Chip, { tone: "outline" }, m.esforco)
+                  : h("span", { className: "vmm-mudo" }, "—"))
               );
             })
           )
