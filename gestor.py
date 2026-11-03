@@ -91,6 +91,12 @@ ANALISE_PADRAO: dict[str, Any] = {
     "varredura_max_mensagens": 60,
     "limiares": {"media": 3, "alta": 7},
     "descer_apos": 2,
+    # Um turno faz varios pedidos (laco de ferramentas) e cada um reavaliava
+    # nivel, tarefa e histerese: medido a 2026-11-02, 37,7% dos turnos trocavam
+    # de nivel a meio. Com isto o nivel fixa-se no primeiro pedido e os
+    # seguintes reutilizam-no; so a capacidade (contexto/modalidade) e a rota
+    # que morre o podem mudar, e ficam marcadas com `excecao`.
+    "fixar_nivel_por_turno": True,
     # `classificador` e preenchido mais abaixo, a partir de
     # `analise_modelo.PADRAO`: os limites do classificador (timeout, tokens,
     # cache) tem UMA casa. Duplica-los aqui foi o que deixou a config viva com
@@ -452,6 +458,11 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
                             continue
                         limpos[nome_sinal] = peso
                     saida["analise"]["pesos"] = limpos
+            elif chave == "fixar_nivel_por_turno":
+                if isinstance(valor, bool):
+                    saida["analise"][chave] = valor
+                else:
+                    erros.append("'analise.fixar_nivel_por_turno' tem de ser booleano")
             elif chave == "aprendiz":
                 if not isinstance(valor, dict):
                     erros.append("'analise.aprendiz' tem de ser um objecto")
