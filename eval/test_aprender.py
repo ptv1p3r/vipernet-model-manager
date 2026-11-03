@@ -945,5 +945,121 @@ class TestJuizLote(unittest.TestCase):
         self.assertEqual(r, [{"id": "y"}])
 
 
+class TestJuizVotos(unittest.TestCase):
+    """O juiz como comite: maioria, disputa declarada e chao de cobertura.
+
+    O que se prova aqui e o que faz a diferenca entre medir e acreditar: que a
+    maioria e contada por caso e nao por lote, que um caso dividido fica
+    declarado em vez de desempatado a sorte, que as passagens baralham a ordem
+    (senao um erro de composicao do lote repetia-se igual tres vezes) e que o
+    portao fecha quando o juiz compra kappa a troca de nao decidir.
+    """
+
+    def _casos(self, n=3):
+        return [{"id": f"c{i}", "texto": f"x{i}"} for i in range(n)]
+
+    @staticmethod
+    def _m(macro, media_f1, leve_f1=0.5, alta_f1=0.5):
+        return {"macro_f1": macro, "acerto": macro, "n": 50,
+                "por_classe": {"leve": {"f1": leve_f1}, "media": {"f1": media_f1},
+                               "alta": {"f1": alta_f1}}}
+
+    def test_um_voto_e_o_caminho_historico(self):
+        chamadas = []
+
+        def falso(casos, *a, **k):
+            chamadas.append(len(casos))
+            return [{"id": c["id"], "rotulo": "media"} for c in casos]
+
+        with unittest.mock.patch.object(A, "_etiquetar", falso):
+            agg, passagens, meta = A._etiquetar_votos(self._casos(2), {}, None, 4, 0, 1)
+        self.assertEqual(chamadas, [2])
+        self.assertEqual(passagens, [])
+        self.assertEqual(meta["votos"], 1)
+        self.assertEqual([r["rotulo"] for r in agg], ["media", "media"])
+
+    def test_maioria_de_tres_aceita_o_rotulo_vencedor(self):
+        fila = ["alta", "alta", "media"]
+
+        def falso(casos, *a, **k):
+            n = fila.pop(0)
+            return [{"id": c["id"], "rotulo": n} for c in casos]
+
+        with unittest.mock.patch.object(A, "_etiquetar", falso):
+            agg, passagens, meta = A._etiquetar_votos(self._casos(1), {}, None, 4, 0, 3)
+        self.assertEqual(len(passagens), 3)
+        self.assertEqual(agg[0]["rotulo"], "alta")
+        self.assertEqual(agg[0]["acordo"], 2)
+        self.assertEqual(agg[0]["votos"], 3)
+        self.assertIsNone(agg[0]["disputa"])
+
+    def test_sem_maioria_nao_inventa_desempate(self):
+        fila = ["leve", "media", "alta"]
+
+        def falso(casos, *a, **k):
+            n = fila.pop(0)
+            return [{"id": c["id"], "rotulo": n} for c in casos]
+
+        with unittest.mock.patch.object(A, "_etiquetar", falso):
+            agg, _, _ = A._etiquetar_votos(self._casos(1), {}, None, 4, 0, 3, acordo_min=2)
+        self.assertIsNone(agg[0]["rotulo"])
+        self.assertEqual(agg[0]["disputa"], {"leve": 1, "media": 1, "alta": 1})
+
+    def test_voto_em_falta_nao_impede_maioria(self):
+        fila = ["media", "media", None]
+
+        def falso(casos, *a, **k):
+            n = fila.pop(0)
+            return [{"id": c["id"], "rotulo": n} for c in casos]
+
+        with unittest.mock.patch.object(A, "_etiquetar", falso):
+            agg, _, _ = A._etiquetar_votos(self._casos(1), {}, None, 4, 0, 3)
+        self.assertEqual(agg[0]["rotulo"], "media")
+        self.assertEqual(agg[0]["votos"], 2)
+
+    def test_nenhum_voto_valido_fica_com_erro(self):
+        def falso(casos, *a, **k):
+            return [{"id": c["id"], "rotulo": None} for c in casos]
+
+        with unittest.mock.patch.object(A, "_etiquetar", falso):
+            agg, _, _ = A._etiquetar_votos(self._casos(1), {}, None, 4, 0, 2)
+        self.assertIsNone(agg[0]["rotulo"])
+        self.assertEqual(agg[0]["erro"], "sem voto valido")
+
+    def test_passagens_baralham_a_ordem(self):
+        """Sem baralhar, um erro de composicao do lote repete-se nas 3 passagens."""
+        ordens = []
+
+        def falso(casos, *a, **k):
+            ordens.append([c["id"] for c in casos])
+            return [{"id": c["id"], "rotulo": "leve"} for c in casos]
+
+        with unittest.mock.patch.object(A, "_etiquetar", falso):
+            A._etiquetar_votos(self._casos(12), {}, None, 4, 0, 3)
+        self.assertEqual(len(ordens), 3)
+        self.assertTrue(any(o != ordens[0] for o in ordens[1:]),
+                        "as passagens usaram a mesma ordem: a votacao nao decorrelaciona")
+
+    def test_portao_fecha_por_cobertura(self):
+        ok, razoes = A.portoes({"kappa": 0.9, "n": 100},
+                               self._m(0.5, 0.4), self._m(0.6, 0.5), 0.6, 0.0,
+                               cobertura=0.5, cobertura_minima=0.85)
+        self.assertFalse(ok)
+        self.assertTrue(any("cobertura" in r for r in razoes), razoes)
+
+    def test_portao_aceita_kappa_alto_com_cobertura_suficiente(self):
+        ok, razoes = A.portoes({"kappa": 0.9, "n": 100},
+                               self._m(0.5, 0.4), self._m(0.6, 0.5), 0.6, 0.0,
+                               cobertura=0.95, cobertura_minima=0.85)
+        self.assertTrue(ok, razoes)
+
+    def test_cobertura_ausente_nao_fecha_o_portao(self):
+        """--so-treinar nao mede juiz: sem cobertura, o chao nao se aplica."""
+        ok, razoes = A.portoes({"kappa": 0.9, "n": 100},
+                               self._m(0.5, 0.4), self._m(0.6, 0.5), 0.6, 0.0,
+                               cobertura=None, cobertura_minima=0.85)
+        self.assertTrue(ok, razoes)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
