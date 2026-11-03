@@ -714,6 +714,24 @@ check("render: o eixo da rotacao esta desactivado em prioridade", (function () {
 })(), "esperava pessoal desactivado e trabalho activo");
 check("render: ha um select de rotacao por linha", rotacaoSel.length === 3, "obtive " + rotacaoSel.length);
 
+// A seccao tem de estar montada nos DOIS sitios: no topo do painel (onde se ve)
+// e dentro do editor de configuracao (onde o dono a procura). Uma so fonte de
+// verdade — o mesmo configJSON.
+const srcPainel = fs.readFileSync(path.join(__dirname, "dist", "index.js"), "utf-8");
+const montagensSecao = (srcPainel.match(/h\(SecaoClassificador/g) || []).length;
+check("render: a seccao e montada no topo do painel e dentro do editor",
+      montagensSecao === 2, "obtive " + montagensSecao + " montagens");
+
+check("render: com JSON invalido a seccao avisa em vez de desaparecer",
+      textoDaArvore(T.SecaoClassificador({
+        configJSON: "{nao e json", versao: "", opcoes: {}, onMudar: function () {},
+      })).indexOf("corrija o JSON") !== -1);
+
+check("render: o cabecalho da seccao mostra a versao do painel",
+      textoDaArvore(T.SecaoClassificador({
+        configJSON: JSON.stringify(cfgSecao), versao: "9.9.9", opcoes: {}, onMudar: function () {},
+      })).indexOf("9.9.9") !== -1);
+
 console.log("");
 if (falhas) {
   console.log(falhas + " de " + total + " verificacoes FALHARAM");
