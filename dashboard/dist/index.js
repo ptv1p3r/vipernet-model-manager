@@ -1687,6 +1687,9 @@
       setModeloErro(null);
       setModeloErros([]);
       setModeloOk(null);
+      // O aviso verde do painel fala da gravacao anterior; deixa-lo de pe atras
+      // desta pagina faz parecer que o que se esta a editar ja foi gravado.
+      setValidacaoOk(null);
       setModeloACarregar(true);
       const consulta = "/modelo?perfil=" + encodeURIComponent(perfil)
         + (id ? "&id=" + encodeURIComponent(id) : "");
@@ -1782,7 +1785,8 @@
     }
 
     // Descartar e o unico caminho que abandona o formulario — sempre por accao
-    // explicita do dono, nunca por um erro.
+    // explicita do dono, nunca por um erro. Como no editor de configuracao,
+    // nao deixa aviso: fechar sem gravar nao e um resultado a anunciar.
     function descartarModelo() {
       setModeloAberto(null);
       setModeloForm({});
@@ -1791,6 +1795,7 @@
       setModeloErros([]);
       setModeloErro(null);
       setModeloOk(null);
+      setValidacaoOk(null);
     }
 
     if (!estado && !erro) {
