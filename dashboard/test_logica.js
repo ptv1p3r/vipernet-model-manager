@@ -904,6 +904,302 @@ check("pagina de configuracao: os erros de validacao aparecem no ecra",
 check("pagina de configuracao: o erro de topo aparece no ecra",
       textoPlano(renderPagina({ erro: "Configuração inválida" })).indexOf("Configuração inválida") !== -1);
 
+// ---------------------------------------------------------------------------
+// Uma rota do catalogo: a conversao forma <-> entrada e a pagina propria.
+// E o sitio onde um erro se paga caro — o que sai daqui vai para o JSON que o
+// middleware le no turno seguinte.
+// ---------------------------------------------------------------------------
+
+check("index.js expoe a conversao da rota para teste",
+      typeof T.entradaParaForm === "function" && typeof T.formParaEntrada === "function"
+      && typeof T.alternarOpcao === "function" && typeof T.emOrdem === "function"
+      && typeof T.PaginaModelo === "function");
+
+const rotaCompleta = {
+  id: "gpt-sol", provider: "openrouter", modelo: "openai/gpt-6.1-sol",
+  complexidade: ["alta"], acesso: "subscricao", esforco: "alto",
+  tarefas: ["arquitetura"], desligado: true, contexto_max: 200000,
+  latencia_p95_ms: 900, modalidades: ["texto", "imagem"], json_nativo: false,
+  nota: "rota de arquitectura",
+};
+
+const forma = T.entradaParaForm(rotaCompleta);
+check("entradaParaForm le todos os campos",
+      forma.id === "gpt-sol" && forma.provider === "openrouter"
+      && forma.modelo === "openai/gpt-6.1-sol"
+      && forma.complexidade.join(",") === "alta" && forma.acesso === "subscricao"
+      && forma.esforco === "alto" && forma.tarefas.join(",") === "arquitetura"
+      && forma.desligado === true && forma.contexto_max === "200000"
+      && forma.latencia_p95_ms === "900"
+      && forma.modalidades.join(",") === "texto,imagem"
+      && forma.json_nativo === "nao" && forma.nota === "rota de arquitectura",
+      JSON.stringify(forma));
+
+check("entradaParaForm sem campos nao inventa valores",
+      (function () {
+        const f = T.entradaParaForm({ id: "x", provider: "p", modelo: "m" });
+        return f.complexidade.length === 0 && f.esforco === "" && f.json_nativo === ""
+          && f.desligado === false && f.nota === "" && f.modalidades.length === 0;
+      })(), JSON.stringify(T.entradaParaForm({ id: "x" })));
+
+check("entradaParaForm aceita `niveis` legado",
+      T.entradaParaForm({ niveis: "alta" }).complexidade.join(",") === "alta");
+
+const OPCOES = {
+  niveis: ["leve", "media", "alta"],
+  acessos: ["api", "subscricao"],
+  esforcos: ["baixo", "medio", "alto"],
+  modalidades: ["texto", "imagem", "audio", "ferramentas"],
+  tarefas: [{ valor: "arquitetura", rotulo: "arquitetura · prioridade 10" }],
+};
+
+const volta = T.formParaEntrada(forma, OPCOES);
+function canonico(obj) {
+  // Ordem de chaves nao e semantica: conta o que ficou escrito, nao por que ordem.
+  if (Array.isArray(obj)) return obj.map(canonico);
+  if (!obj || typeof obj !== "object") return obj;
+  const out = {};
+  Object.keys(obj).sort().forEach(function (k) { out[k] = canonico(obj[k]); });
+  return out;
+}
+check("formParaEntrada devolve a rota igual ao que leu",
+      JSON.stringify(canonico(volta)) === JSON.stringify(canonico(rotaCompleta)),
+      JSON.stringify(volta) + " != " + JSON.stringify(rotaCompleta));
+
+// O que NAO se declara nao vai para o ficheiro: um `esforco: ""` seria um valor
+// invalido disfarcado de omissao.
+const vazia = T.formParaEntrada({ id: "x", provider: "p", modelo: "m",
+                                  complexidade: ["leve"], acesso: "api", tarefas: [] }, OPCOES);
+check("formParaEntrada nao escreve chaves vazias",
+      !("esforco" in vazia) && !("modalidades" in vazia) && !("json_nativo" in vazia)
+      && !("contexto_max" in vazia) && !("latencia_p95_ms" in vazia)
+      && !("nota" in vazia) && !("desligado" in vazia),
+      JSON.stringify(vazia));
+
+const comNumeroMau = T.formParaEntrada(
+  { id: "x", provider: "p", modelo: "m", complexidade: ["alta"], acesso: "api",
+    tarefas: [], contexto_max: "abc" }, OPCOES);
+check("formParaEntrada deixa o texto invalido para o gestor julgar",
+      comNumeroMau.contexto_max === "abc", JSON.stringify(comNumeroMau));
+
+check("formParaEntrada converte numeros",
+      T.formParaEntrada({ id: "x", provider: "p", modelo: "m", complexidade: ["alta"],
+                          acesso: "api", tarefas: [], contexto_max: "128000" }, OPCOES)
+        .contexto_max === 128000);
+
+// Ordem canonica: o JSON nao pode mudar de forma so porque se clicou por outra
+// ordem. E um valor fora da lista actual (config antiga) nao se perde.
+check("emOrdem ordena pela lista fechada",
+      T.emOrdem(["alta", "leve"], ["leve", "media", "alta"]).join(",") === "leve,alta");
+check("emOrdem nao perde valores fora da lista",
+      T.emOrdem(["alta", "turbo"], ["leve", "media", "alta"]).join(",") === "alta,turbo");
+check("formParaEntrada escreve a complexidade ordenada",
+      T.formParaEntrada({ id: "x", provider: "p", modelo: "m",
+                          complexidade: ["alta", "leve"], acesso: "api", tarefas: [] }, OPCOES)
+        .complexidade.join(",") === "leve,alta");
+
+check("alternarOpcao liga e desliga sem mutar a lista",
+      (function () {
+        const original = ["leve"];
+        const ligada = T.alternarOpcao(original, "alta", true);
+        const desligada = T.alternarOpcao(ligada, "leve", false);
+        return original.join(",") === "leve" && ligada.join(",") === "leve,alta"
+          && desligada.join(",") === "alta";
+      })());
+check("alternarOpcao nao duplica",
+      T.alternarOpcao(["leve"], "leve", true).join(",") === "leve");
+
+// --- a pagina: render sem browser -----------------------------------------
+function andar(no, visita) {
+  if (!no || typeof no !== "object") return;
+  if (Array.isArray(no)) { no.forEach(function (f) { andar(f, visita); }); return; }
+  visita(no);
+  (no.filhos || []).forEach(function (f) { andar(f, visita); });
+}
+
+function comTag(arvore, tag) {
+  const out = [];
+  andar(arvore, function (n) { if (n.tag === tag) out.push(n); });
+  return out;
+}
+
+function renderModelo(extra) {
+  const props = {
+    estado: { plugin: { versao: "3.20.0", autor: "Pedro Roldan", github: "https://x" } },
+    perfil: "trabalho",
+    id: "gpt-sol",
+    novo: false,
+    form: T.entradaParaForm(rotaCompleta),
+    opcoes: OPCOES,
+    rev: "abc123",
+    erro: null,
+    erros: [],
+    validacaoOk: null,
+    aGravar: false,
+    aCarregar: false,
+    onCampo: function () {},
+    onCampoComplexidade: function () {},
+    onCampoTarefas: function () {},
+    onCampoModalidades: function () {},
+    onValidar: function () {},
+    onGravar: function () {},
+    onDescartar: function () {},
+  };
+  if (extra) Object.keys(extra).forEach(function (k) { props[k] = extra[k]; });
+  return T.PaginaModelo(props);
+}
+
+const arvoreModelo = renderModelo();
+const rotulosModelo = comTag(arvoreModelo, "button").map(function (b) {
+  return textoPlano(b.filhos).trim();
+});
+check("pagina do modelo: tem validar, gravar e descartar",
+      rotulosModelo.indexOf("Validar") !== -1
+      && rotulosModelo.some(function (r) { return r.indexOf("Gravar e voltar") !== -1; })
+      && rotulosModelo.indexOf("Descartar") !== -1, rotulosModelo.join(" | "));
+
+check("pagina do modelo: identifica a rota e o perfil",
+      textoPlano(arvoreModelo).indexOf("Modelo · gpt-sol") !== -1
+      && textoPlano(arvoreModelo).indexOf("trabalho") !== -1);
+
+const titulosBlocos = comTag(arvoreModelo, "strong").map(function (s) { return textoPlano(s.filhos); });
+check("pagina do modelo: tres blocos (identidade, roteamento, limites)",
+      titulosBlocos.indexOf("Identidade") !== -1
+      && titulosBlocos.indexOf("Roteamento") !== -1
+      && titulosBlocos.indexOf("Limites declarados") !== -1, titulosBlocos.join(" | "));
+
+// Todas as opcoes de escolha vem fechadas. O harness nao executa componentes-
+// funcao, logo `BotoesOpcao` aparece como no com tag: aqui prova-se que a
+// pagina lhe passa as listas fechadas, e em seguida renderiza-se o componente
+// sozinho para provar que so mostra valores dessas listas.
+const gruposOpcao = comTag(arvoreModelo, "BotoesOpcao");
+const listasNaPagina = gruposOpcao.map(function (g) { return (g.props || {}).opcoes; });
+check("pagina do modelo: tres grupos de escolha multipla",
+      gruposOpcao.length === 3, String(gruposOpcao.length));
+check("pagina do modelo: o grupo complexidade leva os niveis fechados",
+      JSON.stringify(listasNaPagina[0]) === JSON.stringify(OPCOES.niveis),
+      JSON.stringify(listasNaPagina[0]));
+check("pagina do modelo: o grupo tarefas leva as tarefas declaradas no perfil",
+      JSON.stringify(listasNaPagina[1]) === JSON.stringify(["arquitetura"]),
+      JSON.stringify(listasNaPagina[1]));
+check("pagina do modelo: o grupo modalidades leva as modalidades fechadas",
+      JSON.stringify(listasNaPagina[2]) === JSON.stringify(OPCOES.modalidades),
+      JSON.stringify(listasNaPagina[2]));
+
+const grupoRender = T.BotoesOpcao({
+  rotulo: "complexidade", opcoes: OPCOES.niveis, valor: ["alta"], onChange: function () {},
+});
+const botoesGrupo = comTag(grupoRender, "button");
+check("grupo de opcao: um botao por opcao da lista",
+      botoesGrupo.length === OPCOES.niveis.length, String(botoesGrupo.length));
+check("grupo de opcao: so mostra valores da lista fechada",
+      botoesGrupo.every(function (b) {
+        return OPCOES.niveis.indexOf(textoPlano(b.filhos).trim()) !== -1;
+      }), botoesGrupo.map(function (b) { return textoPlano(b.filhos).trim(); }).join(" | "));
+check("grupo de opcao: o escolhido anuncia-se com aria-pressed",
+      botoesGrupo.filter(function (b) {
+        return String(b.props["aria-pressed"]) === "true";
+      }).map(function (b) { return textoPlano(b.filhos).trim(); }).join(",") === "alta");
+
+const seletores = comTag(arvoreModelo, "Seletor");
+check("pagina do modelo: quatro listas fechadas em Seletor (acesso, esforco, estado, JSON)",
+      seletores.length === 4, String(seletores.length));
+check("pagina do modelo: os Seletor so recebem valores das listas",
+      seletores.every(function (s) {
+        const vals = ((s.props && s.props.opcoes) || []).map(function (o) { return o.valor; });
+        return vals.every(function (v) {
+          return v === "" || v === "sim" || v === "nao"
+            || OPCOES.acessos.indexOf(v) !== -1 || OPCOES.esforcos.indexOf(v) !== -1;
+        });
+      }), seletores.map(function (s) { return JSON.stringify((s.props || {}).opcoes); }).join(" ; "));
+
+check("pagina do modelo: o botao de gravar esta desligado sem id",
+      (function () {
+        const semId = comTag(renderModelo({ form: T.entradaParaForm({ provider: "p", modelo: "m" }) }), "button")
+          .filter(function (b) { return textoPlano(b.filhos).indexOf("Gravar e voltar") !== -1; })[0];
+        return !!(semId && semId.props && semId.props.disabled === true);
+      })());
+
+check("pagina do modelo novo diz que e novo e nao grava id antigo",
+      (function () {
+        const arvore = renderModelo({ novo: true, id: null,
+                                      form: T.entradaParaForm({ provider: "openrouter", modelo: "v/f:free" }) });
+        const txt = textoPlano(arvore);
+        return txt.indexOf("Novo modelo · trabalho") !== -1
+          && txt.indexOf("Só entra no catálogo depois de gravar") !== -1;
+      })());
+
+check("pagina do modelo: os erros do gestor aparecem no ecra",
+      textoPlano(renderModelo({ erros: ["perfis.trabalho.catalogo[1]: complexidade vazia",
+                                        "acesso subscricao exige provider openai-codex"] }))
+        .indexOf("acesso subscricao exige provider openai-codex") !== -1);
+check("pagina do modelo: a validacao com sucesso aparece no ecra",
+      textoPlano(renderModelo({ validacaoOk: "Validado — gpt-sol · 1 nível(is)" }))
+        .indexOf("Validado — gpt-sol") !== -1);
+check("pagina do modelo: o erro de topo aparece no ecra",
+      textoPlano(renderModelo({ erro: "Configuração inválida: x" })).indexOf("Configuração inválida") !== -1);
+check("pagina do modelo: enquanto carrega nao mostra campos a fingir",
+      textoPlano(renderModelo({ aCarregar: true })).indexOf("a ler a rota do catálogo") !== -1);
+
+// --- os icones: um por rota, um por perfil -------------------------------
+const arvoreCartao = T.CartaoPerfil({
+  nome: "trabalho",
+  dados: {
+    activo: true,
+    estrategia: { modo: "rodizio", por: "sessao", origem: "padrao" },
+    tarefas: { arquitetura: { termos: ["análise"], prioridade: 10 } },
+    catalogo: [
+      { id: "deepseek-flash", provider: "deepseek", modelo: "deepseek-flash",
+        complexidade: ["leve"], acesso: "api", tarefas: [] },
+      { id: "gpt-sol", provider: "openrouter", modelo: "openai/gpt-6.1-sol",
+        complexidade: ["alta"], acesso: "api", esforco: "alto", tarefas: ["arquitetura"] },
+    ],
+  },
+  aGravar: false,
+  onToggle: function () {},
+  onModelo: function () {},
+  onNovoModelo: function () {},
+});
+const botoesCartao = comTag(arvoreCartao, "button");
+const editar = botoesCartao.filter(function (b) {
+  return textoPlano(b.filhos).trim() === "✎";
+});
+const novoBtn = botoesCartao.filter(function (b) {
+  return textoPlano(b.filhos).indexOf("modelo") !== -1 && b.props.className.indexOf("vmm-icone-novo") !== -1;
+});
+check("cartao do perfil: um icone de edicao por modelo", editar.length === 2, String(editar.length));
+check("cartao do perfil: o icone de edicao nomeia a rota",
+      editar.every(function (b) { return String(b.props.title || "").indexOf("Editar as opções de ") === 0; }),
+      editar.map(function (b) { return b.props.title; }).join(" | "));
+check("cartao do perfil: um icone para criar modelo novo", novoBtn.length === 1, String(novoBtn.length));
+check("cartao do perfil: o icone novo nomeia o perfil",
+      novoBtn.length === 1 && String(novoBtn[0].props.title).indexOf("trabalho") !== -1,
+      novoBtn.length ? String(novoBtn[0].props.title) : "sem botao");
+check("cartao do perfil: o icone de edicao vive na celula do modelo",
+      (function () {
+        // O icone tem de estar na primeira coluna. Numa coluna a direita fica
+        // fora do cartao (517px) porque a tabela mede 671px, e o overflow do
+        // cartao cortava-o sem aviso — foi o defeito reportado.
+        const celulas = comTag(arvoreCartao, "td").filter(function (td) {
+          return String(td.props.className || "").indexOf("vmm-celula-modelo") !== -1;
+        });
+        if (!celulas.length) return false;
+        return celulas.every(function (td) {
+          return comTag({ filhos: td.filhos, tag: "raiz", props: {} }, "button").some(function (b) {
+            return textoPlano(b.filhos).trim() === "✎";
+          });
+        });
+      })(),
+      "celulas com vmm-celula-modelo: " + comTag(arvoreCartao, "td").filter(function (td) {
+        return String(td.props.className || "").indexOf("vmm-celula-modelo") !== -1;
+      }).length);
+check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
+      !comTag(arvoreCartao, "th").some(function (th) {
+        return String(th.props.className || "").indexOf("vmm-th-accoes") !== -1;
+      }) && !comTag(arvoreCartao, "td").some(function (td) {
+        return String(td.props.className || "").indexOf("vmm-td-accoes") !== -1;
+      }));
+
 
 
 console.log("");
