@@ -20,6 +20,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent
@@ -82,8 +83,10 @@ def test_decidir_rasto() -> None:
                "ts": "2026-11-03T11:23:22+00:00", "falhou": ""}
 
     # (a) o caso do incidente: leitura de deepseek com config inception
+    #     (motivo recente, para isolar o critério «outro classificador» da idade)
     valido, motivo, hist = api._decidir_rasto(
-        inception, leitura, "provider_indisponivel: Unknown provider 'inception'", "2026-11-03T11:06:00+00:00")
+        inception, leitura, "provider_indisponivel: Unknown provider 'inception'",
+        datetime.now(timezone.utc).isoformat())
     verificar("incidente: leitura de outro classificador nao e estado", valido is False)
     verificar("incidente: o motivo mantem-se visivel", motivo.startswith("provider_indisponivel"))
     verificar("incidente: a leitura vai para historico", isinstance(hist, dict) and hist.get("lido") == "alta")
@@ -121,6 +124,34 @@ def test_decidir_rasto() -> None:
     valido, _motivo, hist = api._decidir_rasto({"modo": "heuristica"}, leitura, "desligado", "")
     verificar("heuristica: leitura de modelo nao e estado", valido is False)
     verificar("heuristica: leitura antiga vai para historico", hist is not None)
+
+    # (g) motivo anterior a ultima escrita do config: nao descreve a config actual
+    #     (o caso real: provider declarado as 12:45, motivo das 11:29 no cartao)
+    valido, motivo, hist = api._decidir_rasto(
+        inception, None, "provider_indisponivel: Unknown provider 'inception'",
+        "2026-11-03T11:29:32+00:00", "2026-11-03T13:26:05+00:00")
+    verificar("motivo anterior a config: nao e estado", valido is False)
+    verificar("motivo anterior a config: sai do detalhe corrente", motivo == "")
+    verificar("motivo anterior a config: vai para historico datado",
+              isinstance(hist, dict) and (hist.get("motivo_antigo") or {}).get("motivo", "").startswith("provider_indisponivel"))
+    verificar("motivo anterior a config: diz por que",
+              (hist or {}).get("motivo_antigo", {}).get("porque") == "anterior à config actual")
+
+    # (h) motivo sem config nova mas velho: passou tempo sem um turno que o confirme
+    valido, motivo, hist = api._decidir_rasto(
+        inception, None, "provider_indisponivel: Unknown provider 'inception'",
+        "2026-11-03T08:00:00+00:00", "2026-11-03T08:00:00+00:00")
+    verificar("motivo expirado: nao e estado", valido is False)
+    verificar("motivo expirado: sai do detalhe corrente", motivo == "")
+    verificar("motivo expirado: fica no historico",
+              (hist or {}).get("motivo_antigo") is not None)
+
+    # (i) motivo recente e posterior a config: continua a ser estado, como deve
+    valido, motivo, hist = api._decidir_rasto(
+        inception, None, "provider_indisponivel: Unknown provider 'inception'",
+        datetime.now(timezone.utc).isoformat(), "2026-11-03T08:00:00+00:00")
+    verificar("motivo recente: continua visivel como estado",
+              valido is False and motivo.startswith("provider_indisponivel"))
 
 
 # ----------------------------------------------------------------------- e2e

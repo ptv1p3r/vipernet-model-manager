@@ -98,11 +98,30 @@ def _idade_s(ts: Any) -> Optional[float]:
         return None
 
 
+def _config_mtime_iso() -> str:
+    """Hora da ultima escrita do config.json, em ISO-8601 UTC.
+
+    Serve para datar o que o motivo pode descrever: um motivo registado ANTES
+    desta escrita nao pode estar a falar da config que esta em vigor agora.
+    """
+    try:
+        ts = gestor.ficheiro_config().stat().st_mtime
+    except OSError:
+        return ""
+    return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds")
+
+
+# Um motivo de configuracao sem trafego que o renove envelhece: ao fim de duas
+# horas ja nao e estado, e uma afirmacao de ontem sobre o sistema de hoje.
+MOTIVO_VALIDADE_S = 7200
+
+
 def _decidir_rasto(
     cl: Any,
     rasto: Any,
     motivo: str,
     motivo_ts: str,
+    cfg_mtime: str = "",
 ) -> tuple[bool, str, Optional[dict[str, Any]]]:
     """Separa o estado actual da historia — devolve (valido, motivo, historico).
 
@@ -140,20 +159,44 @@ def _decidir_rasto(
     if valido:
         return True, "", None
 
+    # O motivo so pode descrever a config que o produziu. Duas condicoes o
+    # desqualificam: ter sido registado antes da ultima escrita do config.json
+    # (a config mudou, portanto o motivo ja nao fala dela) e ter mais de
+    # MOTIVO_VALIDADE_S sem um turno que o renove. Nos dois casos vai para
+    # historico datado — nunca desaparece, deixa de se apresentar como estado.
+    motivo_actual = ""
+    motivo_antigo: Optional[dict[str, Any]] = None
+    if motivo:
+        idade = _idade_s(motivo_ts) if motivo_ts else None
+        antes_da_config = bool(cfg_mtime) and bool(motivo_ts) and str(motivo_ts) < str(cfg_mtime)
+        expirado = idade is not None and idade > MOTIVO_VALIDADE_S
+        if antes_da_config or expirado:
+            motivo_antigo = {
+                "motivo": str(motivo),
+                "ts": str(motivo_ts or ""),
+                "idade_s": idade,
+                "porque": ("anterior à config actual" if antes_da_config
+                           else "sem confirmação há mais de " + str(MOTIVO_VALIDADE_S // 3600) + " h"),
+            }
+        else:
+            motivo_actual = str(motivo)
+
     historico: Optional[dict[str, Any]] = None
-    if rasto is not None:
+    if rasto is not None or motivo_antigo is not None:
         historico = {
-            "lido": rasto.get("lido"),
-            "ms": rasto.get("ms"),
-            "provider": rasto.get("provider"),
-            "modelo": rasto.get("modelo"),
-            "ts": rasto.get("ts"),
-            "idade_s": _idade_s(rasto.get("ts")),
+            "lido": (rasto or {}).get("lido"),
+            "ms": (rasto or {}).get("ms"),
+            "provider": (rasto or {}).get("provider"),
+            "modelo": (rasto or {}).get("modelo"),
+            "ts": (rasto or {}).get("ts"),
+            "idade_s": _idade_s((rasto or {}).get("ts")) if rasto is not None else None,
             # Porque nao conta como estado: o classificador e outro, ou a
             # leitura e anterior ao erro que a config actual produz.
-            "motivo": "outro classificador" if not mesmo else "anterior ao erro actual",
+            "motivo": (("outro classificador" if not mesmo else "anterior ao erro actual")
+                       if rasto is not None else ""),
+            "motivo_antigo": motivo_antigo,
         }
-    return False, str(motivo or ""), historico
+    return False, motivo_actual, historico
 
 
 def _registar_escrita(*, rev_antes: str, rev_depois: str, rev_cliente: str, conflito: bool, origem: str) -> None:
@@ -441,6 +484,7 @@ def estado() -> dict[str, Any]:
             resumo.get("classificador"),
             resumo.get("classificador_motivo") or "",
             resumo.get("classificador_motivo_ts") or "",
+            _config_mtime_iso(),
         )
         saida_perfis[nome] = {
             "activo": bool(dados.get("activo", True)),

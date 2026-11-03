@@ -184,6 +184,22 @@
         extra.push("histórico: " + hist.lido + quando
           + " com " + (hist.provider || "?") + "/" + (hist.modelo || "?"));
       }
+      // Um motivo antigo tambem e historia. A config mudou depois dele, ou
+      // passou tempo sem um turno que o confirmasse: apresentá-lo como «sem
+      // efeito» de hoje foi o que manteve no cartão, durante duas horas, um
+      // erro de provider que já não existia.
+      if (!motivoConfig && hist && hist.motivo_antigo && hist.motivo_antigo.motivo) {
+        const idadeM = hist.motivo_antigo.idade_s;
+        const quandoM = idadeM == null ? ""
+          : (idadeM < 90 ? " há " + Math.round(idadeM) + " s"
+            : idadeM < 5400 ? " há " + Math.round(idadeM / 60) + " min"
+            : " há " + Math.round(idadeM / 3600) + " h");
+        // Só a etiqueta do motivo (antes do «:»): o texto completo do erro do
+        // provider é uma linha de traceback que nao cabe num cartao.
+        const etiqueta = String(hist.motivo_antigo.motivo).split(":")[0];
+        extra.push("histórico: " + etiqueta + quandoM
+          + " — " + (hist.motivo_antigo.porque || "desactualizado"));
+      }
       return {
         modo: "modelo",
         titulo: "modelo · " + (c.provider || "?") + "/" + (c.modelo || "?"),

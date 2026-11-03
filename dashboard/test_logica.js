@@ -181,6 +181,34 @@ const rFalhou = T.rotuloAnalise({
 check("rotuloAnalise: falha da ultima leitura avisa e mostra o erro",
       /o classificador falhou/.test(rFalhou.alerta) && /length 320tok/.test(rFalhou.alerta), rFalhou.alerta);
 
+// Um motivo de config ANTIGO nao pode aparecer como «sem efeito» de hoje: foi
+// o que manteve no cartao, duas horas, um `provider_indisponivel` que a
+// declaracao do provider as 12:45 ja tinha resolvido. Vai a historico datado.
+const rMotivoAntigo = T.rotuloAnalise({
+  classificador: { modo: "modelo", provider: "inception", modelo: "mercury-3",
+                   esforco: "baixo", origem: "herdado", motivo: "" },
+  origens: { modelo: 2 }, respostas: 2, erro: "",
+  historico: { lido: null, motivo: "outro classificador",
+               motivo_antigo: { motivo: "provider_indisponivel: Unknown provider 'inception'",
+                                ts: "2026-11-03T11:29:32+00:00", idade_s: 7691,
+                                porque: "anterior à config actual" } },
+});
+check("rotuloAnalise: motivo antigo nao aparece como estado",
+      rMotivoAntigo.detalhe.indexOf("sem efeito —") === -1, rMotivoAntigo.detalhe);
+check("rotuloAnalise: motivo antigo aparece datado como historico",
+      /histórico: provider_indisponivel há 2 h — anterior à config actual/.test(rMotivoAntigo.detalhe),
+      rMotivoAntigo.detalhe);
+
+// Um motivo recente continua a ser estado: a regra nao pode esconder o erro vivo.
+const rMotivoActual = T.rotuloAnalise({
+  classificador: { modo: "modelo", provider: "inception", modelo: "mercury-3",
+                   esforco: "baixo", origem: "herdado" },
+  motivo: "provider_indisponivel: Unknown provider 'x'",
+  origens: { modelo: 1 }, respostas: 1, erro: "",
+});
+check("rotuloAnalise: motivo recente continua a ser estado",
+      /sem efeito — provider_indisponivel/.test(rMotivoActual.detalhe), rMotivoActual.detalhe);
+
 // Sem `ts` nao ha hora a mostrar; com `ts` o aviso diz quando — um erro de ha
 // meia hora nao pode parecer que aconteceu agora.
 const rFalhouComHora = T.rotuloAnalise({
