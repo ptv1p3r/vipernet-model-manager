@@ -1330,6 +1330,20 @@
             h("h3", { className: "vmm-editor-titulo" }, "Editor de Configuração"),
             h(Button, { size: "sm", variant: "ghost", onClick: fecharEditor }, "Fechar")
           ),
+          // As opcoes estruturadas do classificador e da estrategia vivem TAMBEM
+          // aqui dentro: e a este botao que o dono vai quando quer configura-las,
+          // e encontrar so JSON cru le-se como "nao ha opcoes". Leem e escrevem
+          // o mesmo `configJSON` que o textarea abaixo — uma so fonte de verdade.
+          h(SecaoClassificador, {
+            configJSON: configJSON,
+            versao: (estado.plugin || {}).versao || estado.versao_painel || "",
+            opcoes: ((estado.opcoes || {}).estrategia) || {},
+            onMudar: function (novo) {
+              setConfigJSON(novo);
+              setValidacaoOk(null);
+              setErrosValidacao([]);
+            },
+          }),
           h(
             "div",
             { className: "vmm-editor-corpo" },
