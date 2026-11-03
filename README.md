@@ -264,6 +264,31 @@ Ficheiro vivo: `/opt/data/plugin-data/vipernet-model-manager/config.json`
   sobre o `*`.
 - Sem perfil na config e sem `*`: **não gerido** — o turno segue intacto.
 
+### Política do nível `alta` (decisão do dono, 2026-11-03)
+
+O nível `alta` resolve a **`deepseek/deepseek-flash` nos três perfis**, e é a
+única rota de `alta` declarada no catálogo. A consequência tem de ser lida antes
+de mexer: **não existe no catálogo um modelo acima do flash**, logo `alta` não
+significa «modelo melhor» — significa «o modelo pago, sem descer aos free». O
+ganho do classificador é de **custo, não de qualidade**: em `leve`/`media` a rota
+pode rodar para um modelo free; em `alta` não desce.
+
+Quem editar o catálogo, duas regras:
+
+- **Não acrescentar `alta` a outra entrada sem decisão explícita do dono.** Se um
+  modelo free declarar `alta`, o rodízio passa a poder servir `alta` com um free e
+  o nível deixa de garantir o flash. Foi o que aconteceu antes de 2026-11-03: 224
+  eventos de `alta` servidos por `thinkingmachines/inkling:free` no ledger, todos
+  com `motor` ausente (histórico anterior ao marcador), e zero depois.
+- **`deepseek-v4-pro` está proibido** (decisão do dono, 2026-11-03) — fora do
+  catálogo, fora dos catálogos por omissão do `gestor.py` e fora do juiz de
+  `eval/aprender.py` sem `--juiz-permitir-v4-pro` (guard que devolve rc 2).
+
+Se `deepseek` falhar, `alta` não tem segunda rota: a degradação desce um nível e
+o turno segue num modelo de `media`, com `degradado_de` no ledger. É o
+comportamento desejado — mas é uma dependência de um só provider, e deve ser
+lembrada quando se decidir o catálogo.
+
 ### Subscrição vs API
 
 A mesma família de modelos tem duas rotas de acesso distintas, e o plugin não
