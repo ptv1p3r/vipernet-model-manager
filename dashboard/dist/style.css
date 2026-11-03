@@ -479,6 +479,11 @@
 
 .vmm-sup-add .vmm-select {
   flex: 0 1 15rem;
+}
+
+/* Especificidade acima de `.vmm-classif .vmm-select` (que zera o min-width):
+   sem isto o placeholder volta a sair cortado. */
+.vmm-classif .vmm-sup-add .vmm-select {
   min-width: 12rem;
 }
 

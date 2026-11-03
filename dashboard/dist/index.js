@@ -277,7 +277,7 @@
           className: "vmm-select",
           list: idLista,
           value: nova,
-          placeholder: "superfície (cron, cli, api_server…)",
+          placeholder: "superfície (ex.: cron)",
           disabled: props.aGravar,
           "aria-label": "superfície a acrescentar",
           onChange: function (e) { setNova(e.target.value); },
