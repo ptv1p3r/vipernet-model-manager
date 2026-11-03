@@ -374,6 +374,40 @@
   border-color: hsl(142 71% 32%) !important;
 }
 
+/* Pagina de configuracao: exclusiva, com cabecalho proprio e accoes sempre
+   alcancaveis. O painel principal nao e renderizado quando esta aberta — a
+   largura limitada e o painel deixam isso visivel sem precisar de explicacao. */
+.vmm-pagina-config {
+  max-width: 68rem;
+  margin: 0 auto;
+  padding-bottom: 3rem;
+}
+
+.vmm-pagina-config > .vmm-topo {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 0.75rem 0 0.75rem;
+  background: hsl(var(--background, 0 0% 100%));
+  border-bottom: 1px solid hsl(var(--border, 215 20% 88%));
+}
+
+.vmm-pagina-config .vmm-accoes {
+  align-items: center;
+}
+
+.vmm-pagina-config .vmm-card-editor {
+  margin-top: 0.25rem;
+}
+
+/* Em ecra estreito o cabecalho sticky ocupava meio ecra: as accoes passam a
+   fluir por baixo do titulo. */
+@media (max-width: 720px) {
+  .vmm-pagina-config > .vmm-topo {
+    position: static;
+  }
+}
+
 @media (max-width: 720px) {
   .vmm-grelha { grid-template-columns: 1fr; }
 }

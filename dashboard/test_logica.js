@@ -740,19 +740,46 @@ check("render: o eixo da rotacao esta desactivado em prioridade", (function () {
 })(), "esperava pessoal desactivado e trabalho activo");
 check("render: ha um select de rotacao por linha", rotacaoSel.length === 3, "obtive " + rotacaoSel.length);
 
-// A seccao vive SO dentro do editor de configuracao. Um cartao no topo do
-// painel misturava a configuracao com o estado e lia-se como "tudo junto":
-// o sitio de configurar e o editor, e so la.
+// A configuracao vive numa pagina EXCLUSIVA: com o editor aberto, `Pagina`
+// devolve PaginaConfig por early return e nao constroi a arvore principal. Um
+// `&&` no meio da arvore deixava os cartoes de estado por baixo do formulario
+// — foi o que o dono viu tres vezes.
 const srcPainel = fs.readFileSync(path.join(__dirname, "dist", "index.js"), "utf-8");
 const montagensSecao = (srcPainel.match(/h\(SecaoClassificador/g) || []).length;
 check("render: a seccao e montada uma so vez", montagensSecao === 1,
       "obtive " + montagensSecao + " montagens");
-check("render: a seccao esta dentro do editor, nao no painel principal",
+
+check("render: a pagina de configuracao e uma pagina propria, montada por early return",
       (function () {
-        const posEditor = srcPainel.indexOf("mostrarEditor && h(");
-        const posSecao = srcPainel.indexOf("h(SecaoClassificador");
-        return posEditor !== -1 && posSecao !== -1 && posSecao > posEditor;
+        const iConf = srcPainel.indexOf("function PaginaConfig(");
+        const iPag = srcPainel.indexOf("function Pagina(");
+        const iGuard = srcPainel.indexOf("if (mostrarEditor) {");
+        const iMonta = srcPainel.indexOf("return h(PaginaConfig, {");
+        const iRetorno = srcPainel.indexOf('    return h(\n      "div",\n      { className: "vmm-pagina" },');
+        if (iConf === -1 || iPag === -1 || iGuard === -1 || iMonta === -1 || iRetorno === -1) return false;
+        // a guarda esta dentro de Pagina, monta PaginaConfig e vem antes da arvore principal
+        return iConf < iPag && iGuard > iPag && iMonta > iGuard && iMonta < iRetorno;
+      })(), "esperava PaginaConfig montada por early return dentro de Pagina");
+
+check("render: a secao de configuracao vive dentro de PaginaConfig",
+      (function () {
+        const iConf = srcPainel.indexOf("function PaginaConfig(");
+        const iSecao = srcPainel.indexOf("h(SecaoClassificador");
+        const iPag = srcPainel.indexOf("function Pagina(");
+        return iConf !== -1 && iSecao !== -1 && iPag !== -1 && iConf < iSecao && iSecao < iPag;
       })());
+
+// Fechar grava. O botao de fechar/gravar passa por gravarEFechar, que chama
+// salvarConfig: e salvarConfig que poe mostrarEditor a false e so depois de o
+// servidor aceitar. Um fecho que descartasse em silencio perdia o trabalho.
+check("fechar grava e volta: gravarEFechar chama salvarConfig",
+      /function gravarEFechar\(\) \{\s*\n\s*salvarConfig\(\);/.test(srcPainel));
+check("fechar grava e volta: a pagina de configuracao usa onGravar=gravarEFechar",
+      /onGravar: gravarEFechar/.test(srcPainel));
+check("descartar sem gravar continua a existir como accao explicita",
+      /onDescartar: fecharEditor/.test(srcPainel)
+      && /function fecharEditor\(\)/.test(srcPainel));
+
 
 // O defeito que o dono repetiu tres vezes: configuracao no painel principal.
 // A prova faz-se sobre o corpo de Pagina — nenhum select, nenhum bloco de
@@ -786,6 +813,98 @@ check("render: o cabecalho da seccao mostra a versao do painel",
       textoDaArvore(T.SecaoClassificador({
         configJSON: JSON.stringify(cfgSecao), versao: "9.9.9", opcoes: {}, onMudar: function () {},
       })).indexOf("9.9.9") !== -1);
+
+// ---- a pagina de configuracao, renderizada como pagina inteira -------------
+// Chama-se o componente a serio (nao o texto-fonte): um erro de referencia so
+// aparecia no browser do dono. Foi assim que o `perfil.superficies` sem
+// binding passou despercebido uma vez.
+const estadoPagina = {
+  versao_painel: "9.9.9",
+  plugin: { versao: "9.9.9", autor: "Pedro Roldan", github: "github.com/ptv1p3r" },
+  perfis: {
+    default: { activo: true, catalogo: [{ modelo: "m1", provider: "p1", complexidade: "leve" }], superficies: {} },
+    pessoal: { activo: true, catalogo: [], superficies: {} },
+  },
+  opcoes: {
+    estrategia: opcoesReais,
+    niveis: ["leve", "media", "alta"],
+    superficies: ["cli", "cron", "api_server"],
+  },
+};
+
+function renderPagina(extra) {
+  const props = {
+    estado: estadoPagina,
+    configJSON: JSON.stringify(cfgSecao),
+    erro: null,
+    errosValidacao: [],
+    validacaoOk: null,
+    aValidar: false,
+    aGravar: false,
+    onValidar: function () {},
+    onGravar: function () {},
+    onDescartar: function () {},
+    onSuperficie: function () {},
+    onMudarJSON: function () {},
+  };
+  if (extra) Object.keys(extra).forEach(function (k) { props[k] = extra[k]; });
+  return T.PaginaConfig(props);
+}
+
+const arvorePagina = renderPagina();
+// O harness nao executa componentes-funcao: um `h((SecaoClassificador))` fica
+// como no com tag. Texto plano achata arrays (o `.map` de erros produz um).
+function textoPlano(no) {
+  if (no === null || no === undefined || no === false) return "";
+  if (typeof no === "string" || typeof no === "number") return String(no);
+  if (Array.isArray(no)) return no.map(textoPlano).join(" ");
+  if (!no.filhos) return "";
+  return no.filhos.map(textoPlano).join(" ");
+}
+const textoPagina = textoPlano(arvorePagina);
+
+check("pagina de configuracao: titulo proprio e nao o do painel",
+      textoPagina.indexOf("Configuração") !== -1 && textoPagina.indexOf("Model Manager") === -1);
+
+// A seccao que a pagina monta e exactamente a SecaoClassificador — e o que ela
+// desenha prova-se chamando-a com as props que a pagina lhe passa. Procurar os
+// titulos no texto da pagina nao provaria nada: o harness nao a expande.
+const noSecao = recolher(arvorePagina, function (no) {
+  return no.tag === "SecaoClassificador";
+})[0];
+check("pagina de configuracao: monta a seccao de configuracao",
+      !!noSecao && noSecao.props.configJSON === JSON.stringify(cfgSecao));
+const textoDaSecaoNaPagina = noSecao ? textoPlano(T.SecaoClassificador(noSecao.props)) : "";
+check("pagina de configuracao: tem os tres blocos de configuracao",
+      textoDaSecaoNaPagina.indexOf("Complexidade") !== -1
+      && textoDaSecaoNaPagina.indexOf("Estratégia") !== -1
+      && textoDaSecaoNaPagina.indexOf("Superfícies") !== -1);
+
+check("pagina de configuracao: o JSON da configuracao vive aqui",
+      textoPagina.indexOf("JSON da configuração") !== -1);
+check("pagina de configuracao: fechar grava — o botao diz gravar e voltar",
+      (textoPagina.indexOf("Gravar e voltar") !== -1)
+      && (textoPagina.indexOf("Descartar") !== -1));
+check("pagina de configuracao: nao mostra os cartoes de estado do painel",
+      textoPagina.indexOf("Registo de utilizacao") === -1);
+
+// Os botoes da pagina: os filhos vao no 3.o argumento do `h`. O stub do SDK
+// nao traz `components`, logo `Button` cai no fallback "button" (minusculo).
+const botoesPagina = recolher(arvorePagina, function (no) {
+  return no.tag === "Button" || no.tag === "button";
+});
+const rotulosBotoes = botoesPagina.map(function (b) { return textoPlano(b).trim(); });
+check("pagina de configuracao: tem validar, gravar e descartar",
+      rotulosBotoes.indexOf("Validar") !== -1
+      && rotulosBotoes.some(function (r) { return r.indexOf("Gravar e voltar") !== -1; })
+      && rotulosBotoes.indexOf("Descartar") !== -1, rotulosBotoes.join(" | "));
+check("pagina de configuracao: os erros de validacao aparecem no ecra",
+      textoPlano(renderPagina({ errosValidacao: ["perfis.default: tarefa desconhecida 'cron'"] }))
+        .indexOf("tarefa desconhecida") !== -1);
+check("pagina de configuracao: o erro de topo aparece no ecra",
+      textoPlano(renderPagina({ erro: "Configuração inválida" })).indexOf("Configuração inválida") !== -1);
+
+
 
 console.log("");
 if (falhas) {
