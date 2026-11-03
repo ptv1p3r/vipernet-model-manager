@@ -663,8 +663,9 @@ const cfgSecao = {
 };
 const arvoreSecao = renderSecao(cfgSecao, opcoesReais);
 
-check("render: o titulo diz que a estrategia esta na mesma seccao",
-      textoDaArvore(arvoreSecao).indexOf("Complexidade e estratégia") !== -1);
+check("render: dois blocos distintos — Complexidade e Estrategia",
+      textoDaArvore(arvoreSecao).indexOf("Complexidade") !== -1
+      && textoDaArvore(arvoreSecao).indexOf("Estratégia") !== -1);
 
 const seletoresModo = recolher(arvoreSecao, function (no) {
   return no.tag === "Seletor" && String(no.props && no.props.rotulo || "").indexOf("estratégia de") === 0;
@@ -714,13 +715,19 @@ check("render: o eixo da rotacao esta desactivado em prioridade", (function () {
 })(), "esperava pessoal desactivado e trabalho activo");
 check("render: ha um select de rotacao por linha", rotacaoSel.length === 3, "obtive " + rotacaoSel.length);
 
-// A seccao tem de estar montada nos DOIS sitios: no topo do painel (onde se ve)
-// e dentro do editor de configuracao (onde o dono a procura). Uma so fonte de
-// verdade — o mesmo configJSON.
+// A seccao vive SO dentro do editor de configuracao. Um cartao no topo do
+// painel misturava a configuracao com o estado e lia-se como "tudo junto":
+// o sitio de configurar e o editor, e so la.
 const srcPainel = fs.readFileSync(path.join(__dirname, "dist", "index.js"), "utf-8");
 const montagensSecao = (srcPainel.match(/h\(SecaoClassificador/g) || []).length;
-check("render: a seccao e montada no topo do painel e dentro do editor",
-      montagensSecao === 2, "obtive " + montagensSecao + " montagens");
+check("render: a seccao e montada uma so vez", montagensSecao === 1,
+      "obtive " + montagensSecao + " montagens");
+check("render: a seccao esta dentro do editor, nao no painel principal",
+      (function () {
+        const posEditor = srcPainel.indexOf("mostrarEditor && h(");
+        const posSecao = srcPainel.indexOf("h(SecaoClassificador");
+        return posEditor !== -1 && posSecao !== -1 && posSecao > posEditor;
+      })());
 
 check("render: com JSON invalido a seccao avisa em vez de desaparecer",
       textoDaArvore(T.SecaoClassificador({

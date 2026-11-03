@@ -378,17 +378,26 @@
   .vmm-grelha { grid-template-columns: 1fr; }
 }
 
-/* Classificador da complexidade: bloco dentro do editor. Uma linha por ambito
-   (global + um por perfil), alinhada em grelha para os selects e os campos
-   ficarem na mesma coluna. */
+/* Dois blocos distintos dentro do editor de configuracao: Complexidade
+   (quem decide o nivel) e Estrategia (como se escolhe o modelo dentro dele).
+   Cada bloco tem a sua moldura para nao se lerem como uma coisa so. */
 .vmm-classif {
   margin-bottom: 0.75rem;
+}
+
+.vmm-bloco {
+  margin-bottom: 0.6rem;
   padding: 0.6rem 0.7rem;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--muted, rgba(127, 127, 127, 0.06));
 }
 
+.vmm-bloco:last-child {
+  margin-bottom: 0;
+}
+
+.vmm-bloco-titulo,
 .vmm-classif-titulo {
   display: flex;
   flex-wrap: wrap;
@@ -397,12 +406,23 @@
   font-size: 0.85rem;
 }
 
+.vmm-versao-linha {
+  font-size: 0.72rem;
+  text-align: right;
+  margin-bottom: 0.35rem;
+}
+
 .vmm-classif-linha {
   display: grid;
-  grid-template-columns: minmax(9rem, 1.1fr) minmax(10rem, 1.2fr) minmax(7rem, 1fr) minmax(10rem, 1.6fr);
+  grid-template-columns: minmax(8rem, 1fr) repeat(auto-fit, minmax(8.5rem, 1fr));
   gap: 0.4rem;
   align-items: center;
   padding: 0.18rem 0;
+}
+
+/* A estrategia tem dois selects por linha, nao seis campos. */
+.vmm-linha-estrategia {
+  grid-template-columns: minmax(8rem, 1fr) minmax(11rem, 1.4fr) minmax(11rem, 1.4fr);
 }
 
 .vmm-classif-nome {
@@ -424,5 +444,6 @@
 }
 
 @media (max-width: 720px) {
-  .vmm-classif-linha { grid-template-columns: 1fr; }
+  .vmm-classif-linha,
+  .vmm-linha-estrategia { grid-template-columns: 1fr; }
 }
