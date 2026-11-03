@@ -687,8 +687,13 @@
                 { className: "vmm-modelo-campos" },
                 h(Campo, { rotulo: "id", ajuda: novo ? "obrigatório; único dentro do perfil" : "renomear parte as regras de superfície que lhe chamam pelo nome" },
                   h(EntradaTexto, { valor: form.id, rotulo: "id da rota", placeholder: "ex.: deepseek-flash", onChange: mudar("id") })),
-                h(Campo, { rotulo: "provider", ajuda: "openrouter, deepseek, inception, openai-codex…" },
-                  h(EntradaTexto, { valor: form.provider, rotulo: "provider", placeholder: "openrouter", onChange: mudar("provider") })),
+                h(Campo, { rotulo: "provider", ajuda: "lista fechada: os providers que a configuração já usa" },
+                  h(Seletor, {
+                    valor: form.provider,
+                    rotulo: "provider",
+                    opcoes: (opcoes.providers || []).map(function (p) { return { valor: p, rotulo: p }; }),
+                    onChange: mudar("provider"),
+                  })),
                 h(Campo, { rotulo: "modelo", ajuda: "o id exacto do modelo no provider" },
                   h(EntradaTexto, { valor: form.modelo, rotulo: "modelo", placeholder: "nvidia/nemotron-3.5-lightning:free", onChange: mudar("modelo") }))
               )

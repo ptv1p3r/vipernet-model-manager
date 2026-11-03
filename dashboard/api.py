@@ -965,11 +965,33 @@ def _perfil_servido() -> Optional[str]:
 #: validacao), nao de uma copia escrita aqui nem no JS: o que o painel mostra
 #: como escolha e o que o `gravar` aceita.
 def _opcoes_modelo() -> dict[str, Any]:
+    # Providers oferecidos ao painel: os que ja existem no ficheiro — em
+    # qualquer perfil e nos classificadores. Lista fechada, mas derivada da
+    # config: o plugin nao inventa providers que o dono nao usa.
+    provs: set[str] = set()
+    try:
+        cfg = _cfg()
+    except Exception:
+        cfg = {}
+    perfis_cfg = cfg.get("perfis") or {}
+    for bloco in perfis_cfg.values():
+        if not isinstance(bloco, dict):
+            continue
+        for m in bloco.get("catalogo") or []:
+            if isinstance(m, dict) and m.get("provider"):
+                provs.add(str(m["provider"]))
+        cl = ((bloco.get("analise") or {}).get("classificador") or {})
+        if isinstance(cl, dict) and cl.get("provider"):
+            provs.add(str(cl["provider"]))
+    cl_global = ((cfg.get("analise") or {}).get("classificador") or {})
+    if isinstance(cl_global, dict) and cl_global.get("provider"):
+        provs.add(str(cl_global["provider"]))
     return {
         "niveis": list(gestor.NIVEIS),
         "acessos": list(gestor.ACESSOS),
         "esforcos": list(gestor.ESFORCOS),
         "modalidades": list(gestor.MODALIDADES),
+        "providers": sorted(provs),
     }
 
 
