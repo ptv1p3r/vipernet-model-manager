@@ -31,6 +31,45 @@
   line-height: 1.5;
 }
 
+/* Identidade do plugin: versao, autor e repositorio publico. Discreta — e
+   informacao de rodape de cabecalho, nao um cartao de destaque. */
+.vmm-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.4rem;
+  font-size: 0.75rem;
+  color: hsl(var(--muted-foreground, 215 16% 47%));
+  font-variant-numeric: tabular-nums;
+}
+
+.vmm-meta-versao {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+  color: hsl(var(--foreground, 222 47% 11%));
+}
+
+.vmm-meta-sep {
+  opacity: 0.5;
+}
+
+.vmm-meta-link {
+  color: hsl(var(--primary, 221 83% 53%));
+  text-decoration: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.vmm-meta-link:hover {
+  text-decoration: underline;
+}
+
+/* Deriva entre plugin.yaml e manifest.json: visivel, porque um numero errado
+   aqui foi o que ja fez duvidar de que codigo estava a correr. */
+.vmm-meta-deriva {
+  color: hsl(var(--destructive, 0 72% 51%));
+}
+
 .vmm-accoes {
   display: flex;
   align-items: center;

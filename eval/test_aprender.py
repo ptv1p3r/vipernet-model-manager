@@ -10,12 +10,14 @@ conteudo e rotulou tudo `None`).
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 EVAL = Path(__file__).resolve().parent
@@ -685,8 +687,14 @@ class TestLeitorGold(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             raiz = self._eval_falso(d)
             original = A.EVAL
+            original_humano = A.GOLD_HUMANO
             try:
                 A.EVAL = raiz
+                # Isolar a pasta do gold humano: ela vive fora do repo e cresce
+                # com os rotulos novos — sem isto o teste media o ambiente, nao
+                # a funcao (falhou com 43 casos em vez de 3 quando a fila humana
+                # ganhou o gold1.jsonl).
+                A.GOLD_HUMANO = Path(d) / "sem-gold-humano"
                 nomes = [p.name for p in A._ficheiros_gold()]
                 self.assertEqual(nomes, ["gold.jsonl", "gold2.jsonl", "gold3.jsonl"])
                 casos = A._casos_gold()
@@ -695,6 +703,7 @@ class TestLeitorGold(unittest.TestCase):
                 self.assertIn("gold3.jsonl:p001", ids)
             finally:
                 A.EVAL = original
+                A.GOLD_HUMANO = original_humano
 
     def test_aceita_esperado_e_rotulo(self):
         with tempfile.TemporaryDirectory() as d:
@@ -715,13 +724,39 @@ class TestLeitorGold(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             raiz = self._eval_falso(d)
             original = A.EVAL
+            original_humano = A.GOLD_HUMANO
             try:
                 A.EVAL = raiz
+                A.GOLD_HUMANO = Path(d) / "sem-gold-humano"
                 shas = A._textos_gold()
                 self.assertIn(A._sha("renova o cert do nginx"), shas)
                 self.assertEqual(len(shas), 3)
             finally:
                 A.EVAL = original
+                A.GOLD_HUMANO = original_humano
+
+    def test_barreira_apanha_o_gold_humano_real(self):
+        """O gold humano tambem entra na barreira de contaminacao.
+
+        A fila rotulada e o que impede o treino de avaliar sobre o que ja viu;
+        se ela ficasse de fora da barreira, um caso repetido entre `eval/` e a
+        fila passava despercebido.
+        """
+        with tempfile.TemporaryDirectory() as h:
+            original_humano = A.GOLD_HUMANO
+            original_eval = A.EVAL
+            try:
+                A.GOLD_HUMANO = Path(h)
+                A.EVAL = Path(h)  # sem os gold do repo: conta-se so o humano
+                (Path(h) / "gold9.jsonl").write_text(
+                    json.dumps({"id": "h001", "texto": "renova o cert do nginx",
+                                "rotulo": "media"}) + "\n", encoding="utf-8")
+                shas = A._textos_gold()
+                self.assertEqual(len(shas), 1)
+                self.assertIn(A._sha("renova o cert do nginx"), shas)
+            finally:
+                A.GOLD_HUMANO = original_humano
+                A.EVAL = original_eval
 
     def test_le_o_gold_humano_fora_do_repositorio(self):
         """A fila rotulada sobre conversa real vive fora do repo publicado.
@@ -788,8 +823,11 @@ class TestJuizProibido(unittest.TestCase):
                 A.main()
         finally:
             argparse.ArgumentParser.parse_args = original
-        self.assertEqual(parser_defaults.get("juiz_modelo"), "deepseek-flash")
+        self.assertEqual(parser_defaults.get("juiz_modelo"), "mercury-3")
+        self.assertEqual(parser_defaults.get("juiz_provider"), "inception")
         self.assertIn("juiz_permitir_v4_pro", parser_defaults)
+        # o lote resolve-se depois do parse: `None` significa "decide pelo provider"
+        self.assertIsNone(parser_defaults.get("juiz_lote"))
 
     def test_guarda_recusa_v4_pro_sem_autorizacao(self):
         import subprocess
@@ -799,6 +837,264 @@ class TestJuizProibido(unittest.TestCase):
             capture_output=True, text=True, timeout=120)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("recusado", r.stdout)
+
+
+class TestJuizLote(unittest.TestCase):
+    """Rotulagem em lote: o mercury-3 recusa 130 pedidos por minuto.
+    Medido a 2026-11-03: 130 casos um a um com 4 threads deram HTTP 429 e a
+    corrida seguinte devolveu 0/130. O lote existe para isso; se ele perder
+    casos em silencio, o portao fecha por falta de corpus e a causa fica
+    invisivel.
+    """
+
+    def _casos(self, n):
+        return [{"id": f"c{i}", "texto": f"pedido {i}"} for i in range(n)]
+
+    def test_agrupa_no_tamanho_e_alinha_por_ordem(self):
+        vistos = []
+
+        class Falso:
+            def classificar_lote(self, textos, definicao, resolver, perfil=""):
+                vistos.append(len(textos))
+                return {"niveis": ["leve"] * len(textos), "erro": ""}
+
+        with unittest.mock.patch.object(A, "_modelo", lambda: Falso()), \
+                unittest.mock.patch.object(A.time, "sleep", lambda s: None):
+            r = A._etiquetar_lote(self._casos(25), {}, None, tamanho=10)
+        self.assertEqual(vistos, [10, 10, 5])
+        self.assertEqual([x["id"] for x in r], [f"c{i}" for i in range(25)])
+        self.assertTrue(all(x["rotulo"] == "leve" for x in r))
+
+    def test_repete_o_mesmo_lote_no_429_sem_perder_casos(self):
+        chamadas = []
+
+        class Falso:
+            def classificar_lote(self, textos, definicao, resolver, perfil=""):
+                chamadas.append(len(textos))
+                if len(chamadas) == 1:
+                    return {"niveis": [None] * len(textos),
+                            "erro": "HTTP 429: Rate limit reached"}
+                return {"niveis": ["media"] * len(textos), "erro": ""}
+
+        with unittest.mock.patch.object(A, "_modelo", lambda: Falso()), \
+                unittest.mock.patch.object(A.time, "sleep", lambda s: None):
+            r = A._etiquetar_lote(self._casos(10), {}, None, tamanho=10)
+        self.assertEqual(len(chamadas), 2, "o 429 tem de repetir o mesmo lote")
+        self.assertEqual(len(r), 10)
+        self.assertTrue(all(x["rotulo"] == "media" for x in r))
+
+    def test_falha_definitiva_marca_none_sem_derrubar_o_resto(self):
+        class Falso:
+            def __init__(self):
+                self.n = 0
+
+            def classificar_lote(self, textos, definicao, resolver, perfil=""):
+                self.n += 1
+                # as 3 tentativas do primeiro lote falham (nao e 429, logo recuo curto)
+                if self.n <= 3:
+                    return {"niveis": [None] * len(textos), "erro": "HTTP 500: boom"}
+                return {"niveis": ["alta"] * len(textos), "erro": ""}
+
+        with unittest.mock.patch.object(A, "_modelo", lambda: Falso()), \
+                unittest.mock.patch.object(A.time, "sleep", lambda s: None):
+            r = A._etiquetar_lote(self._casos(20), {}, None, tamanho=10)
+        self.assertEqual(len(r), 20)
+        self.assertTrue(all(x["rotulo"] is None for x in r[:10]))
+        self.assertTrue(all(x["rotulo"] == "alta" for x in r[10:]))
+
+    def test_nivel_invalido_no_lote_nao_vira_rotulo(self):
+        class Falso:
+            def classificar_lote(self, textos, definicao, resolver, perfil=""):
+                return {"niveis": ["leve", "enorme", None], "erro": ""}
+
+        with unittest.mock.patch.object(A, "_modelo", lambda: Falso()), \
+                unittest.mock.patch.object(A.time, "sleep", lambda s: None):
+            r = A._etiquetar_lote(self._casos(3), {}, None, tamanho=10)
+        self.assertEqual([x["rotulo"] for x in r], ["leve", None, None])
+
+    def test_lote_por_omissao_decide_pelo_provider(self):
+        self.assertEqual(A._lote_juiz("inception", None), A.JUIZ_LOTE_PADRAO)
+        self.assertEqual(A._lote_juiz("deepseek", None), 0)
+
+    def test_lote_explicito_ganha_ao_provider(self):
+        self.assertEqual(A._lote_juiz("inception", 0), 0)
+        self.assertEqual(A._lote_juiz("deepseek", 5), 5)
+        self.assertEqual(A._lote_juiz("inception", -3), 0)
+
+    def test_lote_zero_usa_o_caminho_um_a_um(self):
+        chamadas = []
+
+        def falso(*a):
+            chamadas.append(a[3])
+            return [{"id": "x"}]
+
+        with unittest.mock.patch.object(A, "_etiquetar_um_a_um", falso):
+            r = A._etiquetar(self._casos(1), {}, None, 4, 0)
+        self.assertEqual(chamadas, [4])
+        self.assertEqual(r, [{"id": "x"}])
+
+    def test_lote_positivo_usa_o_caminho_do_lote(self):
+        chamadas = []
+
+        def falso(*a, **k):
+            chamadas.append(k.get("tamanho"))
+            return [{"id": "y"}]
+
+        with unittest.mock.patch.object(A, "_etiquetar_lote", falso):
+            r = A._etiquetar(self._casos(1), {}, None, 4, 10)
+        self.assertEqual(chamadas, [10])
+        self.assertEqual(r, [{"id": "y"}])
+
+
+class TestJuizVotos(unittest.TestCase):
+    """O juiz como comite: maioria, disputa declarada e chao de cobertura.
+
+    O que se prova aqui e o que faz a diferenca entre medir e acreditar: que a
+    maioria e contada por caso e nao por lote, que um caso dividido fica
+    declarado em vez de desempatado a sorte, que as passagens baralham a ordem
+    (senao um erro de composicao do lote repetia-se igual tres vezes) e que o
+    portao fecha quando o juiz compra kappa a troca de nao decidir.
+    """
+
+    def _casos(self, n=3):
+        return [{"id": f"c{i}", "texto": f"x{i}"} for i in range(n)]
+
+    @staticmethod
+    def _m(macro, media_f1, leve_f1=0.5, alta_f1=0.5):
+        return {"macro_f1": macro, "acerto": macro, "n": 50,
+                "por_classe": {"leve": {"f1": leve_f1}, "media": {"f1": media_f1},
+                               "alta": {"f1": alta_f1}}}
+
+    def test_um_voto_e_o_caminho_historico(self):
+        chamadas = []
+
+        def falso(casos, *a, **k):
+            chamadas.append(len(casos))
+            return [{"id": c["id"], "rotulo": "media"} for c in casos]
+
+        with unittest.mock.patch.object(A, "_etiquetar", falso):
+            agg, passagens, meta = A._etiquetar_votos(self._casos(2), {}, None, 4, 0, 1)
+        self.assertEqual(chamadas, [2])
+        self.assertEqual(passagens, [])
+        self.assertEqual(meta["votos"], 1)
+        self.assertEqual([r["rotulo"] for r in agg], ["media", "media"])
+
+    def test_maioria_de_tres_aceita_o_rotulo_vencedor(self):
+        fila = ["alta", "alta", "media"]
+
+        def falso(casos, *a, **k):
+            n = fila.pop(0)
+            return [{"id": c["id"], "rotulo": n} for c in casos]
+
+        with unittest.mock.patch.object(A, "_etiquetar", falso):
+            agg, passagens, meta = A._etiquetar_votos(self._casos(1), {}, None, 4, 0, 3)
+        self.assertEqual(len(passagens), 3)
+        self.assertEqual(agg[0]["rotulo"], "alta")
+        self.assertEqual(agg[0]["acordo"], 2)
+        self.assertEqual(agg[0]["votos"], 3)
+        self.assertIsNone(agg[0]["disputa"])
+
+    def test_sem_maioria_nao_inventa_desempate(self):
+        fila = ["leve", "media", "alta"]
+
+        def falso(casos, *a, **k):
+            n = fila.pop(0)
+            return [{"id": c["id"], "rotulo": n} for c in casos]
+
+        with unittest.mock.patch.object(A, "_etiquetar", falso):
+            agg, _, _ = A._etiquetar_votos(self._casos(1), {}, None, 4, 0, 3, acordo_min=2)
+        self.assertIsNone(agg[0]["rotulo"])
+        self.assertEqual(agg[0]["disputa"], {"leve": 1, "media": 1, "alta": 1})
+
+    def test_voto_em_falta_nao_impede_maioria(self):
+        fila = ["media", "media", None]
+
+        def falso(casos, *a, **k):
+            n = fila.pop(0)
+            return [{"id": c["id"], "rotulo": n} for c in casos]
+
+        with unittest.mock.patch.object(A, "_etiquetar", falso):
+            agg, _, _ = A._etiquetar_votos(self._casos(1), {}, None, 4, 0, 3)
+        self.assertEqual(agg[0]["rotulo"], "media")
+        self.assertEqual(agg[0]["votos"], 2)
+
+    def test_nenhum_voto_valido_fica_com_erro(self):
+        def falso(casos, *a, **k):
+            return [{"id": c["id"], "rotulo": None} for c in casos]
+
+        with unittest.mock.patch.object(A, "_etiquetar", falso):
+            agg, _, _ = A._etiquetar_votos(self._casos(1), {}, None, 4, 0, 2)
+        self.assertIsNone(agg[0]["rotulo"])
+        self.assertEqual(agg[0]["erro"], "sem voto valido")
+
+    def test_passagens_baralham_a_ordem(self):
+        """Sem baralhar, um erro de composicao do lote repete-se nas 3 passagens."""
+        ordens = []
+
+        def falso(casos, *a, **k):
+            ordens.append([c["id"] for c in casos])
+            return [{"id": c["id"], "rotulo": "leve"} for c in casos]
+
+        with unittest.mock.patch.object(A, "_etiquetar", falso):
+            A._etiquetar_votos(self._casos(12), {}, None, 4, 0, 3)
+        self.assertEqual(len(ordens), 3)
+        self.assertTrue(any(o != ordens[0] for o in ordens[1:]),
+                        "as passagens usaram a mesma ordem: a votacao nao decorrelaciona")
+
+    def test_calibrar_devolve_rasto_das_passagens(self):
+        """O rasto tem de permitir ver votos-contra-um-voto na mesma corrida."""
+        tipos = argparse.Namespace(threads=4, juiz_lote=0, juiz_votos=3,
+                                   juiz_acordo_min=2, semente=1)
+        gold = [{"id": "1", "rotulo": "leve", "texto": "a"},
+                {"id": "2", "rotulo": "alta", "texto": "b"}]
+
+        def falso(casos, *a, **k):
+            return [{"id": c["id"], "rotulo": c["rotulo"]} for c in casos]
+
+        with unittest.mock.patch.object(A, "_etiquetar", falso):
+            k, cal, rot = A._calibrar_juiz(gold, {}, None, tipos)
+        self.assertEqual(k["kappa"], 1.0)
+        self.assertEqual(cal["cobertura"], 1.0)
+        self.assertEqual(cal["sem_acordo"], 0)
+        self.assertEqual(len(cal["por_passagem"]), 3)
+        self.assertEqual(len(cal["fronteiras_por_passagem"]), 3)
+        self.assertIn("alta", cal["fronteiras"])
+
+    def test_calibrar_conta_cobertura_pelos_casos_que_decidiu(self):
+        tipos = argparse.Namespace(threads=4, juiz_lote=0, juiz_votos=3,
+                                   juiz_acordo_min=2, semente=1)
+        gold = [{"id": "1", "rotulo": "leve"}, {"id": "2", "rotulo": "media"}]
+        fila = [{"1": "leve", "2": "leve"}, {"1": "media", "2": "media"},
+                {"1": "alta", "2": "media"}]
+
+        def falso(casos, *a, **k):
+            mapa = fila.pop(0)
+            return [{"id": c["id"], "rotulo": mapa[c["id"]]} for c in casos]
+
+        with unittest.mock.patch.object(A, "_etiquetar", falso):
+            _, cal, _ = A._calibrar_juiz(gold, {}, None, tipos)
+        self.assertEqual(cal["cobertura"], 0.5)
+        self.assertEqual(cal["sem_acordo"], 1)
+
+    def test_portao_fecha_por_cobertura(self):
+        ok, razoes = A.portoes({"kappa": 0.9, "n": 100},
+                               self._m(0.5, 0.4), self._m(0.6, 0.5), 0.6, 0.0,
+                               cobertura=0.5, cobertura_minima=0.85)
+        self.assertFalse(ok)
+        self.assertTrue(any("cobertura" in r for r in razoes), razoes)
+
+    def test_portao_aceita_kappa_alto_com_cobertura_suficiente(self):
+        ok, razoes = A.portoes({"kappa": 0.9, "n": 100},
+                               self._m(0.5, 0.4), self._m(0.6, 0.5), 0.6, 0.0,
+                               cobertura=0.95, cobertura_minima=0.85)
+        self.assertTrue(ok, razoes)
+
+    def test_cobertura_ausente_nao_fecha_o_portao(self):
+        """--so-treinar nao mede juiz: sem cobertura, o chao nao se aplica."""
+        ok, razoes = A.portoes({"kappa": 0.9, "n": 100},
+                               self._m(0.5, 0.4), self._m(0.6, 0.5), 0.6, 0.0,
+                               cobertura=None, cobertura_minima=0.85)
+        self.assertTrue(ok, razoes)
 
 
 if __name__ == "__main__":

@@ -31,6 +31,57 @@
   const NOME = "vipernet-model-manager";
   const BASE = "/api/plugins/" + NOME;
 
+  // Identidade do plugin para o cabecalho. Pura e testavel sem browser: o
+  // endpoint manda `plugin` com a versao do plugin.yaml, o autor e o
+  // repositorio publico; aqui so se decide o que mostrar e se ha deriva entre
+  // a versao do plugin e a do manifest do painel.
+  function metaPlugin(estado) {
+    var p = (estado && estado.plugin) || {};
+    var versao = p.versao || "";
+    var manifest = p.versao_manifest || (estado && estado.versao_painel) || "";
+    return {
+      versao: versao || "—",
+      autor: p.autor || "—",
+      github: p.github || "",
+      manifest: manifest || "—",
+      divergente: !!(versao && manifest && versao !== manifest),
+    };
+  }
+
+  // Cabecalho de identidade: versao do plugin, autor e repositorio publico.
+  // Vive fora do componente para se testar com dados reais sem um React a
+  // serio — o componente limita-se a chama-la.
+  function linhaIdentidade(meta) {
+    return h(
+      "div",
+      { className: "vmm-meta" },
+      h("span", { className: "vmm-meta-versao" }, "v" + meta.versao),
+      h("span", { className: "vmm-meta-sep" }, "·"),
+      h("span", { className: "vmm-meta-autor" }, meta.autor),
+      meta.github ? h("span", { className: "vmm-meta-sep" }, "·") : null,
+      meta.github
+        ? h(
+            "a",
+            {
+              className: "vmm-meta-link",
+              href: meta.github,
+              target: "_blank",
+              rel: "noopener noreferrer",
+              title: "Repositorio publico do autor",
+            },
+            meta.github.replace(/^https?:\/\/(www\.)?github\.com\//, "github.com/")
+          )
+        : null,
+      meta.divergente
+        ? h(
+            "span",
+            { className: "vmm-meta-deriva", title: "plugin.yaml e manifest.json divergem" },
+            " · painel v" + meta.manifest
+          )
+        : null
+    );
+  }
+
   function pedir(caminho, opcoes) {
     var opts = Object.assign({}, opcoes || {});
     // O SDK.fetchJSON entrega o init tal e qual ao fetch(): um body objecto vira a
@@ -161,14 +212,55 @@
     if (c.modo === "modelo") {
       const onde = c.origem === "proprio" ? "próprio do perfil" : "herdado do global";
       const extra = [];
-      if (c.esforco) extra.push("esforço " + c.esforco);
-      // O formato so se mostra quando nao e o de fabrica: `auto` e o normal e
-      // nao vale um chip. `texto` e uma escolha, e essa ve-se.
-      if (c.formato_json && c.formato_json !== "auto") extra.push("formato " + c.formato_json);
+      // Com o transporte de decisoes o esforco e o formato nao existem: o modelo
+      // devolve escolha e confianca, nao texto livre. Mostrar "esforço baixo"
+      // seria descrever uma alavanca que nao esta ligada a nada.
+      if (c.via === "decisoes") {
+        extra.push("via decisões");
+        if (c.confianca_min) extra.push("confiança ≥ " + c.confianca_min);
+      } else {
+        if (c.esforco) extra.push("esforço " + c.esforco);
+        // O formato so se mostra quando nao e o de fabrica: `auto` e o normal e
+        // nao vale um chip. `texto` e uma escolha, e essa ve-se.
+        if (c.formato_json && c.formato_json !== "auto") extra.push("formato " + c.formato_json);
+      }
       extra.push(onde);
       if (motivoConfig) extra.push("sem efeito — " + motivoConfig);
       if (rasto.lido) {
-        extra.push("leu " + rasto.lido + (rasto.ms ? " em " + Math.round(rasto.ms) + " ms" : ""));
+        const conf = rasto.confianca;
+        const confTxt = (typeof conf === "number") ? " (" + Math.round(conf * 100) + "%)" : "";
+        extra.push("leu " + rasto.lido + confTxt
+          + (rasto.ms ? " em " + Math.round(rasto.ms) + " ms" : ""));
+      }
+      // Uma leitura de outro classificador (ou anterior ao erro actual) nao e
+      // estado: vai rotulada como historico, com a idade e quem a produziu.
+      // Sem isto o cartao dizia "sem efeito — provider indisponivel · leu alta
+      // em 1355 ms" — duas verdades de momentos diferentes na mesma linha.
+      const hist = a.historico || null;
+      if (hist && hist.lido) {
+        const idade = hist.idade_s;
+        const quando = idade == null ? ""
+          : (idade < 90 ? " há " + Math.round(idade) + " s"
+            : idade < 5400 ? " há " + Math.round(idade / 60) + " min"
+            : " há " + Math.round(idade / 3600) + " h");
+        extra.push("histórico: " + hist.lido + quando
+          + " com " + (hist.provider || "?") + "/" + (hist.modelo || "?"));
+      }
+      // Um motivo antigo tambem e historia. A config mudou depois dele, ou
+      // passou tempo sem um turno que o confirmasse: apresentá-lo como «sem
+      // efeito» de hoje foi o que manteve no cartão, durante duas horas, um
+      // erro de provider que já não existia.
+      if (!motivoConfig && hist && hist.motivo_antigo && hist.motivo_antigo.motivo) {
+        const idadeM = hist.motivo_antigo.idade_s;
+        const quandoM = idadeM == null ? ""
+          : (idadeM < 90 ? " há " + Math.round(idadeM) + " s"
+            : idadeM < 5400 ? " há " + Math.round(idadeM / 60) + " min"
+            : " há " + Math.round(idadeM / 3600) + " h");
+        // Só a etiqueta do motivo (antes do «:»): o texto completo do erro do
+        // provider é uma linha de traceback que nao cabe num cartao.
+        const etiqueta = String(hist.motivo_antigo.motivo).split(":")[0];
+        extra.push("histórico: " + etiqueta + quandoM
+          + " — " + (hist.motivo_antigo.porque || "desactualizado"));
       }
       return {
         modo: "modelo",
@@ -572,6 +664,9 @@
     const [aCarregar, setACarregar] = useState(false);
     const [mostrarEditor, setMostrarEditor] = useState(false);
     const [configJSON, setConfigJSON] = useState("");
+    // Versao do config que este editor leu: volta no "Gravar" para o servidor
+    // poder recusar uma gravacao baseada em estado antigo.
+    const [configRev, setConfigRev] = useState("");
     const [errosValidacao, setErrosValidacao] = useState([]);
     const [aValidar, setAValidar] = useState(false);
     // Mensagem de sucesso da ultima validacao/gravacao (null = sem aviso).
@@ -607,7 +702,14 @@
 
     function carregarConfig() {
       pedir("/config")
-        .then(function (c) { setConfigJSON(JSON.stringify(c, null, 2)); setErrosValidacao([]); })
+        .then(function (r) {
+          // O backend devolve {"config": ..., "rev": ...}; o rev volta no
+          // "Gravar" para que esta aba nao apague o que outra escreveu.
+          const c = (r && r.config) ? r.config : r;
+          setConfigJSON(JSON.stringify(c, null, 2));
+          setConfigRev((r && r.rev) ? String(r.rev) : "");
+          setErrosValidacao([]);
+        })
         .catch(function (e) { setErro("Erro ao carregar config: " + String(e && e.message ? e.message : e)); });
     }
 
@@ -667,15 +769,30 @@
         if (cfg === null || typeof cfg !== "object" || Array.isArray(cfg)) {
           throw new Error("O JSON deve ser um objecto (não array, não null, não string)");
         }
-        pedir("/config", { method: "POST", body: cfg })
-          .then(function () {
+        // Envia-se a versao que esta aba leu. Se o config mudou entretanto
+        // (outra aba, o CLI, o ciclo), o servidor recusa com 409 em vez de
+        // deixar esta aba repor o passado.
+        pedir("/config", { method: "POST", body: { config: cfg, rev: configRev } })
+          .then(function (r) {
+            setConfigRev((r && r.rev) ? String(r.rev) : "");
             setMostrarEditor(false);
             setConfigJSON("");
             setErrosValidacao([]);
             setValidacaoOk("Configuração gravada com sucesso — o gestor já a lê");
             carregar();
           })
-          .catch(function (e) { setErro("Erro ao salvar: " + String(e && e.message ? e.message : e)); });
+          .catch(function (e) {
+            const msg = String(e && e.message ? e.message : e);
+            if (msg.indexOf("409") !== -1) {
+              setValidacaoOk(null);
+              setErro("A configuração foi alterada noutro sítio desde que abriu este editor "
+                + "— recarreguei a versão actual. Reveja o que quer mudar e grave outra vez.");
+              carregarConfig();
+              carregar();
+              return;
+            }
+            setErro("Erro ao salvar: " + msg);
+          });
       } catch (e) {
         setErro("JSON inválido: " + String(e && e.message ? e.message : e));
       }
@@ -694,6 +811,8 @@
 
     const perfis = (estado && estado.perfis) || {};
     const nomes = Object.keys(perfis);
+    // Calculado uma vez: a identidade nao muda a meio de um render.
+    const meta = metaPlugin(estado);
 
     return h(
       "div",
@@ -710,7 +829,10 @@
             { className: "vmm-sub" },
             "Escolhe provider e modelo por complexidade do trabalho e por tipo de tarefa, dentro do catalogo de cada perfil. ",
             "O modelo que serviu cada turno fica registado em baixo."
-          )
+          ),
+          // Identidade do plugin. A versao vem do plugin.yaml (a mesma que o
+          // loader e o catalogo leem) e nao de uma copia escrita a mao aqui.
+          linhaIdentidade(meta)
         ),
         h(
           "div",
@@ -859,8 +981,10 @@
       ),
 
       h("div", { className: "vmm-pe vmm-mudo" },
-        "Catalogo e associacoes de tarefa vivem em plugin-data/vipernet-model-manager/config.json — este painel permite editar a configuração. Versao do painel: " +
-        ((estado && estado.versao_painel) || "—"))
+        "Catalogo e associacoes de tarefa vivem em plugin-data/vipernet-model-manager/config.json — este painel permite editar a configuração. Versao do plugin: " +
+        meta.versao + " · painel: " + meta.manifest +
+        " · autor: " + meta.autor +
+        (meta.github ? " · " + meta.github : ""))
     );
   }
 
@@ -875,5 +999,7 @@
     window.__VMM_TEST__.comBloco = comBloco;
     window.__VMM_TEST__.paresModelo = paresModelo;
     window.__VMM_TEST__.rotuloAnalise = rotuloAnalise;
+    window.__VMM_TEST__.metaPlugin = metaPlugin;
+    window.__VMM_TEST__.linhaIdentidade = linhaIdentidade;
   }
 })();

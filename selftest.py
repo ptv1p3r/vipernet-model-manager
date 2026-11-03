@@ -1209,7 +1209,7 @@ def testes_indicador_analise() -> None:
     LIGADO = {"activo": True, "provider": "inception", "modelo": "mercury-3",
               "esforco": "baixo"}
     CHAVES = {"modo", "activo", "provider", "modelo", "esforco", "formato_json",
-              "origem", "motivo"}
+              "via", "confianca_min", "origem", "motivo"}
     def cfg(global_c=None, pessoal_c=None, com_global=True):
         base = _cfg_base()
         if com_global:
@@ -1231,6 +1231,17 @@ def testes_indicador_analise() -> None:
           and c["modelo"] == "mercury-3" and c["esforco"] == "baixo", str(c))
     check("indicador: modelo utilizavel nao tem motivo", c["motivo"] == "", str(c))
     check("indicador: devolve sempre as mesmas chaves", set(c) == CHAVES, str(sorted(c)))
+    # Transporte de decisoes: as chaves sao as mesmas (o frontend nao ganha dois
+    # caminhos), o esforco deixa de ser mostrado e a confianca passa a existir.
+    c_dec = ind(cfg(global_c={"activo": True, "provider": "openrouter",
+                              "modelo": "~typesafe/jev-latest", "via": "decisoes",
+                              "confianca_min": 0.7}), "pessoal")
+    check("indicador: transporte de decisoes chega ao indicador",
+          c_dec["via"] == "decisoes" and c_dec["confianca_min"] == 0.7
+          and set(c_dec) == CHAVES, str(c_dec))
+    check("indicador: transporte por omissao e o chat",
+          ind(cfg(), "pessoal")["via"] == "chat" and ind(cfg(), "pessoal")["confianca_min"] == 0.0,
+          str(ind(cfg(), "pessoal")))
 
     # 2. o perfil desliga o que o global liga
     c = ind(cfg(pessoal_c={"activo": False, "provider": "inception",

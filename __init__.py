@@ -815,10 +815,20 @@ def middleware_llm_request(
                     "tarefa": tarefa, "score": None, "sinais": None,
                     "turno": identificador_turno, "passo": passo,
                     "pin": "reutilizado", "fonte_turno": fonte_turno}
-            if pin.get("classificador"):
+            if pin.get("classificador") and (pin["classificador"] or {}).get("lido"):
+                # So a leitura se herda. Uma falha nao se herda: o cartao conta
+                # uma falha por (ts, tipo) e cada passo tem o seu `ts`, logo o
+                # mesmo TimeoutError do passo 1 era contado uma vez por passo.
                 base["classificador"] = pin["classificador"]
             if pin.get("classificador_erro"):
-                base["classificador_erro"] = pin["classificador_erro"]
+                # A falha aconteceu no PRIMEIRO pedido do turno e ja foi
+                # registada la. Repehti-la em cada passo fazia um turno de 14
+                # pedidos parecer 14 falhas — medido a 2026-11-03: 14 eventos,
+                # um turno, o cartao a dizer "falhou ha instantes" durante tres
+                # minutos e a taxa do classificador a mentir. O erro propaga-se
+                # como referencia (o cartao continua a saber que o classificador
+                # esta em baixo neste turno), mas nao como uma falha nova.
+                base["classificador_erro_herdado"] = pin["classificador_erro"]
         else:
             decisao = _analise_mod.decidir(
                 mensagens,

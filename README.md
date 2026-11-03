@@ -41,18 +41,28 @@ perfil ao valor do dia e deixava de acompanhar mudancas do global).
 
 ```json
 "classificador": {
-  "activo": false, "provider": "deepseek", "modelo": "deepseek-flash",
-  "timeout_s": 8.0, "max_tokens": 320, "cache_ttl_s": 600,
+  "activo": true, "provider": "inception", "modelo": "mercury-3",
+  "timeout_s": 12.0, "max_tokens": 320, "cache_ttl_s": 600,
   "janela_mensagens": 8, "max_chars": 4000
 }
 ```
 
 **Fail-open por desenho**: erro de rede, `HTTP != 200`, resposta sem um dos tres
 niveis, ou `timeout_s` excedido devolvem `None` — decide a heuristica e o motivo
-fica em `classificador_erro` no ledger. Tres falhas seguidas abrem disjuntor e
-param de tentar (nao se paga uma chamada falhada em cada turno). A resposta e
-descarregada por `max_tokens` (320) e a mesma ultima mensagem nao e paga duas
-vezes dentro de `cache_ttl_s`.
+fica em `classificador_erro` no ledger. O disjuntor abre de duas maneiras
+diferentes, porque as falhas nao custam o mesmo: **um timeout suspende a
+primeira** (custa o `timeout_s` inteiro em latencia do turno, e a heuristica
+responde em 0 ms; esperar tres vezes para ouvir o que a primeira ja disse e pagar
+3x por nada — medido a 2026-11-03: quatro falhas em 45 s no perfil `pessoal` a
+8 s de timeout), e tres falhas de outro tipo (5xx, resposta ilegivel) suspendem
+como antes. A resposta e descarregada por `max_tokens` (320) e a mesma ultima
+mensagem nao e paga duas vezes dentro de `cache_ttl_s`.
+
+**Uma falha e uma falha, nao uma por pedido do turno**: o nivel fica pinado no
+turno, e o erro tambem. So o evento do primeiro pedido carrega
+`classificador_erro`; os seguintes levam `classificador_erro_herdado` e nao
+contam para a taxa. Sem isto, um turno de 14 pedidos (medido a 2026-11-03, perfil
+`default`) aparecia como 14 falhas no cartao e na contabilidade.
 
 **Orcamento de saida e modelos de raciocinio** (medido 2026-11-02): o
 `deepseek-flash` pensa antes de responder. Com `max_tokens: 12`, os 12 tokens de
@@ -66,10 +76,26 @@ Ligar/desligar, sem editar JSON:
 
 ```sh
 vmm classificador                            # estado efectivo por perfil
-vmm classificador on --provider deepseek --modelo deepseek-flash
+vmm classificador on --provider inception --modelo mercury-3
 vmm classificador off --perfil pessoal       # desliga so neste perfil
 vmm classificador on --perfil trabalho --provider openrouter --modelo x/y
 ```
+
+**O provider do classificador tem de existir no perfil servido** (medido
+2026-11-03). O classificador resolve-se com o `config.yaml` do **perfil**, não
+com o do processo: um `inception/mercury-3` que funciona no `default` falha no
+`pessoal` com `AuthError: Unknown provider 'inception'` enquanto o bloco
+`providers.inception` não estiver declarado lá — `hermes -p pessoal config set
+providers.inception.{name,base_url,key_env,api_mode,default_model}`, com
+`key_env: INCEPTION_API_KEY` e `api_mode: chat_completions`. Um erro destes é
+`sem_efeito` com `motivo` e suspensão de 1 h, não falha transitória: não abre o
+disjuntor nem conta para a taxa. A chave vem das fontes de segredos para o
+processo do gateway, não do `.env` do perfil.
+
+Estado actual: o global é `inception/mercury-3` e os três perfis herdam-no. Um
+perfil que queira outro modelo declara o seu próprio bloco — a partir daí fica
+`próprio do perfil` e deixa de acompanhar o global, que é o preço de não ter uma
+cópia a fingir de herança.
 
 No painel, a seccao **Analise da complexidade** (dentro do editor) tem uma linha
 por ambito — global e cada perfil — com tres estados por perfil: *herdar do
@@ -168,8 +194,29 @@ leitura.
 O host descobre painéis por `<plugins root>/<nome>/dashboard/manifest.json`; a cache
 de descoberta do processo do dashboard **não** se invalida sozinha quando aparece um
 painel novo — depois de instalar, reiniciar o contentor do dashboard (ou forçar
-`/api/dashboard/plugins/rescan`). Alterações ao `api.py` também só entram no
-arranque: o router é montado uma vez. A config do agente é lida a quente (TTL 5 s).
+`/api/dashboard/plugins/rescan`). Os ficheiros de `dist/` são servidos do disco a
+cada pedido: mudam com um refresh do browser, sem reiniciar nada (medido: sha256 do
+asset servido igual ao do ficheiro local). O `api.py` é outra história: entra quando
+o backend do painel carrega o módulo — no arranque do contentor e na recarga do
+plugin (`reload_gateway_plugins`, por perfil num gateway multiplexado). Não se
+distingue qual dos dois valeu por `curl`: `/api/plugins/<nome>/*` responde `401` do
+gate de sessão a pedidos de fora, com ou sem basic-auth, pelo que a verificação do
+backend se faz pelo caminho autenticado (o painel no browser) ou em processo, com o
+mesmo ficheiro. A config do agente é lida a quente (TTL 5 s).
+
+### Identidade no cabeçalho (3.13.8)
+
+O cabeçalho mostra `v<versão> · <autor> · github.com/<conta>`, com o repositório
+como ligação. A versão **não** é uma cópia escrita no JS: `GET /estado` devolve
+`plugin` com `versao` lida do `plugin.yaml` — o mesmo ficheiro que o loader e o
+catálogo leem —, `autor` e `github`. Se o `version` do `manifest.json` divergir do
+`plugin.yaml`, o cabeçalho mostra os dois números a vermelho em vez de escolher um
+em silêncio: foi essa divergência (painel 3.11.2 com o disco em 3.11.3) que já fez
+duvidar de que código estava a correr.
+
+`github` é o repositório público do autor, e não o Gitea interno: o catálogo exige
+um repositório público clonável por https em GitHub ou GitLab [1], pelo que o
+endereço que o painel mostra é o que serve uma submissão.
 
 ### Indicador da análise por cartão (3.7)
 
@@ -180,7 +227,7 @@ chip dizem o modo; o texto diz o resto:
 | o que se vê | significado |
 |---|---|
 | `modelo · inception/mercury-3` + `esforço baixo · herdado do global` | o perfil não declara bloco e usa o global |
-| `modelo · deepseek/deepseek-flash` + `próprio do perfil` | o perfil declara o seu próprio classificador |
+| `modelo · inception/mercury-3` + `próprio do perfil` | o perfil declara o seu próprio classificador |
 | `heurística` + `classificador desligado — decide a heurística` | existe bloco, mas `activo: false` |
 | `heurística` + `classificador sem efeito (…) — decide a heurística` | bloco declarado que não passa a validação |
 | `heurística` + `sem modelo definido` | ninguém declarou nada, em nenhum âmbito |
@@ -263,6 +310,102 @@ Ficheiro vivo: `/opt/data/plugin-data/vipernet-model-manager/config.json`
 - Perfil `"*"` serve de omissão para perfis não listados; um perfil exacto ganha
   sobre o `*`.
 - Sem perfil na config e sem `*`: **não gerido** — o turno segue intacto.
+
+### Política do nível `alta` (decisão do dono, 2026-11-03)
+
+O nível `alta` resolve a **`deepseek/deepseek-flash` nos três perfis**, e é a
+única rota de `alta` declarada no catálogo. A consequência tem de ser lida antes
+de mexer: **não existe no catálogo um modelo acima do flash**, logo `alta` não
+significa «modelo melhor» — significa «o modelo pago, sem descer aos free». O
+ganho do classificador é de **custo, não de qualidade**: em `leve`/`media` a rota
+pode rodar para um modelo free; em `alta` não desce.
+
+Quem editar o catálogo, duas regras:
+
+- **Não acrescentar `alta` a outra entrada sem decisão explícita do dono.** Se um
+  modelo free declarar `alta`, o rodízio passa a poder servir `alta` com um free e
+  o nível deixa de garantir o flash. Foi o que aconteceu antes de 2026-11-03: 224
+  eventos de `alta` servidos por `thinkingmachines/inkling:free` no ledger, todos
+  com `motor` ausente (histórico anterior ao marcador), e zero depois.
+- **`deepseek-v4-pro` está proibido** (decisão do dono, 2026-11-03) — fora do
+  catálogo, fora dos catálogos por omissão do `gestor.py` e fora do juiz de
+  `eval/aprender.py` sem `--juiz-permitir-v4-pro` (guard que devolve rc 2).
+
+Se `deepseek` falhar, `alta` não tem segunda rota: a degradação desce um nível e
+o turno segue num modelo de `media`, com `degradado_de` no ledger. É o
+comportamento desejado — mas é uma dependência de um só provider, e deve ser
+lembrada quando se decidir o catálogo.
+
+### Juiz do ciclo de aprendizagem
+
+O juiz que rotula o corpus de treino é **`inception/mercury-3`** (decisão do dono,
+2026-11-03): alinha com o classificador e tira o deepseek de todas as funções do
+ciclo. `--juiz-provider deepseek` continua disponível como alternativa, e o
+`deepseek-v4-pro` continua bloqueado pelo guard de rc 2. O juiz **não** decide o
+nível de nenhum turno — só rotula o corpus — e não é o mesmo que o modelo da
+resposta.
+
+Duas coisas medidas, que quem mexer aqui tem de saber:
+
+- **O `mercury-3` limita pedidos por minuto.** Medi a 2026-11-03: 130 casos um a
+  um com 4 threads deram `HTTP 429 too many requests per minute`, e a corrida
+  seguinte devolveu **0/130** — o limite é por minuto e o arranque em rajada
+  esgota-o. Vinte pedidos espaçados de 3 s passam todos. Por isso o juiz rotula
+  **em lotes de 10** (`_etiquetar_lote`, `--juiz-lote`, por omissão 10 quando o
+  provider é `inception`): 13 pedidos, 130/130 respondidos em todas as corridas,
+  ~100 s. Um 429 espera e repete o **mesmo** lote; tratá-lo como falha definitiva
+  apagava o corpus e o portão fechava por falta de casos comuns, não por
+  discordância.
+- **O `mercury-3` ainda não tem autoridade de juiz.** Kappa contra os 130 rótulos
+  do gold, em 5 corridas: fronteira `alta` **0,443 / 0,490 / 0,479** (esforço
+  baixo) e **0,506 / 0,450** (médio); fronteira `baixa` 0,587 / 0,517 / 0,452 e
+  0,517 / 0,617. O portão exige **0,60** por fronteira operacional. Fica abaixo
+  em todas as corridas, e a precisão da classe `alta` (0,38–0,43) mostra o erro:
+  chama `alta` a pedidos que o gold rotula `media`. O `deepseek-flash` media
+  0,599–0,631 em `alta` e 0,483–0,545 em `baixa`, com estabilidade 0,877 contra
+  0,754–0,808 do mercury. **Nenhum dos dois passa o portão**: o bloqueio real é o
+  gold (40 rótulos humanos, 2 de `alta`), não a escolha do juiz.
+
+#### Acordo de lotes: tentado, medido, rejeitado (3.13.9)
+
+A hipótese era que o erro do juiz fosse **ruído** — casos isolados que uma
+votação cancelaria. O mecanismo está implementado e testado (`--juiz-votos N`,
+`--juiz-acordo-min`, `--so-calibrar`), mas a medição de 2026-11-03 diz que a
+hipótese é falsa.
+
+Três passagens sobre os mesmos 130 casos do gold, baralhadas entre passagens para
+a composição do lote não repetir o mesmo erro, agregadas por maioria 2-de-3:
+
+| | passagem 1 | passagem 2 | passagem 3 | maioria 2-de-3 |
+|---|---|---|---|---|
+| kappa global | 0,4659 | 0,5068 | 0,4659 | **0,4697** |
+| `alta` | 0,4878 | 0,5340 | 0,5144 | **0,5040** |
+| `baixa` | 0,4728 | 0,5409 | 0,4388 | **0,4693** |
+| precisão `alta` | 0,421 | 0,447 | 0,436 | **0,425** |
+
+A maioria ficou **abaixo da média das passagens** (0,504 contra 0,512 em `alta`)
+e a precisão de `alta` não se moveu (0,421–0,447 nas passagens, 0,425 na
+maioria). E os dois números que explicam tudo:
+
+- **Cobertura 98,5%** — só 2 dos 130 casos ficaram sem maioria. O juiz não hesita;
+  ele discorda do gold com convicção.
+- **Acordo interno 82% na fronteira `alta`** contra **precisão 0,425** contra o
+  gold. Consistência interna alta com validade externa baixa é a assinatura de
+  **viés sistemático**, não de ruído: os ~23 casos que ele promove a `alta` sem
+  o serem são os mesmos nas três passagens.
+
+Conclusão operacional: votar num único juiz **não** dá autoridade a esse juiz, e
+por isso `--juiz-votos` fica em **1** por omissão — o ciclo semanal não paga três
+vezes por uma medição que não melhorou. O portão passou a exigir **cobertura
+mínima** (`--cobertura-minima`, 0,85) exactamente para isto: sem esse chão, subir
+o kappa descartando os casos disputados comprava autoridade a troca de não
+decidir, e os casos disputados são os difíceis.
+
+O caminho que a medição aponta não é repetir o mesmo sinal: é **combinar sinais
+independentes** (juiz + score heurístico a concordarem em `alta`, avaliado por
+validação cruzada) ou **dar massa ao gold em `alta`** — 17 casos não distinguem
+0,43 de 0,60 com margem. Repetir o juiz três vezes não faz nem uma coisa nem
+outra.
 
 ### Subscrição vs API
 

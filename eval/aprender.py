@@ -428,7 +428,14 @@ def _juiz_definicao(provider: str, modelo: str) -> dict[str, Any]:
     return definicao
 
 
-def _etiquetar(casos: list[dict], definicao: dict[str, Any], resolver, threads: int) -> list[dict]:
+def _etiquetar(casos: list[dict], definicao: dict[str, Any], resolver, threads: int,
+               lote: int = 0) -> list[dict]:
+    if lote > 0:
+        return _etiquetar_lote(casos, definicao, resolver, tamanho=lote)
+    return _etiquetar_um_a_um(casos, definicao, resolver, threads)
+
+
+def _etiquetar_um_a_um(casos: list[dict], definicao: dict[str, Any], resolver, threads: int) -> list[dict]:
     modelo = _modelo()
 
     def um(caso: dict) -> dict:
@@ -459,6 +466,138 @@ def _etiquetar(casos: list[dict], definicao: dict[str, Any], resolver, threads: 
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, threads)) as ex:
         return list(ex.map(um, casos))
+
+
+#: Tamanho do lote do juiz. Medido a 2026-11-03 no `inception/mercury-3`: 130
+#: casos um a um com 4 threads dao `HTTP 429 too many requests per minute`, e a
+#: corrida seguinte devolve **0/130** porque o limite e por minuto e o arranque
+#: em rajada esgota-o (dois pedidos isolados 70 s depois voltaram a passar). Em
+#: lotes de 10 sao 13 pedidos: cabe no limite e e o modo que o modelo faz
+#: melhor (contexto longo — medido a 2026-11-02: 10 pedidos em 2,5 s e 9/10
+#: acertos, contra 6,6 s e os mesmos 9/10 um a um). `0` mantem o um-a-um, que
+#: serve os providers sem limite apertado.
+JUIZ_LOTE_PADRAO = 10
+
+
+def _etiquetar_lote(casos: list[dict], definicao: dict[str, Any], resolver,
+                    tamanho: int = JUIZ_LOTE_PADRAO, pausa: float = 2.5) -> list[dict]:
+    """Rotula por lotes com `classificar_lote`, com recuo proprio no 429.
+
+    O lote paga-se em latencia e nao em qualidade (mesmo 9/10 medido), e evita
+    o unico defeito que o mercury-3 trouxe: nao aceita 130 pedidos por minuto.
+    Um 429 espera e repete o **mesmo** lote — tratado como falha definitiva,
+    apagava o corpus e o portao fechava por falta de casos comuns, nao por
+    discordancia.
+    """
+    modelo = _modelo()
+    saida: list[dict] = []
+    grupos = [casos[i:i + max(1, tamanho)] for i in range(0, len(casos), max(1, tamanho))]
+    for n, grupo in enumerate(grupos, 1):
+        for tentativa in (1, 2, 3):
+            r = modelo.classificar_lote([c["texto"] for c in grupo], definicao, resolver,
+                                       perfil="aprendiz")
+            erro = str(r.get("erro") or "")
+            if not erro:
+                niveis = list(r.get("niveis") or [])
+                for c, nivel in zip(grupo, niveis):
+                    nivel = (nivel or "").strip().lower()
+                    if nivel in NIVEIS:
+                        saida.append({"id": c["id"], "rotulo": nivel, "lote": n})
+                    else:
+                        saida.append({"id": c["id"], "rotulo": None,
+                                      "erro": "lote sem nivel para este caso"})
+                break
+            recuo = 20.0 * tentativa if "429" in erro else 2.0 * tentativa
+            if tentativa == 3:
+                saida.extend({"id": c["id"], "rotulo": None, "erro": erro} for c in grupo)
+                break
+            time.sleep(recuo)
+        time.sleep(pausa)
+    return saida
+
+
+def _etiquetar_votos(casos: list[dict], definicao: dict[str, Any], resolver, threads: int,
+                     lote: int = 0, votos: int = 1, acordo_min: int = 2,
+                     semente: int = SEMENTE) -> tuple[list[dict], list[list[dict]], dict[str, Any]]:
+    """Rotula N vezes e agrega por maioria — o juiz como comité, nao como oraculo.
+
+    Porque existe: medido a 2026-11-03 no `inception/mercury-3`, o juiz tem uma
+    precisao de 0,37 na fronteira `alta` — chama alta ao que o gold diz media. A
+    pergunta que este modo responde e se esse erro e **ruido** (casos isolados
+    que se cancelam em votacao) ou **vies** (sistematico, que a votacao nao
+    toca). So depois de medir se sabe qual dos dois e.
+
+    Cada passagem baralha a ordem antes de partir em lotes: a composicao do
+    lote muda de passagem para passagem, logo um erro que vem do lote (um caso
+    vizinho que puxa a resposta) nao se repete igual tres vezes.
+
+    Um caso sem maioria (`acordo < acordo_min`) fica com `rotulo: None` e
+    `disputa` preenchida — nao se inventa um voto de desempate. O custo desta
+    escolha e cobertura, e por isso o portao exige uma cobertura minima: sem
+    esse chao, votar comprava autoridade a troca de descartar os casos dificeis,
+    que e exactamente o que nao se quer de um juiz.
+    """
+    if votos <= 1:
+        return _etiquetar(casos, definicao, resolver, threads, lote), [], {
+            "votos": 1, "acordo_min": 1}
+    rnd = random.Random(semente)
+    passagens: list[list[dict]] = []
+    for _ in range(votos):
+        ordem = list(casos)
+        rnd.shuffle(ordem)
+        passagens.append(_etiquetar(ordem, definicao, resolver, threads, lote))
+    por_id: dict[str, list[str | None]] = {}
+    for r in passagens:
+        for item in r:
+            por_id.setdefault(item["id"], []).append(item.get("rotulo"))
+    agregado: list[dict] = []
+    for caso in casos:
+        niveis = [n for n in por_id.get(caso["id"], []) if n in NIVEIS]
+        if not niveis:
+            agregado.append({"id": caso["id"], "rotulo": None, "votos": 0,
+                             "acordo": 0, "erro": "sem voto valido"})
+            continue
+        contagem = collections.Counter(niveis)
+        nivel, quantos = contagem.most_common(1)[0]
+        aceite = quantos >= acordo_min
+        agregado.append({
+            "id": caso["id"],
+            "rotulo": nivel if aceite else None,
+            "votos": len(niveis),
+            "acordo": quantos,
+            "disputa": None if aceite else dict(contagem),
+            "distribuicao": dict(contagem),
+        })
+    return agregado, passagens, {"votos": votos, "acordo_min": acordo_min}
+
+
+def _calibrar_juiz(gold: list[dict], definicao: dict[str, Any], resolver,
+                   args) -> tuple[dict[str, Any], dict[str, Any], list[dict]]:
+    """Mede a autoridade do juiz contra o gold e devolve o rasto da medicao.
+
+    O kappa e o da maioria; as passagens isoladas vao no rasto para a
+    comparacao ser votos-contra-um-voto na mesma sessao e no mesmo corpus.
+    """
+    rot_gold, passagens, meta = _etiquetar_votos(
+        gold, definicao, resolver, args.threads, args.juiz_lote,
+        args.juiz_votos, args.juiz_acordo_min, args.semente)
+    aceites = [r for r in rot_gold if r.get("rotulo")]
+    k = kappa(gold, aceites)
+    calibracao: dict[str, Any] = dict(meta)
+    calibracao.update({
+        "cobertura": round(len(aceites) / len(gold), 4) if gold else 0.0,
+        "sem_acordo": len(gold) - len(aceites),
+        "gold": len(gold),
+        "fronteiras": kappa_fronteiras(gold, aceites),
+    })
+    if passagens:
+        calibracao["por_passagem"] = [
+            {"passagem": i, **kappa(gold, [r for r in p if r.get("rotulo")])}
+            for i, p in enumerate(passagens, 1)]
+        calibracao["fronteiras_por_passagem"] = [
+            {"passagem": i, **kappa_fronteiras(gold, [r for r in p if r.get("rotulo")])}
+            for i, p in enumerate(passagens, 1)]
+    return k, calibracao, rot_gold
 
 
 def _resolver():
@@ -626,10 +765,18 @@ def fronteiras_estaveis(fronteiras: dict[str, Any],
 def portoes(k: dict[str, Any], antes: dict[str, Any], depois: dict[str, Any],
             kappa_minimo: float, ganho_minimo: float,
             fronteiras: dict[str, Any] | None = None,
-            operacionais: dict[str, bool] | None = None) -> tuple[bool, list[str]]:
+            operacionais: dict[str, bool] | None = None,
+            cobertura: float | None = None,
+            cobertura_minima: float = 0.0) -> tuple[bool, list[str]]:
     razoes: list[str] = []
     if k.get("n", 0) < 20:
         razoes.append(f"calibracao insuficiente: {k.get('n', 0)} casos comuns com o gold")
+    # Cobertura: um juiz por votos pode subir o kappa a troca de descartar os
+    # casos em que os votos se dividem — e esses sao justamente os dificeis.
+    # Sem este chao, "autoridade" media o que sobrava, nao o que acerta.
+    if cobertura is not None and cobertura < cobertura_minima:
+        razoes.append(f"cobertura insuficiente: {cobertura:.1%} dos casos com maioria "
+                      f"< {cobertura_minima:.0%} (o juiz nao decidiu o resto)")
     if fronteiras:
         # So as fronteiras que mudam de modelo na config vivam dao autoridade.
         for nome in ("alta", "baixa"):
@@ -917,15 +1064,43 @@ def _relatorio(dados: dict[str, Any]) -> str:
 # --------------------------------------------------------------------------- CLI
 
 
+def _lote_juiz(provider: str, valor: int | None) -> int:
+    """Resolve `--juiz-lote`: `None` decide pelo provider, `0` forca um a um."""
+    if valor is None:
+        return JUIZ_LOTE_PADRAO if provider == "inception" else 0
+    return max(0, int(valor))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Ciclo de aprendizagem do ViperNet Model Manager")
     ap.add_argument("--casos", type=int, default=240, help="pedidos a rotular neste ciclo")
-    ap.add_argument("--juiz-provider", default="deepseek")
+    ap.add_argument("--juiz-provider", default="inception")
     # O dono proibiu o `deepseek-v4-pro` em qualquer funcao (2026-11-03), salvo
-    # indicacao explicita. O default passa a `deepseek-flash`; o v4-pro so entra
-    # com `--juiz-permitir-v4-pro`, para que a regra seja executavel e nao uma
-    # nota num README que a proxima sessao nao le.
-    ap.add_argument("--juiz-modelo", default="deepseek-flash")
+    # indicacao explicita: o v4-pro so entra com `--juiz-permitir-v4-pro`, para
+    # que a regra seja executavel e nao uma nota num README que a proxima sessao
+    # nao le.
+    #
+    # 2026-11-03, decisao do dono: o juiz alinha com o classificador, em
+    # `inception/mercury-3`. O deepseek deixa de ser o default em qualquer
+    # funcao do ciclo; continua escolhivel por `--juiz-provider deepseek`.
+    ap.add_argument("--juiz-modelo", default="mercury-3")
+    ap.add_argument("--juiz-lote", type=int, default=None,
+                    help=("casos por pedido ao juiz; 0 = um a um. Por omissao 10 "
+                          f"quando o provider e `inception` (limite de pedidos por "
+                          f"minuto medido), 0 nos restantes"))
+    ap.add_argument("--juiz-votos", type=int, default=1,
+                    help=("passagens do juiz sobre o mesmo corpus, agregadas por "
+                          "maioria; 1 = uma passagem (comportamento historico). "
+                          "Mede se o erro do juiz e ruido ou vies."))
+    ap.add_argument("--juiz-acordo-min", type=int, default=2,
+                    help="votos minimos para aceitar um rotulo (com --juiz-votos > 1)")
+    ap.add_argument("--cobertura-minima", type=float, default=0.85,
+                    help=("fraccao minima do gold que o juiz tem de decidir para o "
+                          "portao dar autoridade; impede comprar kappa a troca de "
+                          "descartar os casos disputados"))
+    ap.add_argument("--so-calibrar", action="store_true",
+                    help=("mede so a autoridade do juiz (kappa e cobertura) e sai, "
+                          "sem treinar nem promover: o instrumento da decisao"))
     ap.add_argument("--juiz-permitir-v4-pro", action="store_true",
                     help="autoriza explicitamente o deepseek-v4-pro como juiz")
     ap.add_argument("--threads", type=int, default=4)
@@ -944,6 +1119,8 @@ def main() -> int:
     ap.add_argument("--pausa-abc", type=float, default=1.2,
                     help="segundos entre chamadas do A/B (o provedor limita por minuto)")
     args = ap.parse_args()
+
+    args.juiz_lote = _lote_juiz(args.juiz_provider, args.juiz_lote)
 
     if "v4-pro" in (args.juiz_modelo or "") and not args.juiz_permitir_v4_pro:
         print(json.dumps({"ok": False, "erro": (
@@ -1006,19 +1183,46 @@ def main() -> int:
     k: dict[str, Any] = {}
     gold: list[dict] = []
     rot_gold: list[dict] = []
+    calibracao: dict[str, Any] = {}
+    cobertura: float | None = None
     if not args.so_treinar:
         definicao = _juiz_definicao(args.juiz_provider, args.juiz_modelo)
         resolver = _resolver()
-        rotulos = _etiquetar(casos, definicao, resolver, args.threads)
+        if args.so_calibrar:
+            # Instrumento da decisao: mede o juiz e sai, sem rotular o pool nem
+            # treinar. Um juiz sem autoridade nao deve custar 60 pedidos de pool.
+            gold = _casos_gold()
+            if not gold:
+                print(json.dumps({"ok": False, "erro": "gold vazio"},
+                                 ensure_ascii=False))
+                return 2
+            k, calibracao, rot_gold = _calibrar_juiz(gold, definicao, resolver, args)
+            cobertura = calibracao.get("cobertura")
+            falhas = [r for r in rot_gold if r.get("erro")]
+            print(json.dumps({"ok": True, "juiz": f"{args.juiz_provider}/{args.juiz_modelo}",
+                              "kappa": k, "calibracao": calibracao,
+                              "falhas": len(falhas),
+                              "disputas": calibracao.get("sem_acordo"),
+                              "cobertura_minima": args.cobertura_minima,
+                              "autoridade": bool(
+                                  k.get("kappa", 0) >= args.kappa_minimo
+                                  and (cobertura or 0) >= args.cobertura_minima),
+                              "so_calibrar": True}, ensure_ascii=False, indent=1))
+            return 0
+        rotulos, passagens_casos, votos_meta = _etiquetar_votos(
+            casos, definicao, resolver, args.threads, args.juiz_lote,
+            args.juiz_votos, args.juiz_acordo_min, args.semente)
         mapa = {r["id"]: r for r in rotulos}
-        falhas = [r for r in rotulos if not r.get("rotulo")]
+        falhas = [r for r in rotulos if not r.get("rotulo") and r.get("erro")]
+        disputas = [r for r in rotulos if r.get("disputa")]
         casos = [dict(c, rotulo=mapa[c["id"]]["rotulo"]) for c in casos
                  if mapa.get(c["id"], {}).get("rotulo")]
         # calibracao contra os rotulos humanos do gold (inclui a fila humana)
+        calibracao = dict(votos_meta)
         gold = _casos_gold()
         if gold:
-            rot_gold = _etiquetar(gold, definicao, resolver, args.threads)
-            k = kappa(gold, [r for r in rot_gold if r.get("rotulo")])
+            k, calibracao, rot_gold = _calibrar_juiz(gold, definicao, resolver, args)
+            cobertura = calibracao.get("cobertura")
         if not casos:
             print(json.dumps({"ok": False, "falhas": falhas[:5], "colheita": colheita},
                              ensure_ascii=False))
@@ -1063,7 +1267,9 @@ def main() -> int:
         fronteiras = estaveis
     passou, razoes = portoes(k, antes_val, depois_val,
                              args.kappa_minimo, args.ganho_minimo,
-                             fronteiras, operacionais)
+                             fronteiras, operacionais,
+                             cobertura=cobertura,
+                             cobertura_minima=args.cobertura_minima)
 
     # 4. A/B do modelo (opcional)
     abc = None
@@ -1103,6 +1309,7 @@ def main() -> int:
             "kappa": k, "antes": resultado["antes"]["macro_f1"],
             "depois": resultado["depois"]["macro_f1"], "casos": len(casos),
             "passou": bool(passou), "razoes": razoes,
+            "calibracao": calibracao,
             "fronteiras": resultado.get("fronteiras_estaveis"),
             "fronteiras_operacionais": resultado.get("fronteiras_operacionais"),
             "variante": variante_vencedora}

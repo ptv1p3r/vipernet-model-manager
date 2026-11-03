@@ -42,7 +42,15 @@ PADRAO: dict[str, Any] = {
     "activo": False,
     "provider": "",
     "modelo": "",
-    "timeout_s": 8.0,
+    # 8 s era margem de 1,5x sobre a latencia medida e falhava em pico. Medido a
+    # 2026-11-03 no deepseek-flash, mesmo prompt, mesmo `esforco`: p50 1,5-2,9 s
+    # e 5,3 s sob contencao (o classificador compete com o pedido grande do
+    # proprio turno no mesmo provider). 12 s da ~2,3x o p95 observado. Subir
+    # mais nao e gratis: o classificador corre ANTES do pedido do turno, logo
+    # este e o tempo que o utilizador espera por uma decisao opcional. Um
+    # timeout suspende de imediato (ver `_falhou`), o que limita o dano a uma
+    # espera de 12 s por cada 5 minutos.
+    "timeout_s": 12.0,
     # 12 tokens chegavam a um modelo que responde directamente e nao chegavam a
     # um de raciocinio: medido no deepseek-flash, os 12 tokens de saida eram
     # todos `reasoning_tokens` e o `content` vinha vazio. 320 deixa pensar e
@@ -60,7 +68,49 @@ PADRAO: dict[str, Any] = {
     # pedido sem ele — nao depende de uma lista de providers que envelhece.
     # `on` obriga, `off` nunca pede.
     "formato_json": "auto",
+    # Transporte do pedido: `chat` (chat/completions, qualquer LLM) ou
+    # `decisoes` (modelos System One, que nao geram texto — devolvem escolha e
+    # confianca tipadas). Medido a 2026-11-03 no `~typesafe/jev-latest`: o id
+    # existe mas recusa chat/completions com "is a decisions model and cannot be
+    # used with the chat/completions endpoint", e aceita o mesmo pedido em
+    # `POST /api/alpha/decisions`. Com `decisoes`, `max_tokens`, `esforco` e
+    # `formato_json` nao se aplicam (o modelo nao gera tokens livres) — ficam na
+    # config sem efeito, para a troca de transporte nao apagar os valores.
+    "via": "chat",
+    # Piso de confianca para aceitar a decisao do modelo. Abaixo disto o turno
+    # nao e adivinhado: fica `sem_efeito` com o motivo e a heuristica decide,
+    # que e o comportamento de escalonamento prescrito para modelos System One.
+    # 0.0 aceita tudo (comportamento identico ao de um LLM classificador).
+    "confianca_min": 0.0,
 }
+
+
+#: Vocabulario do transporte. `decisoes` e o nome em portugues; aceitam-se as
+#: formas em ingles porque a documentacao do provider so usa essas.
+VIAS = {"chat": "chat", "decisoes": "decisoes", "decisions": "decisoes",
+        "decision": "decisoes", "decisão": "decisoes", "decisões": "decisoes"}
+
+#: Criterios do `choice` no transporte de decisoes. E a rubrica dos tres niveis
+#: na unica forma que o endpoint aceita: mapa opcao -> descricao (uma lista de
+#: `options` e recusada). As duas contra-ancoras que a rubrica do avaliador ja
+#: proibe entraram aqui por escrito, porque sao exactamente os dois vicios
+#: medidos nos juizes LLM: comprimento/artefacto colado como nivel e ambito
+#: aberto ("faz tudo") como alta.
+CRITERIOS_DECISAO: dict[str, str] = {
+    "leve": "conversa, confirmacao, pergunta directa de uma linha, extrair um valor, "
+            "sim/nao, pedir esclarecimento",
+    "media": "explicar um conceito, comparar opcoes, rever algo pequeno, alterar um "
+             "ficheiro ja identificado, correr um comando com contexto",
+    "alta": "desenhar ou decidir arquitetura, diagnosticar avaria com evidencia, "
+            "implementar ou refactorizar codigo, plano com janela e rollback, auditoria",
+}
+
+INSTRUCOES_DECISAO = (
+    "Nivel de complexidade do pedido: o modelo mais barato que o resolve com qualidade. "
+    "O comprimento do texto e a presenca de artefactos colados (logs, codigo, JSON) nao "
+    "mudam o nivel. Ambito aberto (\"faz tudo\", \"implementa o necessario\") nao e alta "
+    "sem um dos sinais de alta."
+)
 
 
 def _gestor():
@@ -105,7 +155,15 @@ _SUSPENSAO_INDISPONIVEL_S = 3600.0
 #: decide-se pela mensagem, que e o unico sinal que atravessa a camada.
 _RE_INDISPONIVEL = re.compile(
     r"unknown provider|no such provider|provider .{0,40}not (?:found|configured|available)"
-    r"|AuthError|no credential|sem credencial", re.I)
+    r"|AuthError|no credential|sem credencial"
+    # Config errada do lado do modelo. Medido a 2026-11-03: `typesafe/jev-latest`
+    # sem til devolveu HTTP 400 "is not a valid model ID" e o plugin tratou-o
+    # como avaria transitoria — tres tentativas e um aviso no cartao para um id
+    # que nao existe. E depois, com o id certo, "is a decisions model and cannot
+    # be used with the chat/completions endpoint": o modelo existe e o transporte
+    # e que esta errado. As duas sao config, nao rede.
+    r"|not a valid model|is a decisions model|cannot be used with the chat"
+    r"|model .{0,60}not found|unknown model", re.I)
 
 #: Piso de `max_tokens` quando o classificador declara esforco: o raciocinio sai
 #: do mesmo orcamento e 320 tokens podem ser todos gastos a pensar. 1200 tambem
@@ -268,6 +326,19 @@ def normalizar(bruto: Any, prefixo: str = "analise.classificador") -> tuple[dict
     else:
         erros.append(f"{prefixo}: formato_json deve ser auto, on ou off")
         saida["formato_json"] = "auto"
+    # Transporte. Um valor desconhecido nao pode cair em silencio no `chat`:
+    # quem escreveu `decisoes` e estaria a falar com o endpoint errado.
+    bruto_via = str(bruto.get("via") or "chat").strip().lower()
+    if bruto_via in VIAS:
+        saida["via"] = VIAS[bruto_via]
+    elif bruto_via == "":
+        saida["via"] = "chat"
+    else:
+        erros.append(f"{prefixo}: via deve ser " + ", ".join(sorted(set(VIAS.values())))
+                     + f" (recebido {bruto_via!r})")
+        saida["via"] = "chat"
+    saida["confianca_min"] = _num(bruto.get("confianca_min"), 0.0, 1.0,
+                                  float(PADRAO["confianca_min"]))
     return saida, erros
 
 
@@ -347,6 +418,29 @@ def _url(base_url: str) -> str:
     return f"{base}/v1/chat/completions"
 
 
+def _url_decisoes(base_url: str) -> str:
+    """Endpoint de decisoes a partir do `base_url` da rota.
+
+    Medido a 2026-11-03: o OpenRouter expoe as decisoes em
+    `https://openrouter.ai/api/alpha/decisions`, ou seja o mesmo prefixo do
+    chat sem o `/v1`. Derivar do `base_url` em vez de o fixar mantem a rota a
+    funcionar com um gateway compativel (proxy interno, AIHubMix) que publique
+    o mesmo caminho — e falha com mensagem clara quando a base nao serve.
+    """
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        raise ValueError("rota sem base_url")
+    if base.endswith("/alpha/decisions"):
+        return base
+    if base.endswith("/chat/completions"):
+        base = base[: -len("/chat/completions")]
+    for sufixo in ("/v1", "/beta"):
+        if base.endswith(sufixo):
+            base = base[: -len(sufixo)]
+            break
+    return f"{base}/alpha/decisions"
+
+
 #: Codigos de erro que podem vir de um campo que o provider nao conhece.
 #: Um 401/402/429/5xx nao se resolve a retirar `response_format`.
 _HTTP_SEM_FORMATO = frozenset({400, 404, 415, 422})
@@ -402,6 +496,181 @@ def _pedir(rota: dict[str, Any], definicao: dict[str, Any], corpo: dict[str, Any
         return {"json": json.loads(bruto.decode("utf-8", "replace")), "ms": ms}
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ValueError(f"resposta nao e JSON ({type(exc).__name__})") from exc
+
+
+def _pedir_decisoes(rota: dict[str, Any], definicao: dict[str, Any],
+                    corpo_texto: str) -> dict[str, Any]:
+    """Pedido ao endpoint de decisoes (modelos System One).
+
+    O contrato nao tem nada a ver com `chat/completions`: nao ha mensagens nem
+    `max_tokens`, ha `state` (o texto observado) e `questions` (perguntas
+    tipadas). Medido a 2026-11-03 no `~typesafe/jev-latest`:
+    `{"model", "state", "questions": {"nivel": {"type": "choice", "criteria":
+    {opcao: descricao}, "instructions": "..."}}}` devolve
+    `{"answers": {"nivel": {"choice": ..., "confidence": ..., "probabilities":
+    {opcao: p}}}, "usage": {"cost": ...}, "model": "<id resolvido>"}`.
+
+    O `criteria` e um mapa e nao uma lista de opcoes — testado: uma lista e
+    recusada. A chave `nivel` e o nome que o resto do plugin ja le.
+    """
+    corpo = {
+        "model": str(definicao["modelo"]),
+        "state": corpo_texto,
+        "questions": {
+            "nivel": {
+                "type": "choice",
+                "criteria": dict(CRITERIOS_DECISAO),
+                "instructions": INSTRUCOES_DECISAO,
+            }
+        },
+    }
+    dados = json.dumps(corpo).encode("utf-8")
+    req = urllib.request.Request(
+        _url_decisoes(rota.get("base_url", "")),
+        data=dados,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {rota.get('api_key', '')}",
+            "User-Agent": "vipernet-model-manager/classificador",
+        },
+    )
+    inicio = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=float(definicao["timeout_s"])) as resp:  # noqa: S310
+            bruto = resp.read(200_000)
+    except urllib.error.HTTPError as exc:
+        # Sem esta conversao o corpo do erro perde-se e a unica coisa que chega
+        # ao filtro de config e "HTTP Error 400: Bad Request" — foi assim que o
+        # "is not a valid model ID" ficou sem diagnostico.
+        codigo, detalhe = _ler_http(exc)
+        raise _RecusaHttp(codigo, detalhe) from None
+    ms = round((time.monotonic() - inicio) * 1000, 1)
+    try:
+        return {"json": json.loads(bruto.decode("utf-8", "replace")), "ms": ms,
+                "formato_pedido": "decisoes"}
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(f"resposta nao e JSON ({type(exc).__name__})") from exc
+
+
+def _extrair_decisao(payload: dict[str, Any]) -> tuple[str, str, float | None, dict[str, Any]]:
+    """(nivel, lido, confianca, probabilidades) da resposta de decisoes.
+
+    Levanta `ValueError` quando nao ha escolha reconhecivel: o chamador trata
+    isso como leitura falhada (e repete ou cai na heuristica), nunca como nivel
+    inventado. A confianca e devolvida como veio — comparar com
+    `confianca_min` e decisao do chamador, nao desta funcao.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("resposta de decisoes nao e um objecto")
+    respostas = payload.get("answers")
+    if isinstance(respostas, list):  # tolera a forma por posicao
+        respostas = respostas[0] if respostas else None
+    if not isinstance(respostas, dict):
+        raise ValueError("resposta de decisoes sem answers")
+    escolha = respostas.get("nivel")
+    if not isinstance(escolha, dict):
+        # Alguns proxies devolvem `{"nivel": "alta"}` directamente.
+        if isinstance(escolha, str):
+            canonico = _canonico(escolha)
+            if canonico in NIVEIS:
+                return canonico, escolha.strip(), None, {}
+        raise ValueError("resposta de decisoes sem escolha em answers.nivel")
+    valor = escolha.get("choice") or escolha.get("value")
+    if valor is None:
+        raise ValueError("resposta de decisoes sem choice")
+    lido = str(valor).strip()
+    canonico = _canonico(lido)
+    if canonico not in NIVEIS:
+        raise ValueError(f"nivel nao reconhecido: {lido[:40]!r}")
+    bruto_conf = escolha.get("confidence")
+    confianca: float | None = None
+    if isinstance(bruto_conf, (int, float)) and not isinstance(bruto_conf, bool):
+        confianca = float(bruto_conf)
+    elif isinstance(bruto_conf, str):
+        try:
+            confianca = float(bruto_conf)
+        except ValueError:
+            confianca = None
+    if confianca is not None and not (0.0 <= confianca <= 1.0):
+        confianca = None
+    probabilidades = escolha.get("probabilities")
+    probabilidades = probabilidades if isinstance(probabilidades, dict) else {}
+    return canonico, lido, confianca, {k: v for k, v in probabilidades.items()
+                                       if _canonico(str(k)) in NIVEIS}
+
+
+def _classificar_decisoes(*, alvo: str, base: dict[str, Any], definicao: dict[str, Any],
+                          corpo_texto: str, resolver_rota: Callable[[str, str], dict[str, Any]],
+                          chave: str, ttl_erro: float, agora: float) -> dict[str, Any]:
+    """Classificacao por transporte de decisoes, com escalonamento por confianca.
+
+    Duas diferencas de fundo para o caminho do chat: nao ha repeticao (o modelo
+    nao gera texto, logo nao ha resposta truncada a segunda tentativa — um erro
+    aqui e erro) e a confianca e um campo de primeira classe. Abaixo de
+    `confianca_min` o turno fica `sem_efeito` e a heuristica decide, que e o
+    padrao prescrito para System One: agir so quando a confianca e alta e
+    escalar o resto, em vez de aceitar uma escolha quase empatada.
+    """
+    provider = base["provider"]
+    modelo = base["modelo"]
+    perfil = base["perfil"]
+    piso = float(definicao.get("confianca_min") or 0.0)
+    rota: dict[str, Any] = {}
+    try:
+        rota = resolver_rota(provider, modelo)
+        resposta = _pedir_decisoes(rota, definicao, corpo_texto)
+        nivel, lido, confianca, probabilidades = _extrair_decisao(resposta["json"])
+    except _RecusaHttp as exc:
+        detalhe = f"HTTP {exc.codigo}: {exc.detalhe[:200]}"
+        if _RE_INDISPONIVEL.search(detalhe):
+            return _indisponivel(alvo, base, detalhe, chave=chave, ttl_erro=ttl_erro)
+        return _falhou(alvo, base, f"HTTP {exc.codigo}", exc.detalhe[:200],
+                       chave=chave, ttl_erro=ttl_erro)
+    except Exception as exc:  # noqa: BLE001 - fail-open sempre
+        detalhe = str(exc)[:200]
+        if _RE_INDISPONIVEL.search(f"{type(exc).__name__}: {detalhe}"):
+            return _indisponivel(alvo, base, detalhe, chave=chave, ttl_erro=ttl_erro)
+        return _falhou(alvo, base, type(exc).__name__, detalhe,
+                       chave=chave, ttl_erro=ttl_erro)
+    payload = resposta["json"] if isinstance(resposta["json"], dict) else {}
+    uso = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    classif = {
+        **base,
+        "via": "decisoes",
+        "fonte_credencial": rota.get("source", ""),
+        "ms": resposta["ms"],
+        "cache": False,
+        "lido": lido,
+        "confianca": confianca,
+        "probabilidades": probabilidades,
+        "modelo_resolvido": str(payload.get("model") or ""),
+        "custo_usd": uso.get("cost"),
+        "formato_pedido": "decisoes",
+        "tokens_entrada": uso.get("input_tokens"),
+        "tokens_saida": uso.get("output_tokens"),
+        "tentativas": 1,
+    }
+    if confianca is not None and confianca < piso:
+        # Abstenção deliberada, e de propósito não guardada em cache negativa:
+        # o cartão lê `cache_erro` como leitura falhada, e isto não é uma falha
+        # — é o modelo a dizer que não sabe o suficiente para decidir sozinho.
+        return {
+            "sem_efeito": "confianca_baixa",
+            "motivo": f"confianca_baixa: {confianca:.2f} < piso {piso:.2f} "
+                      f"(o modelo escolheu {nivel})",
+            "nivel_proposto": nivel,
+            "classificador": {**classif, "abstencao": "confianca_baixa"},
+            "origem": "modelo_abstencao",
+        }
+    saida = {"nivel": nivel, "origem": "modelo", "classificador": classif}
+    with _lock:
+        _falhas.pop(alvo, None)
+        if int(definicao["cache_ttl_s"]) > 0:
+            _cache[chave] = (agora + int(definicao["cache_ttl_s"]), saida)
+            if len(_cache) > 500:
+                _cache.clear()
+    return saida
 
 
 # O modelo responde em portugues porque o prompt o pede, mas nem sempre: um
@@ -641,6 +910,14 @@ def classificar(
     # O cache negativo segue o cache da definicao: com `cache_ttl_s: 0` o
     # utilizador pediu para nao guardar nada — nem sucessos nem falhas.
     ttl_erro = min(_TTL_ERRO_S, float(definicao["cache_ttl_s"]))
+    # Transporte de decisoes: contrato proprio, resposta tipada, e nenhuma das
+    # alavancas do chat (mensagens, response_format, max_tokens, effort). Fica
+    # num caminho separado para o codigo do chat nao ganhar ramos mortos.
+    if str(definicao.get("via") or "chat") == "decisoes":
+        return _classificar_decisoes(
+            alvo=alvo, base=base, definicao=definicao, corpo_texto=corpo_texto,
+            resolver_rota=resolver_rota, chave=chave, ttl_erro=ttl_erro, agora=agora,
+        )
     try:
         rota = resolver_rota(provider, modelo)
         formato_json = _quer_json(definicao)
@@ -684,6 +961,12 @@ def classificar(
                 orcamento = min(max(anterior * 4, _MAX_TOKENS_COM_ESFORCO), _MAX_TOKENS_MAX)
         resposta["ms"] = ms_total
     except _RecusaHttp as exc:
+        detalhe = f"HTTP {exc.codigo}: {exc.detalhe[:200]}"
+        # Uma recusa HTTP tambem pode ser config (id de modelo inexistente,
+        # transporte errado): o `_RecusaHttp` nao passava pelo filtro e um 400
+        # definitivo era contado como avaria transitoria.
+        if _RE_INDISPONIVEL.search(detalhe):
+            return _indisponivel(alvo, base, detalhe, chave=chave, ttl_erro=ttl_erro)
         return _falhou(alvo, base, f"HTTP {exc.codigo}", exc.detalhe[:200],
                        chave=chave, ttl_erro=ttl_erro)
     except Exception as exc:  # noqa: BLE001 - fail-open sempre
@@ -748,6 +1031,31 @@ def classificar_lote(
     modelo = str(definicao.get("modelo") or "").strip()
     if not (provider and modelo):
         return {**vazio, "erro": "sem provider/modelo"}
+    # Transporte de decisoes: o lote do chat e um prompt unico com N linhas e uma
+    # resposta JSON indexada; no endpoint de decisoes cada pergunta e um caso e o
+    # mapeamento caso->resposta exigiria um nome por indice. Um pedido por caso
+    # custa ~250 ms e ~2e-05 USD medidos, sem cache — que e precisamente o que
+    # uma medicao precisa (um lote em cache media o cache, nao o modelo).
+    if str(definicao.get("via") or "chat") == "decisoes":
+        sem_cache = {**definicao, "cache_ttl_s": 0}
+        niveis_dec: list[str | None] = []
+        motivos: list[str] = []
+        custo_total = 0.0
+        for um in pedidos:
+            r = classificar([{"role": "user", "content": um}], sem_cache,
+                            resolver_rota, perfil=perfil)
+            nivel_um = (r or {}).get("nivel")
+            niveis_dec.append(str(nivel_um) if nivel_um else None)
+            if not nivel_um and r:
+                motivo = r.get("motivo") or r.get("erro") or r.get("sem_efeito")
+                if motivo:
+                    motivos.append(str(motivo))
+            custo_um = ((r or {}).get("classificador") or {}).get("custo_usd")
+            if isinstance(custo_um, (int, float)):
+                custo_total += float(custo_um)
+        return {"niveis": niveis_dec, "erro": "; ".join(dict.fromkeys(motivos))[:300],
+                "pedidos": len(pedidos), "via": "decisoes",
+                "custo_usd": round(custo_total, 8)}
     lista = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(pedidos))
     # O orcamento acompanha o lote: a resposta JSON leva um objecto por pedido e
     # ~100 tokens de raciocinio antes do primeiro. O piso cobre o raciocinio.
@@ -862,9 +1170,15 @@ def _indisponivel(alvo: str, base: dict[str, Any], detalhe: str, *,
         _falhas.pop(alvo, None)
     motivos = {
         "provider_indisponivel": "o provider nao existe no perfil servido",
+        "modelo_indisponivel": "o modelo ou o transporte nao existe neste provider",
     }
-    chave_motivo = "provider_indisponivel" if re.search(
-        r"unknown provider|no such provider", detalhe, re.I) else "credencial_ausente"
+    if re.search(r"unknown provider|no such provider", detalhe, re.I):
+        chave_motivo = "provider_indisponivel"
+    elif re.search(r"not a valid model|is a decisions model|cannot be used with the chat"
+                   r"|model .{0,60}not found|unknown model", detalhe, re.I):
+        chave_motivo = "modelo_indisponivel"
+    else:
+        chave_motivo = "credencial_ausente"
     saida = {
         "sem_efeito": chave_motivo,
         "motivo": f"{chave_motivo}: {motivos.get(chave_motivo, 'sem credencial utilizavel no perfil')}"
@@ -884,9 +1198,16 @@ def _indisponivel(alvo: str, base: dict[str, Any], detalhe: str, *,
 def _falhou(alvo: str, base: dict[str, Any], tipo: str, detalhe: str,
             *, chave: str = "", ttl_erro: float = _TTL_ERRO_S) -> dict[str, Any]:
     with _lock:
+        # Um timeout e a falha mais cara: custa o `timeout_s` inteiro em latencia
+        # do turno. Medido a 2026-11-03, 8 s de espera por tentativa davam quatro
+        # falhas em 45 s no perfil `pessoal` antes de o contador de tres chegar
+        # ao limite. Esperar tres vezes para concluir o que a primeira ja diz e
+        # pagar 24 s por nada: a heuristica responde em 0 ms e e o default
+        # declarado. Logo um timeout suspende a primeira.
+        esgotou = bool(re.search(r"timed?\s*out|timeout", tipo or "", re.I))
         n = _falhas.get(alvo, 0) + 1
         _falhas[alvo] = n
-        if n >= _FALHAS_PARA_SUSPENDER:
+        if esgotou or n >= _FALHAS_PARA_SUSPENDER:
             _suspensos[alvo] = time.monotonic() + _SUSPENSAO_S
             _falhas[alvo] = 0
     # O erro fica no valor devolvido: quem chama registra-o no ledger.
