@@ -95,6 +95,8 @@ _FICHEIRO_ANALISE = Path(_analise_mod.__file__ or "analise.py").resolve()
 _MTIME_ANALISE = [0]
 _FICHEIRO_ANALISE_MODELO = Path(_analise_modelo_mod.__file__ or "analise_modelo.py").resolve()
 _MTIME_ANALISE_MODELO = [0]
+_FICHEIRO_GESTOR = Path(gestor.__file__ or "gestor.py").resolve()
+_MTIME_GESTOR = [0]
 
 
 def _recarregar_modulo(mod: Any, ficheiro: Path, cache: list[int], rotulo: str) -> Any:
@@ -152,6 +154,20 @@ def _recarregar_analise_modelo_se_mudou() -> None:
     global _analise_modelo_mod
     _analise_modelo_mod = _recarregar_modulo(
         _analise_modelo_mod, _FICHEIRO_ANALISE_MODELO, _MTIME_ANALISE_MODELO, "classificador")
+
+
+def _recarregar_gestor_se_mudou() -> None:
+    """`gestor.py` — config, validacao, catalogo e escolha da rota.
+
+    Sem isto, uma correcao no validador so entrava com restart do gateway
+    (que corta as sessoes vivas) e — pior — o processo continuava a validar
+    com o esquema antigo enquanto o ficheiro em disco ja era o novo: o painel
+    gravava, o gateway decidia com outras regras, e a diferenca so aparecia
+    dias depois como «chave que desapareceu».
+    """
+    global gestor
+    gestor = _recarregar_modulo(gestor, _FICHEIRO_GESTOR, _MTIME_GESTOR, "gestor")
+
 
 NOME = gestor.NOME
 _AMBIENTE_DESLIGADO = ("VMM_DESATIVADO", "VIPERNET_MODEL_MANAGER_OFF")
@@ -771,6 +787,9 @@ def middleware_llm_request(
     try:
         if not isinstance(request, dict):
             return None
+        # Antes de ler a config: se `gestor.py` mudou no disco, este turno ja
+        # corre com a versao nova (e dentro do try, para nunca partir o turno).
+        _recarregar_gestor_se_mudou()
         for nome_env in _AMBIENTE_DESLIGADO:
             if str(os.environ.get(nome_env) or "").strip().lower() in ("1", "on", "true", "sim"):
                 return None

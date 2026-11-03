@@ -275,11 +275,11 @@ Ficheiro vivo: `/opt/data/plugin-data/vipernet-model-manager/config.json`
   "analise": {"janela_mensagens": 8, "varredura_max_mensagens": 60,
                "limiares": {"media": 3, "alta": 7}, "descer_apos": 2,
                "fixar_nivel_por_turno": true},
+  "estrategia": {"modo": "rodizio", "por": "sessao"},
   "perfis": {
     "trabalho": {
       "activo": true,
-      "estrategia": "rodizio",
-      "rodizio": {"por": "sessao"},
+      "estrategia": {"modo": "prioridade"},
       "analise": {},
       "catalogo": [
         {"id": "deepseek-flash", "provider": "deepseek", "modelo": "deepseek-flash",
@@ -296,8 +296,12 @@ Ficheiro vivo: `/opt/data/plugin-data/vipernet-model-manager/config.json`
 
 - `activo` (topo) — interruptor global; `registar` — escrever o ledger.
 - `perfis.<nome>.activo` — interruptor daquele perfil.
-- `estrategia`: `rodizio` (alterna no nível) ou `prioridade` (primeira entrada
-  elegível). `rodizio.por`: `turno` ou `sessao`.
+- `estrategia` — bloco `{modo, por}`, **lista fechada**, global no topo e
+  herdada por cada perfil: `modo` é `rodizio` (alterna dentro do nível) ou
+  `prioridade` (primeira entrada elegível da lista); `por` é `turno` ou
+  `sessao` e só governa o `rodizio`. Um perfil declara **só o que quer mudar**
+  (o delta) e o resto vem do global; sem bloco nenhum, herda. Ver
+  «Estratégia: lista fechada com herança».
 - `complexidade` por entrada: `"leve"`, `["leve","media"]`, `["alta"]`… Níveis:
   `leve`, `media`, `alta`.
 - `acesso` por entrada: `api` ou `subscricao`. **Explicito ou inferido do
@@ -808,8 +812,138 @@ O campo `plataforma_kw` guarda o que o core entregou, para distinguir «não há
 regra» de «o kwarg não chegou». Diagnóstico opt-in com `VMM_DEBUG_SUP=1`
 escreve `debug-sup.jsonl` no directório do plugin.
 
-Regressão: `python3 test_superficies.py` (30 verificações, quatro grupos:
-validador, gravação, herança e prioridade).
+Regressão: `python3 test_superficies.py` (32 verificações: validador, gravação,
+herança superfície a superfície, prioridade e capacidade).
+
+## Superfícies de sessão no painel (3.18.0)
+
+Uma superfície é o contexto em que a sessão corre — `cron`, `api_server`, `cli`, `whatsapp`,
+`subagent`, `oneshot`… — e chega ao plugin pelo `platform` que o core passa ao middleware. Não se
+adivinha pelo texto: **`cron` aparece em 7,7% das mensagens** (33 371 de 435 155) porque as pessoas
+falam de cronologia e de crontab, e uma regra por palavra-chave dispararia nessas conversas. Por
+isso `cron` é superfície, não tarefa.
+
+A regra de superfície decide **antes** da tarefa e **antes** da análise: se o contexto já diz que
+este turno é do `cron`, não há nada a classificar. A ordem completa é
+
+```
+marcador explícito → superfície → tarefa → complexidade → heurística
+```
+
+### No painel
+
+Cada cartão de perfil tem um bloco **Superfícies de sessão**:
+
+* uma linha por superfície já configurada — o nome à esquerda, a rota à direita num `select` nativo;
+* as opções do `select` vêm do `/estado` (`opcoes.superficies`, `opcoes.niveis` e o catálogo do
+  perfil), nunca de uma cópia em JavaScript;
+* `— sem regra (herdar) —` apaga a regra do perfil e volta a herdar o global;
+* `nunca: nao tratar esta superficie` grava `{activo: false}`, que anula a herdada **só** naquele
+  perfil;
+* uma linha `· global` marca as regras que vêm do global, para não se procurar no perfil uma regra
+  que lá não está;
+* o campo de texto no fim acrescenta uma superfície nova (sugestões em `datalist`) e liga-a logo à
+  primeira rota do catálogo, que se muda na linha.
+
+### A rota (`alvo`)
+
+| forma | exemplo | quando |
+| --- | --- | --- |
+| `entrada:<id>` | `entrada:flash-alta` | preferida — `acesso` e `esforco` vêm da entrada do catálogo |
+| `nivel:<nivel>` | `nivel:alta` | quando o mesmo nível serve várias superfícies |
+| `provider/modelo` | `openrouter/openai/gpt-6.1-sol` | rota fora do catálogo do perfil |
+| `nunca` | — | `{activo: false}`: anular a herdada |
+| vazio | — | apagar a regra do perfil |
+
+### Herança, superfície a superfície
+
+O global vale para todos e o perfil só declara o que difere. A herança é **por superfície**, não por
+bloco: um perfil que declara `cron` continua a ver a regra global de `cli`. Substituir o bloco
+inteiro apagaria regras globais sem ninguém as ter apagado — é o tipo de perda silenciosa que este
+plugin já pagou caro noutras chaves.
+
+### Gralhas
+
+A lista de superfícies conhecidas **não** é fechada: um provider novo traz contextos novos e a regra
+continua válida. Mas uma gralha evidente (`crom` por `cron`) é recusada com a superfície certa na
+mensagem — uma regra que nunca dispara porque o nome está mal escrito é o pior resultado possível,
+porque o utilizador fica convencido de ter configurado o `cron`.
+
+### API
+
+```bash
+curl -u "$USER:$PASS" -X POST http://<host>:8643/api/plugins/model-manager/superficies \
+  -H 'Content-Type: application/json' \
+  -d '{"ambito":"perfil","perfil":"default","superficie":"cron",
+       "alvo":"entrada:flash-alta","rev":"<rev do /estado>"}'
+```
+
+Responde `{ok, ambito, perfil, superficie, regra, rev}` — e `regra` é lida do disco depois de
+gravar, não é o que se pediu. `rev` desactualizado dá **409** (o painel recarrega o estado).
+
+## Estratégia: lista fechada com herança (3.17.0)
+
+A estratégia diz **como** se escolhe, dentro do nível, quando há mais do que uma
+rota elegível. Ficou com os mesmos dois valores que já existiam, agora num bloco
+`{modo, por}` configurável no painel:
+
+| chave | valores | efeito |
+|---|---|---|
+| `modo` | `rodizio` | alterna entre as candidatas do nível |
+| | `prioridade` | usa sempre a primeira elegível da lista |
+| `por` | `turno` | a roda avança a cada turno (a lista dobra de utilidade, mas invalida a cache do provider) |
+| | `sessao` | a roda mantém-se dentro da sessão |
+
+**Lista fechada, por decisão.** Um `modo` inválido é **erro de validação** com a
+lista dos aceites — não um silencioso «usa o default». Gravar `rodizioo` e ver o
+plugin decidir `rodizio` sem avisar é pior do que o painel recusar a gravação: o
+utilizador fica convencido de ter mudado o que nunca mudou.
+
+**Global + herança chave a chave**, exactamente como o `analise`:
+
+```json
+{
+  "estrategia": {"modo": "rodizio", "por": "sessao"},
+  "perfis": {
+    "trabalho": {"estrategia": {"modo": "prioridade"}}
+  }
+}
+```
+
+O perfil de `trabalho` decide `prioridade` **e continua a herdar** o `por` do
+global. A herança é resolvida na **leitura** (`gestor.estrategia_efectiva`), e o
+`validar` grava **só o delta** — um perfil que repete o valor do global não fica
+com uma cópia que o prende ao dia em que foi gravada. É a mesma regra da
+`analise`, e a razão pela qual mudar o global muda de facto todos os perfis que
+não escolheram nada.
+
+**Forma antiga migrada, não descartada.** A config viva foi escrita como
+`"estrategia": "rodizio"` + `"rodizio": {"por": "sessao"}`; `normalizar_estrategia`
+lê as duas formas, e um valor inválido na forma antiga (`por: "hora"`) é recusado
+com o caminho novo (`perfis.X.estrategia.por`). Um `gravar` sem esta conversão
+apagava a estratégia do perfil sem ninguém notar.
+
+**No painel.** Há um cartão «estratégia global» antes dos perfis e, em cada
+cartão, os dois `select` com a origem ao lado («herdada do global», «própria do
+perfil», «por omissão»). Escolher num perfil cria o delta; o botão «herdar do
+global» apaga-o — é o único gesto que exprime «volta a herdar», sem ele o bloco
+ficava a fixar o valor de hoje para sempre. As opções dos `select` vêm de
+`GET /estado` → `opcoes.estrategia` (as mesmas listas que validam, incluindo os
+rótulos), não de uma cópia em JS que envelhece.
+
+**Gravação cirúrgica.** `POST /estrategia` altera **só** o bloco: um `select` não
+pode ter o poder de reescrever a config inteira, que é como o editor de JSON já
+perdeu alterações de outra sessão. Leva `rev` (o do `/estado`) e responde `409`
+a uma aba antiga, em vez de sobrepor à escolha de outra sessão.
+
+**Escolha por contexto.** A estratégia **não** é o critério para mandar
+superfícies diferentes a modelos diferentes — isso é o bloqueio `superficies`
+(ver «Superfícies de sessão»), que tem prioridade acima da complexidade. A
+estratégia só decide *qual das rotas elegíveis* serve o nível já decidido.
+
+Regressão: `python3 test_estrategia.py` (21 casos: listas fechadas, herança,
+migração, round-trip e o efeito real em `escolher`) e os 21 casos novos em
+`dashboard/selftest.py` sobre `POST /estrategia`.
 
 ## CLI `vmm`
 
@@ -819,6 +953,7 @@ vmm on|off [--perfil NOME]           liga/desliga (sem --perfil: global)
 vmm perfis                           geridos vs. existentes na máquina
 vmm perfil add NOME [--copiar-de X]  acrescenta perfil (cópia opcional)
 vmm perfil rm NOME                   deixa de ser gerido
+vmm estrategia [--perfil NOME] [--modo rodizio|prioridade] [--por turno|sessao] [--herdar] [--json]
 vmm rota list [PERFIL] [--json]
 vmm rota add PERFIL PROVIDER MODELO --complexidade leve,media [--id ID] [--acesso api|subscricao]
 vmm rota rm PERFIL ID

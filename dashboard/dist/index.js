@@ -175,6 +175,129 @@
     );
   }
 
+  // --- superficies de sessao ------------------------------------------------
+  // O criterio que `cron` precisa nao e uma palavra no texto: e o contexto em
+  // que a sessao corre (`cron`, `api_server`, `cli`, ...), que o core entrega
+  // de forma deterministica. Por isso a regra e por superficie, nao por termo:
+  // 7,7% das mensagens contem "cron" e a maioria nao tem nada a ver com cron.
+  function opcoesAlvo(catalogo, niveis) {
+    const lista = [
+      { valor: "", rotulo: "— sem regra (herdar) —" },
+      { valor: "__nunca", rotulo: "nunca: nao tratar esta superficie" },
+    ];
+    (catalogo || []).forEach(function (m) {
+      lista.push({
+        valor: "entrada:" + m.id,
+        rotulo: m.id + " · " + m.provider + "/" + m.modelo,
+      });
+    });
+    (niveis || []).forEach(function (n) {
+      lista.push({ valor: "nivel:" + n, rotulo: "nível " + n });
+    });
+    return lista;
+  }
+
+  function valorDaRegra(r) {
+    if (!r) return "";
+    if (r.activo === false) return "__nunca";
+    if (r.entrada) return "entrada:" + r.entrada;
+    if (r.provider || r.modelo) return (r.provider || "") + "/" + (r.modelo || "");
+    if (r.nivel) return "nivel:" + r.nivel;
+    return "";
+  }
+
+  function rotuloRegra(r, catalogo) {
+    if (!r) return "sem regra";
+    if (r.activo === false) return "nunca";
+    if (r.entrada) {
+      const m = (catalogo || []).filter(function (x) { return x.id === r.entrada; })[0];
+      return r.entrada + (m ? " (" + m.provider + "/" + m.modelo + ")" : " (fora do catálogo)");
+    }
+    if (r.nivel) return "nível " + r.nivel;
+    return (r.provider || "") + "/" + (r.modelo || "");
+  }
+
+  function Superficies(props) {
+    const estadoNovo = React.useState("");
+    const nova = estadoNovo[0];
+    const setNova = estadoNovo[1];
+    const regras = props.regras || {};
+    const nomes = Object.keys(regras).sort();
+    const opcoes = opcoesAlvo(props.catalogo, props.niveis);
+    const idLista = "vmm-sup-" + (props.perfil || "x");
+
+    function adicionar() {
+      const nome = String(nova || "").trim().toLowerCase();
+      const primeiro = (props.catalogo || [])[0];
+      if (!nome || !primeiro) return;
+      setNova("");
+      // Nasce ligada a primeira rota do catalogo: uma superficie sem regra nao
+      // exprime nada, e a linha fica logo editavel para escolher outra.
+      props.onMudar(nome, "entrada:" + primeiro.id);
+    }
+
+    return h(
+      "div",
+      { className: "vmm-superficies" },
+      h("span", { className: "vmm-rotulo" }, "Superfícies de sessão"),
+      nomes.length
+        ? nomes.map(function (s) {
+            const r = regras[s] || {};
+            const herdada = r.origem_regra === "global";
+            return h(
+              "div",
+              { className: "vmm-sup-linha", key: s },
+              h(
+                "span",
+                {
+                  className: "vmm-sup-nome",
+                  title: herdada
+                    ? "regra herdada do global — escolher aqui cria a do perfil"
+                    : "regra deste perfil",
+                },
+                s,
+                herdada ? h("span", { className: "vmm-mudo" }, " · global") : null
+              ),
+              h(Seletor, {
+                valor: valorDaRegra(r),
+                opcoes: opcoes,
+                disabled: props.aGravar,
+                rotulo: "rota para " + s,
+                title: rotuloRegra(r, props.catalogo),
+                onChange: function (v) { props.onMudar(s, v); },
+              })
+            );
+          })
+        : h("div", { className: "vmm-mudo" },
+            "sem regras de superfície — decide a tarefa e a complexidade"),
+      h(
+        "div",
+        { className: "vmm-sup-add" },
+        h("input", {
+          className: "vmm-select",
+          list: idLista,
+          value: nova,
+          placeholder: "superfície (cron, cli, api_server…)",
+          disabled: props.aGravar,
+          "aria-label": "superfície a acrescentar",
+          onChange: function (e) { setNova(e.target.value); },
+          onKeyDown: function (e) { if (e.key === "Enter") adicionar(); },
+        }),
+        h("datalist", { id: idLista },
+          (props.conhecidas || []).map(function (c) {
+            return h("option", { key: c, value: c });
+          })),
+        h(Button, {
+          size: "sm",
+          variant: "ghost",
+          disabled: props.aGravar || !String(nova || "").trim() || !(props.catalogo || []).length,
+          title: "Acrescentar a superfície e depois escolher a rota na linha",
+          onClick: adicionar,
+        }, "acrescentar")
+      )
+    );
+  }
+
   // Texto do que esta em vigor, com a proveniencia. Um perfil que herda tem de
   // o dizer: sem isso, o utilizador muda o global e nao percebe porque e que
   // aquele cartao nao mudou.
@@ -446,35 +569,15 @@
 
         // Superficie de sessao (cron, api_server, cli...): e o criterio que
         // ganha a tarefa e a analise, porque nao se adivinha — vem do core.
-        (function () {
-          const sups = perfil.superficies || {};
-          const nomes = Object.keys(sups);
-          if (!nomes.length) return null;
-          return h(
-            "div",
-            { className: "vmm-tarefas" },
-            h("span", { className: "vmm-rotulo" }, "Superficies de sessao"),
-            h(
-              "div",
-              { className: "vmm-chips" },
-              nomes.map(function (k) {
-                const r = sups[k] || {};
-                const alvo = r.activo === false
-                  ? "anulada"
-                  : r.entrada
-                    ? r.entrada
-                    : r.nivel
-                      ? "nivel " + r.nivel
-                      : (r.provider || "") + "/" + (r.modelo || "");
-                return h(
-                  Chip,
-                  { key: k, tone: "outline" },
-                  k + " → " + alvo + (r.origem_regra === "global" ? " · global" : "")
-                );
-              })
-            )
-          );
-        })(),
+        h(Superficies, {
+          perfil: nome,
+          regras: p.superficies || {},
+          catalogo: p.catalogo || [],
+          niveis: (props.mais || {}).niveis || [],
+          conhecidas: (props.mais || {}).superficies || [],
+          aGravar: props.aGravar,
+          onMudar: function (sup, alvo) { props.onSuperficie(nome, sup, alvo); },
+        }),
 
         h(
           "table",
@@ -842,6 +945,29 @@
         .then(function () { setAGravar(false); });
     }
 
+    function mudarSuperficie(perfil, superficie, alvo) {
+      setAGravar(true);
+      pedir("/superficies", {
+        method: "POST",
+        body: {
+          ambito: "perfil",
+          perfil: perfil,
+          superficie: superficie,
+          alvo: alvo === "__nunca" ? "nunca" : String(alvo || ""),
+          rev: (estado && estado.rev) || "",
+        },
+      })
+        .then(function () { return carregar(); })
+        .catch(function (e) {
+          const msg = String(e && e.message ? e.message : e);
+          setErro(msg.indexOf("409") !== -1
+            ? "As superfícies mudaram noutro sítio — recarreguei o estado. Escolha outra vez."
+            : "Erro ao gravar a superfície: " + msg);
+          return carregar();
+        })
+        .then(function () { setAGravar(false); });
+    }
+
     function carregarConfig() {
       pedir("/config")
         .then(function (r) {
@@ -1128,9 +1254,13 @@
             dados: perfis[n],
             aGravar: aGravar,
             opcoes: ((estado.opcoes || {}).estrategia) || {},
+            mais: estado.opcoes || {},
             onToggle: function (perfil, activo) { alternar("perfil", perfil, activo); },
             onEstrategia: function (perfil, campos, herdar) {
               mudarEstrategia("perfil", perfil, campos, herdar);
+            },
+            onSuperficie: function (perfil, sup, alvo) {
+              mudarSuperficie(perfil, sup, alvo);
             },
           });
         })
@@ -1193,6 +1323,9 @@
     window.__VMM_TEST__.opcoesEstrategia = function (estado) {
       return ((estado || {}).opcoes || {}).estrategia || {};
     };
+    window.__VMM_TEST__.opcoesAlvo = opcoesAlvo;
+    window.__VMM_TEST__.valorDaRegra = valorDaRegra;
+    window.__VMM_TEST__.rotuloRegra = rotuloRegra;
     window.__VMM_TEST__.metaPlugin = metaPlugin;
     window.__VMM_TEST__.linhaIdentidade = linhaIdentidade;
   }

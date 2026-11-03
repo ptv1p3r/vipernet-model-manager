@@ -456,6 +456,40 @@ check("opcoesEstrategia: le as listas do /estado",
 check("opcoesEstrategia: payload sem opcoes nao rebenta",
       JSON.stringify(T.opcoesEstrategia(null)) === "{}");
 
+// ---- superficies: regra -> valor do select -----------------------------
+const cat = [
+  { id: "a", provider: "deepseek", modelo: "deepseek-flash" },
+  { id: "b", provider: "nvidia", modelo: "nemotron:free" },
+];
+check("valorDaRegra: entrada",
+      T.valorDaRegra({ entrada: "b" }) === "entrada:b");
+check("valorDaRegra: nivel",
+      T.valorDaRegra({ nivel: "alta" }) === "nivel:alta");
+check("valorDaRegra: provider/modelo",
+      T.valorDaRegra({ provider: "x", modelo: "y" }) === "x/y");
+check("valorDaRegra: anulada",
+      T.valorDaRegra({ activo: false }) === "__nunca");
+check("valorDaRegra: sem regra", T.valorDaRegra(null) === "");
+
+const alvos = T.opcoesAlvo(cat, ["leve", "alta"]);
+check("opcoesAlvo: herdar vem primeiro e sem regra e o valor vazio",
+      alvos[0].valor === "" && alvos[1].valor === "__nunca", JSON.stringify(alvos[0]));
+check("opcoesAlvo: uma opcao por entrada do catalogo",
+      alvos.filter(function (o) { return o.valor.indexOf("entrada:") === 0; }).length === 2);
+check("opcoesAlvo: o rotulo diz provider/modelo",
+      alvos.filter(function (o) { return o.valor === "entrada:b"; })[0].rotulo
+      === "b · nvidia/nemotron:free");
+check("opcoesAlvo: niveis no fim",
+      alvos[alvos.length - 1].valor === "nivel:alta", JSON.stringify(alvos[alvos.length - 1]));
+check("opcoesAlvo: catalogo vazio nao rebenta",
+      T.opcoesAlvo(null, null).length === 2);
+
+check("rotuloRegra: entrada resolvida no catalogo",
+      T.rotuloRegra({ entrada: "a" }, cat) === "a (deepseek/deepseek-flash)");
+check("rotuloRegra: entrada fora do catalogo e dita",
+      T.rotuloRegra({ entrada: "zz" }, cat) === "zz (fora do catálogo)");
+check("rotuloRegra: anulada", T.rotuloRegra({ activo: false }, cat) === "nunca");
+
 console.log("");
 if (falhas) {
   console.log(falhas + " de " + total + " verificacoes FALHARAM");

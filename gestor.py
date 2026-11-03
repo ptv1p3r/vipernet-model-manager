@@ -50,6 +50,7 @@ Regras que decidem o resultado:
 from __future__ import annotations
 
 import copy
+import difflib
 import hashlib
 import json
 import os
@@ -329,6 +330,17 @@ def normalizar_superficies(
         if regra.get("activo") is False:
             saida[nome] = {"activo": False}
             continue
+        # Anti-gralha: vale com e sem catalogo. Uma regra para `crom` nunca
+        # dispara (a superficie e `cron`) e o silencio e o pior resultado —
+        # o utilizador fica convencido de ter configurado o cron.
+        if nome not in SUPERFICIES_CONHECIDAS and nome.isalpha():
+            parecida = difflib.get_close_matches(
+                nome, SUPERFICIES_CONHECIDAS, n=1, cutoff=0.75)
+            if parecida:
+                erros.append(f"{contexto}.{nome}: superficie parecida com "
+                             f"'{parecida[0]}' — corrija o nome ou use uma "
+                             f"superficie real")
+                continue
         limpa: dict[str, Any] = {}
         if regra.get("entrada") not in (None, ""):
             limpa["entrada"] = str(regra["entrada"]).strip()
@@ -361,11 +373,6 @@ def normalizar_superficies(
                 erros.append(f"{contexto}.{nome}: {limpa['provider']}/"
                              f"{limpa['modelo']} nao esta no catalogo do perfil")
                 continue
-        elif nome not in SUPERFICIES_CONHECIDAS and nome.isalpha():
-            # Aviso, nao erro: um provider novo traz superficies novas, e a
-            # regra continua valida. Mas uma gralha (`corm`) nunca dispara.
-            erros.append(f"{contexto}.{nome}: superficie nao vista neste ambiente "
-                         f"(conhecidas: {', '.join(SUPERFICIES_CONHECIDAS)})")
         saida[nome] = limpa
     return saida
 
@@ -1155,6 +1162,14 @@ def perfil_config(cfg: dict[str, Any], perfil: str) -> dict[str, Any] | None:
                     base = dict(analise.get("limiares") or {})
                     base.update(valor)
                     analise["limiares"] = base
+                elif chave == "superficies" and isinstance(valor, dict):
+                    # Uma regra global vale para todos, superficie a superficie:
+                    # se o perfil declarasse `cron` e substituisse o bloco
+                    # inteiro, as regras globais das outras superficies
+                    # desapareciam sem ninguem as ter apagado.
+                    base = dict(analise.get("superficies") or {})
+                    base.update(copy.deepcopy(valor))
+                    analise["superficies"] = base
                 else:
                     analise[chave] = copy.deepcopy(valor)
         saida["analise"] = analise

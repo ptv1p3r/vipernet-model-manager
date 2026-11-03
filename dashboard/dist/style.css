@@ -166,6 +166,38 @@
   outline-offset: 1px;
 }
 
+/* --- superficies de sessao -----------------------------------------------
+   Cada regra e uma linha nome + select: a superficie a esquerda (o que o core
+   entrega) e a rota a direita. O nome e mono porque e um identificador do
+   Hermes, nao texto de interface. */
+.vmm-superficies {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.6rem;
+}
+.vmm-sup-linha {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.vmm-sup-nome {
+  font-family: var(--vmm-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.8rem;
+  min-width: 7rem;
+}
+.vmm-sup-add {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.vmm-sup-add input.vmm-select {
+  max-width: 12rem;
+}
+.vmm-sup-add input.vmm-select::placeholder {
+  opacity: 0.65;
+}
+
 .vmm-herdar {
   font-size: 0.6875rem !important;
   padding: 0 0.25rem !important;
