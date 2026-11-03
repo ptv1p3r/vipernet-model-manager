@@ -50,9 +50,9 @@
           "acesso": "subscricao"
         },
         {
-          "id": "deepseek-pro",
-          "provider": "deepseek",
-          "modelo": "deepseek-v4-pro",
+          "id": "nemotron-ultra-free",
+          "provider": "openrouter",
+          "modelo": "nvidia/nemotron-3-ultra-550b-a55b:free",
           "complexidade": "alta",
           "acesso": "api"
         }
@@ -120,9 +120,9 @@
           "acesso": "api"
         },
         {
-          "id": "deepseek-pro",
-          "provider": "deepseek",
-          "modelo": "deepseek-v4-pro",
+          "id": "nemotron-ultra-free",
+          "provider": "openrouter",
+          "modelo": "nvidia/nemotron-3-ultra-550b-a55b:free",
           "complexidade": "alta",
           "acesso": "api"
         },
