@@ -29,6 +29,7 @@ Regras de desenho:
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib
 import importlib.util
 import json
@@ -172,6 +173,11 @@ _avisados: set[tuple[str, str, str]] = set()
 _maus_expira: dict[tuple[str, str, str], float] = {}
 _ultimo_perfil: dict[str, str] = {}
 _ultima_decisao: dict[str, dict[str, Any]] = {}
+# Decisao fixada por turno: nivel, tarefa, origem e rota do primeiro pedido.
+# A chave e o `turn_id` do core (sessao:sessao:8hex) ou, sem ele, um hash do
+# texto — nunca o texto, para o ledger continuar sem conversa.
+_turno: dict[str, dict[str, Any]] = {}
+_TURNO_MAX = 500
 # Resultado do turno anterior, por sessao: alimenta o nivel do turno seguinte
 # (A). Guarda so o nivel efectivo, o finish_reason e os tokens de saida.
 _resultado: dict[str, dict[str, Any]] = {}
@@ -270,6 +276,51 @@ def _uma_vez(chave: tuple[str, str, str]) -> bool:
         return True
 
 
+def chave_do_turno(sessao: str, turn_id: Any = "",
+                   mensagens: list[Any] | None = None) -> tuple[str, str]:
+    """Chave estavel do turno e a sua fonte (`turn_id` ou `hash`).
+
+    O core entrega `turn_id` em `sessao:sessao:8hex` (medido a 2026-11-02 em
+    167 turnos, zero sem ele). Sem `turn_id` — outra superficie, outra versao —
+    deriva-se do que **nao muda dentro do turno**: numero de mensagens de
+    utilizador e hash da ultima. So o hash entra na chave: o texto da conversa
+    nunca chega ao ledger.
+    """
+    sessao = sessao or ""
+    tid = str(turn_id or "").strip()
+    if tid:
+        return f"{sessao}\x1f{tid}", "turn_id"
+    n_utilizador = 0
+    ultima = ""
+    for msg in mensagens or []:
+        if not isinstance(msg, dict) or (msg.get("role") or "") != "user":
+            continue
+        n_utilizador += 1
+        conteudo = msg.get("content")
+        if isinstance(conteudo, str):
+            ultima = conteudo
+        elif isinstance(conteudo, list):
+            try:
+                ultima = json.dumps(conteudo, ensure_ascii=False, sort_keys=True)
+            except Exception:  # noqa: BLE001 — conteudo exotico: fica o contador
+                ultima = ""
+    resumo = hashlib.sha256(f"{sessao}\x1f{n_utilizador}\x1f{ultima}".encode("utf-8"))
+    return f"{sessao}\x1f{resumo.hexdigest()[:16]}", "hash"
+
+
+def _pin_ler(chave: str) -> dict[str, Any] | None:
+    with _lock:
+        guardado = _turno.get(chave)
+        return dict(guardado) if guardado else None
+
+
+def _pin_gravar(chave: str, valores: dict[str, Any]) -> None:
+    with _lock:
+        _turno[chave] = dict(valores)
+        if len(_turno) > _TURNO_MAX:
+            _turno.clear()
+
+
 # --------------------------------------------------------------------------- rotas
 
 
@@ -301,6 +352,15 @@ def resolver_rota(perfil: str, provider: str, modelo: str) -> dict[str, Any]:
     with _lock:
         _rotas[chave] = {"expira": agora + _TTL_ROTA, "rota": rota}
     return dict(rota)
+
+
+def _entrada_do_catalogo(pcfg: dict[str, Any], entrada_id: Any) -> dict[str, Any] | None:
+    """Entrada do catalogo pelo id; `None` se o dono a removeu ou renomeou."""
+    alvo = str(entrada_id or "")
+    for entrada in gestor.catalogo_utilizavel(pcfg):
+        if str(entrada.get("id") or "") == alvo:
+            return entrada
+    return None
 
 
 def escolher(pcfg: dict[str, Any], nivel: str, *, perfil: str, sessao: str) -> dict[str, Any] | None:
@@ -664,6 +724,9 @@ def middleware_llm_request(
     provider: str = "",
     base_url: str = "",
     api_mode: str = "",
+    turn_id: Any = None,
+    api_request_id: Any = None,
+    api_call_count: Any = 0,
     **_: Any,
 ) -> dict[str, Any] | None:
     """Decide a rota do turno e troca-a no agente; `None` = pedido intacto."""
@@ -701,72 +764,122 @@ def middleware_llm_request(
         analise = pcfg.get("analise") or {}
         _recarregar_analise_se_mudou()
         _recarregar_analise_modelo_se_mudou()
-        decisao = _analise_mod.decidir(
-            _mensagens(request),
-            limiares=analise.get("limiares"),
-            janela=int(analise.get("janela_mensagens", 8) or 8),
-            maximo=int(analise.get("varredura_max_mensagens", 60) or 60),
-            pesos=analise.get("pesos"),
-        )
-        tarefa = _analise_mod.detectar_tarefa(_mensagens(request), pcfg.get("tarefas") or {})
-        associada = tarefa if any(tarefa in e.get("tarefas", [])
-                                 for e in gestor.catalogo_utilizavel(pcfg)) else None
-        # Classificador por modelo: entra quando o turno nao tem ordem explicita
-        # (`complexidade: alta` na mensagem), quando nenhuma tarefa manda no
-        # turno (a tarefa e a prioridade) e quando o perfil o tem ligado com
-        # rota declarada. Falha -> heuristica, com rasto no ledger.
-        classificador: dict[str, Any] | None = None
-        classificador_erro = ""
-        if not associada and decisao.get("origem") != "marcador":
-            definicao = _analise_modelo_mod.efectiva(analise)
-            if definicao is not None:
-                resultado_m = _analise_modelo_mod.classificar(
-                    _mensagens(request), definicao,
-                    lambda p, m: resolver_rota(perfil, p, m), perfil=perfil)
-                tudo = dict(resultado_m or {})
-                classificador = tudo.get("classificador")
-                if tudo.get("erro"):
-                    classificador_erro = str(tudo["erro"])
-                elif tudo.get("nivel"):
-                    decisao = {**decisao, "nivel": tudo["nivel"], "origem": "modelo",
-                               "score": None}
-        nivel = decisao["nivel"] or ("leve" if associada else "")
-        base = {"perfil": perfil, "sessao": session_id, "nivel": nivel,
-                "motor": _VERSAO_MOTOR,
-                "origem": "tarefa" if associada else decisao["origem"],
-                "tarefa": tarefa, "score": decisao.get("score"),
-                "sinais": decisao.get("sinais")}
-        if classificador:
-            base["classificador"] = classificador
-        if classificador_erro:
-            base["classificador_erro"] = classificador_erro
-        _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
-                         origem=base["origem"], acesso="", entrada="")
-        if not nivel:
-            _registar({**base, "evento": "reset"}, registar=registar)
-            return None
-        if associada:
-            # A tarefa nao contamina a histerese: a proxima tarefa e reavaliada ja.
-            with _lock:
-                _historico.pop(f"{perfil}\x1f{session_id}", None)
+        mensagens = _mensagens(request)
+        # O nivel decide-se UMA vez por turno. Um turno faz varios pedidos (laco
+        # de ferramentas) e cada pedido mudava a janela de mensagens, voltava a
+        # correr o classificador (nao deterministico) e somava na histerese:
+        # medido a 2026-11-02, 63 de 167 turnos (37,7%) trocavam de nivel a
+        # meio. A chave vem do `turn_id` que o core ja entrega.
+        fixar_turno = bool(analise.get("fixar_nivel_por_turno", True))
+        chave_turno, fonte_turno = chave_do_turno(session_id, turn_id, mensagens)
+        passo = api_call_count if isinstance(api_call_count, int) else 0
+        identificador_turno = chave_turno.rsplit("\x1f", 1)[-1]
+        pin = _pin_ler(chave_turno) if fixar_turno else None
+        if pin is not None and not pin.get("nivel"):
+            pin = None
+        if pin is not None and fonte_turno != "turn_id":
+            # Sem `turn_id` a chave e um hash, e dois turnos seguidos com o mesmo
+            # texto colidem. `api_call_count` reinicia a cada turno, logo so se
+            # reutiliza quando o passo avancou: e a unica prova de que ainda
+            # estamos no mesmo turno.
+            if passo <= int(pin.get("passo") or 0):
+                pin = None
+        if pin is not None:
+            # Reutilizacao: nao corre decidir, detectar_tarefa, classificar,
+            # herdar_se_indeciso, ajustar_por_resultado nem aplicar_histerese.
+            # O score/sinais do primeiro pedido nao se repetem — sao o rasto da
+            # decisao, e nao houve reavaliacao nenhuma neste pedido.
+            nivel = str(pin.get("nivel") or "")
+            tarefa = str(pin.get("tarefa") or "")
+            associada = pin.get("associada") or None
+            base = {"perfil": perfil, "sessao": session_id, "nivel": nivel,
+                    "motor": _VERSAO_MOTOR,
+                    "origem": pin.get("origem") or "",
+                    "tarefa": tarefa, "score": None, "sinais": None,
+                    "turno": identificador_turno, "passo": passo,
+                    "pin": "reutilizado", "fonte_turno": fonte_turno}
+            if pin.get("classificador"):
+                base["classificador"] = pin["classificador"]
+            if pin.get("classificador_erro"):
+                base["classificador_erro"] = pin["classificador_erro"]
         else:
-            # D: zona morta do limiar -> herda o nivel anterior em vez de oscilar.
-            # Nao se aplica a decisao por modelo: a zona morta e um artefacto do
-            # limiar heuristico, e o modelo nao decide por pontuacao.
-            if decisao.get("origem") == "modelo":
-                motivo_d = ""
+            decisao = _analise_mod.decidir(
+                mensagens,
+                limiares=analise.get("limiares"),
+                janela=int(analise.get("janela_mensagens", 8) or 8),
+                maximo=int(analise.get("varredura_max_mensagens", 60) or 60),
+                pesos=analise.get("pesos"),
+            )
+            tarefa = _analise_mod.detectar_tarefa(mensagens, pcfg.get("tarefas") or {})
+            associada = tarefa if any(tarefa in e.get("tarefas", [])
+                                     for e in gestor.catalogo_utilizavel(pcfg)) else None
+            # Classificador por modelo: entra quando o turno nao tem ordem explicita
+            # (`complexidade: alta` na mensagem), quando nenhuma tarefa manda no
+            # turno (a tarefa e a prioridade) e quando o perfil o tem ligado com
+            # rota declarada. Falha -> heuristica, com rasto no ledger.
+            classificador: dict[str, Any] | None = None
+            classificador_erro = ""
+            if not associada and decisao.get("origem") != "marcador":
+                definicao = _analise_modelo_mod.efectiva(analise)
+                if definicao is not None:
+                    resultado_m = _analise_modelo_mod.classificar(
+                        mensagens, definicao,
+                        lambda p, m: resolver_rota(perfil, p, m), perfil=perfil)
+                    tudo = dict(resultado_m or {})
+                    classificador = tudo.get("classificador")
+                    if tudo.get("erro"):
+                        classificador_erro = str(tudo["erro"])
+                    elif tudo.get("nivel"):
+                        decisao = {**decisao, "nivel": tudo["nivel"], "origem": "modelo",
+                                   "score": None}
+            nivel = decisao["nivel"] or ("leve" if associada else "")
+            base = {"perfil": perfil, "sessao": session_id, "nivel": nivel,
+                    "motor": _VERSAO_MOTOR,
+                    "origem": "tarefa" if associada else decisao["origem"],
+                    "tarefa": tarefa, "score": decisao.get("score"),
+                    "sinais": decisao.get("sinais"),
+                    "turno": identificador_turno, "passo": passo,
+                    "pin": "novo", "fonte_turno": fonte_turno}
+            if classificador:
+                base["classificador"] = classificador
+            if classificador_erro:
+                base["classificador_erro"] = classificador_erro
+            if not nivel:
+                _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
+                                 origem=base["origem"], acesso="", entrada="")
+                _registar({**base, "evento": "reset"}, registar=registar)
+                return None
+            if associada:
+                # A tarefa nao contamina a histerese: a proxima tarefa e reavaliada ja.
+                with _lock:
+                    _historico.pop(f"{perfil}\x1f{session_id}", None)
             else:
-                nivel, motivo_d = herdar_se_indeciso(
-                    perfil, session_id, nivel, decisao, analise.get("limiares"))
-            if motivo_d:
-                base["indecisao"] = motivo_d
-            # A: turno anterior truncado no mesmo nivel -> sobe um nivel.
-            nivel, motivo_a = ajustar_por_resultado(session_id, nivel)
-            if motivo_a:
-                base["realimentacao"] = motivo_a
-            nivel = aplicar_histerese(perfil, session_id, nivel,
-                                      descer_apos=int(analise.get("descer_apos", 2) or 2))
-        base["nivel"] = nivel
+                # D: zona morta do limiar -> herda o nivel anterior em vez de oscilar.
+                # Nao se aplica a decisao por modelo: a zona morta e um artefacto do
+                # limiar heuristico, e o modelo nao decide por pontuacao.
+                if decisao.get("origem") == "modelo":
+                    motivo_d = ""
+                else:
+                    nivel, motivo_d = herdar_se_indeciso(
+                        perfil, session_id, nivel, decisao, analise.get("limiares"))
+                if motivo_d:
+                    base["indecisao"] = motivo_d
+                # A: turno anterior truncado no mesmo nivel -> sobe um nivel.
+                nivel, motivo_a = ajustar_por_resultado(session_id, nivel)
+                if motivo_a:
+                    base["realimentacao"] = motivo_a
+                nivel = aplicar_histerese(perfil, session_id, nivel,
+                                          descer_apos=int(analise.get("descer_apos", 2) or 2))
+            base["nivel"] = nivel
+            if fixar_turno:
+                # A rota entra aqui no primeiro pedido que a escolher com sucesso;
+                # `escolher_com_rota` continua a ser a unica autoridade sobre ela.
+                _pin_gravar(chave_turno, {
+                    "nivel": nivel, "tarefa": tarefa, "associada": associada,
+                    "origem": base["origem"], "passo": passo,
+                    "classificador": base.get("classificador"),
+                    "classificador_erro": base.get("classificador_erro"),
+                })
         _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
                          origem=base["origem"], acesso="", entrada="")
         if not gestor.catalogo_utilizavel(pcfg):
@@ -789,10 +902,46 @@ def middleware_llm_request(
             if nivel == "leve":
                 nivel = "media"
                 base["nivel"] = nivel
+                # Num turno ja fixado, subir o nivel aqui e uma necessidade do
+                # pedido (nao coube), nao oscilacao: fica declarado como tal.
+                base["excecao"] = "capacidade"
+                base["excecao_motivo"] = "contexto_nao_cabe_no_nivel_pinado"
         if needs.get("modalidades") or needs.get("json"):
             base["exige"] = {k: needs[k] for k in ("modalidades", "json") if needs.get(k)}
-        entrada, rota, falhadas = escolher_com_rota(
-            pcfg, nivel, perfil=perfil, sessao=session_id, tarefa=associada, needs=needs)
+        # Rota fixada no turno: reutiliza-se enquanto for viavel. So cai para a
+        # escolha normal quando a rota morreu (falhou ha pouco, credencial) ou
+        # deixou de servir (contexto/modalidade/json/latencia) — e isso fica
+        # marcado com `excecao`, senao "estavel" seria uma mentira confortavel.
+        entrada = rota = None
+        falhadas: list[str] = []
+        if pin is not None and pin.get("entrada"):
+            candidata = _entrada_do_catalogo(pcfg, pin["entrada"])
+            if candidata is not None:
+                motivo_cap = gestor.rota_serve(candidata, needs) if needs else ""
+                chave_rota = (perfil, str(candidata["provider"]).lower(),
+                              candidata["modelo"])
+                with _lock:
+                    morta = _maus_expira.get(chave_rota, 0.0) > time.monotonic()
+                if motivo_cap:
+                    base["excecao"] = "capacidade"
+                    base["excecao_motivo"] = f"rota_pinada:{motivo_cap}"
+                elif morta:
+                    base["excecao"] = "rota"
+                    base["excecao_motivo"] = "rota_pinada_falhou_ha_pouco"
+                else:
+                    try:
+                        entrada = candidata
+                        rota = resolver_rota(perfil, candidata["provider"],
+                                             candidata["modelo"])
+                        base["rota_pin"] = "reutilizada"
+                    except Exception as exc:  # noqa: BLE001
+                        base["excecao"] = "rota"
+                        base["excecao_motivo"] = f"rota_pinada:{type(exc).__name__}"
+                        entrada = rota = None
+        if entrada is None or rota is None:
+            entrada, rota, falhadas = escolher_com_rota(
+                pcfg, nivel, perfil=perfil, sessao=session_id, tarefa=associada,
+                needs=needs)
         if associada and (entrada is None or rota is None):
             base["origem"] = "analise_fallback_tarefa"
             base["falhadas_tarefa"] = falhadas
@@ -825,6 +974,14 @@ def middleware_llm_request(
             if entrada is None or rota is None:
                 _registar({**base, "evento": "sem_rota", "falhadas": falhadas}, registar=registar)
                 return None
+        if fixar_turno:
+            # A rota do turno fica fixada no mesmo pin: os pedidos seguintes
+            # reutilizam-na sem repetir rodizio, estrategia nem credenciais.
+            guardado = _pin_ler(chave_turno) or {}
+            guardado.update({"nivel": nivel, "entrada": entrada["id"],
+                             "provider": rota["provider"],
+                             "modelo": entrada["modelo"], "passo": passo})
+            _pin_gravar(chave_turno, guardado)
         _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
                          origem=base["origem"], acesso=entrada.get("acesso", ""),
                          entrada=entrada["id"], escolhido_provider=rota["provider"],

@@ -226,7 +226,8 @@ Ficheiro vivo: `/opt/data/plugin-data/vipernet-model-manager/config.json`
   "activo": true,
   "registar": true,
   "analise": {"janela_mensagens": 8, "varredura_max_mensagens": 60,
-               "limiares": {"media": 3, "alta": 7}, "descer_apos": 2},
+               "limiares": {"media": 3, "alta": 7}, "descer_apos": 2,
+               "fixar_nivel_por_turno": true},
   "perfis": {
     "trabalho": {
       "activo": true,
@@ -519,16 +520,46 @@ encontrado.
 
 ## Escolha, por turno
 
+Um **turno** é uma mensagem do utilizador e tudo o que ela provoca — no laço de
+ferramentas, dezenas de pedidos ao provider. O nível e a rota decidem-se **uma
+vez**, no primeiro pedido, e o resto do turno reutiliza-os.
+
 1. resolve o perfil do turno (o gateway multiplexado serve vários no mesmo
    processo);
 2. aplica os interruptores (global, perfil) — se algum está em baixo, nada muda;
-3. classifica a complexidade e aplica **histerese**: sobe já, desce só depois de
-   `descer_apos` avaliações abaixo do nível corrente (evita trocar de rota e
+3. **verifica o pin do turno**: se já há decisão para esta `turn_id`, reutiliza
+   nível, tarefa, origem e rota e salta os passos 4 a 7. Sem decisão (primeiro
+   pedido), segue;
+4. classifica a complexidade e aplica **histerese**: sobe já, desce só depois de
+   `descer_apos` **turnos** abaixo do nível corrente (evita trocar de rota e
    estragar a cache por causa de uma mensagem curta);
-4. percorre o catálogo do perfil na ordem da estratégia, saltando entradas cujo
+5. percorre o catálogo do perfil na ordem da estratégia, saltando entradas cujo
    provider não tem credencial no escopo desse perfil;
-5. troca o agente vivo (`agent.switch_model`): cliente HTTP, chave, `base_url`,
-   `api_mode` e contabilidade mudam juntos — não é só reescrever o campo `model`.
+6. troca o agente vivo (`agent.switch_model`): cliente HTTP, chave, `base_url`,
+   `api_mode` e contabilidade mudam juntos — não é só reescrever o campo `model`;
+7. grava o pin do turno (nível, tarefa, origem e a rota escolhida).
+
+Porque é que isto é uma correção e não uma optimização: medido no ledger real a
+2026-11-02, **63 de 167 turnos (37%) trocavam de nível a meio**. Três causas, e
+o pin mata as três: a janela de mensagens cresce a cada pedido e a pontuação
+muda com ela; a histerese contava **pedidos** em vez de turnos; e o classificador
+por modelo corria por pedido, e não é determinístico (concordância 0,86–0,91).
+
+Duas coisas continuam a poder mudar a decisão dentro do turno, de propósito, e
+ficam **declaradas** no ledger com `excecao`:
+
+- `capacidade` — o contexto deixou de caber na rota ou no nível pinado (um
+  pedido de 128k tokens não cabe numa janela de 32k: forçá-lo era mentir);
+- `rota` — a rota pinada morreu (falhou há pouco, credencial em baixo); troca-se
+  **dentro do mesmo nível**.
+
+Sem esse campo, "estável" seria uma mentira confortável: a prova conta as
+mudanças silenciosas e as declaradas em separado.
+
+Desligar: `analise.fixar_nivel_por_turno: false` devolve o comportamento
+anterior, sem tocar em código. Nota de semântica: com o pin ligado, `descer_apos`
+conta **turnos** (era a intenção desde o início); desligado, volta a contar
+pedidos, como antes.
 
 Fail-open em toda a linha: sem decisão, sem rota ou com excepção, o pedido segue
 intacto e a razão vai para `uso.err`.
@@ -546,6 +577,21 @@ efectivos do agente (não o escolhido no catálogo), `respondido_por`
 `task_id`. Quando a middleware escolheu algo, `escolhido` guarda
 provider+modelo escolhidos — assim a distinção **escolhido vs efectivo** fica
 explícita, sem inventar nenhum dos dois a partir da config.
+
+Cada evento de decisão leva quatro campos que existem para responder a "quantas
+vezes este turno mudou de modelo", sem junção nenhuma:
+
+- `turno` — a chave do turno (`turn_id` do core, ou um hash de sessão+texto; o
+  texto nunca entra);
+- `passo` — o `api_call_count` do pedido dentro do turno;
+- `pin` — `novo` (decidiu) ou `reutilizado` (herdou a decisão do primeiro);
+- `excecao` + `excecao_motivo` — só quando a decisão mudou por necessidade
+  (`capacidade`, `rota`);
+- `fonte_turno` — `turn_id` ou `hash`, para se saber quanto vale a prova.
+
+A verificação aritmética que apanha um pin que não está a pegar:
+`pin: reutilizado` tem de ser igual a `pedidos − turnos`.
+
 
 O ledger **não** leva texto de conversa nem credenciais: só perfil, sessão,
 superfície, nível, score, nomes de sinais, providers, modelos, acesso,
@@ -700,19 +746,39 @@ vai; o `config.example.json` vai).
 
 ```sh
 P=/opt/hermes/.venv/bin/python
-$P /opt/data/plugins/vipernet-model-manager/selftest.py            # 190
-$P /opt/data/plugins/vipernet-model-manager/test_analise.py        # 40
-$P /opt/data/plugins/vipernet-model-manager/test_tarefas.py        # 16
-$P /opt/data/plugins/vipernet-model-manager/test_classificador.py  # 55
-$P /opt/data/plugins/vipernet-model-manager/test_eval.py           # 32
-$P /opt/data/plugins/vipernet-model-manager/test_triagem.py       # 51
-$P /opt/data/plugins/vipernet-model-manager/eval/test_amostra.py  # 22
-$P /opt/data/plugins/vipernet-model-manager/dashboard/selftest.py  # 79 (exige fastapi)
+$P /opt/data/plugins/vipernet-model-manager/selftest.py              # 190
+$P /opt/data/plugins/vipernet-model-manager/test_analise.py          # 40
+$P /opt/data/plugins/vipernet-model-manager/test_tarefas.py          # 16
+$P /opt/data/plugins/vipernet-model-manager/test_classificador.py    # 55
+$P /opt/data/plugins/vipernet-model-manager/test_triagem.py          # 51
+$P /opt/data/plugins/vipernet-model-manager/test_turno.py            # 23
+$P /opt/data/plugins/vipernet-model-manager/test_eval.py             # 32
+$P /opt/data/plugins/vipernet-model-manager/test_holdout.py          # 18
+$P /opt/data/plugins/vipernet-model-manager/eval/test_amostra.py     # 22
+$P /opt/data/plugins/vipernet-model-manager/eval/test_aprender.py    # 55
+$P /opt/data/plugins/vipernet-model-manager/dashboard/selftest.py    # 79 (exige fastapi)
 node /opt/data/plugins/vipernet-model-manager/dashboard/test_logica.js  # 35
 ```
 
+O nível fixado por turno tem ainda duas provas próprias:
+
+- `test_turno.py` (23 verificações, offline) — um turno sintético de seis
+  pedidos, com `decidir` a correr uma só vez, cinco `pin: reutilizado`, a
+  aritmética `reutilizados == pedidos − turnos`, e os casos negativos: dois
+  turnos com o mesmo texto, a chave por hash sem `turn_id`, a rota morta
+  (`excecao: rota`), o contexto que deixa de caber (`excecao: capacidade`) e o
+  interruptor desligado.
+- `eval/replay_turno.py` — o replay sobre turnos **reais** do `state.db`:
+  reconstrói a janela de cada pedido, corre o middleware verdadeiro com as
+  rotas substituídas e compara o modo `hoje` com o modo `pin`. Medido a
+  2026-11-02: 156 turnos, 1 109 pedidos, **38 turnos instáveis em `hoje`** e
+  **0 em `pin`**, com `953 = 1 109 − 156` reutilizações.
+
+
 190 verificações no selftest, 55 no classificador por modelo (servidor HTTP
 local a sério, sem mocks), 32 no banco de avaliação (métricas, percentis,
-congelamento do gold, recusa de afinar, consistência entre registos), 79 no
-painel — incluindo a lógica pura do editor corrida em node —, 51 na triagem por
-necessidades, 22 na amostragem/rotulagem e 16 de tarefas.
+congelamento do gold, recusa de afinar, consistência entre registos) e mais 79
+em quatro holdouts rotulados à mão, 79 no painel — incluindo a lógica pura do
+editor corrida em node —, 51 na triagem por necessidades, 22 na
+amostragem/rotulagem, 55 no ciclo de aprendizagem, 23 no nível fixado por turno
+e 16 de tarefas.

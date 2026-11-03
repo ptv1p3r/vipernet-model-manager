@@ -67,6 +67,11 @@ CURSOR = APRENDIZ / "cursor.json"
 HISTORICO = APRENDIZ / "historico.jsonl"
 RELATORIOS = APRENDIZ / "relatorios"
 
+#: Gold escrito por humanos sobre conversa real. Vive FORA do repositorio: o
+#: repo e publicado (espelho Gitea) e uma fila rotulada e texto de conversa —
+#: `eval/gold*.jsonl` so pode ter casos sinteticos. Le-se dos dois sitios.
+GOLD_HUMANO = Path(os.environ.get("VMM_GOLD_DIR") or (APRENDIZ / "gold"))
+
 NIVEIS = ("leve", "media", "alta")
 SEMENTE = 20261102
 CHAVE_TEXTO = 400
@@ -306,18 +311,37 @@ def _pool() -> list[dict]:
     return ea._pool_de_sessoes()
 
 
-def _textos_gold() -> set[str]:
-    """Shas dos casos que ja serviram para desenvolver o classificador.
+def _ficheiros_gold() -> list[Path]:
+    """Todos os `gold*.jsonl` que contam: os do repo e os humanos, de fora.
 
-    Barreira de contaminacao: o `gold` foi lido enquanto se afinava a
-    heuristica, logo nao pode entrar como avaliacao de um ciclo que muda os
-    pesos. Fica de fora do conjunto de avaliacao, para sempre.
+    Duas casas, de proposito: `eval/` e publicado no espelho Gitea e so pode
+    ter casos sinteticos; `GOLD_HUMANO` (por omissao em `aprendiz/gold`) tem
+    as filas rotuladas sobre conversa real e nunca e publicada. Estava tudo
+    escrito a mao como tuplo fixo (`gold.jsonl`, `gold2.jsonl`), logo um
+    ficheiro novo era ignorado em silencio — sem erro, com kappa de aspecto
+    valido.
     """
-    out: set[str] = set()
-    for nome in ("gold.jsonl", "gold2.jsonl"):
-        caminho = EVAL / nome
-        if not caminho.exists():
+    ficheiros: list[Path] = []
+    vistos: set[str] = set()
+    for pasta in (EVAL, GOLD_HUMANO):
+        if not pasta.is_dir():
             continue
+        for caminho in sorted(pasta.glob("gold*.jsonl")):
+            if caminho.name not in vistos:
+                vistos.add(caminho.name)
+                ficheiros.append(caminho)
+    return ficheiros
+
+
+def _casos_gold() -> list[dict]:
+    """Casos do gold com rotulo conhecido, das duas grafias que existem.
+
+    Os golds originais usam `esperado`; a fila de rotulagem humana usa
+    `rotulo`. Aceitar so uma das grafias fazia a calibracao descartar o
+    ficheiro inteiro por chave ausente, e o portao recusava sem dizer porquê.
+    """
+    out: list[dict] = []
+    for caminho in _ficheiros_gold():
         for linha in caminho.read_text(encoding="utf-8").splitlines():
             linha = linha.strip()
             if not linha:
@@ -326,9 +350,22 @@ def _textos_gold() -> set[str]:
                 d = json.loads(linha)
             except json.JSONDecodeError:
                 continue
-            if d.get("texto"):
-                out.add(_sha(d["texto"]))
+            rotulo = d.get("esperado") or d.get("rotulo")
+            if d.get("id") and d.get("texto") and rotulo in NIVEIS:
+                out.append({"id": f"{caminho.name}:{d['id']}", "texto": d["texto"],
+                            "rotulo": rotulo})
     return out
+
+
+def _textos_gold() -> set[str]:
+    """Shas dos casos que ja serviram para desenvolver o classificador.
+
+    Barreira de contaminacao: o `gold` foi lido enquanto se afinava a
+    heuristica, logo nao pode entrar como avaliacao de um ciclo que muda os
+    pesos. Fica de fora do conjunto de avaliacao, para sempre. Tambem cobre a
+    fila humana: um caso rotulado a mao nunca mais volta a ser colhido.
+    """
+    return {_sha(c["texto"]) for c in _casos_gold()}
 
 
 def colher(limite: int, semente: int) -> tuple[list[dict], dict[str, Any]]:
@@ -352,10 +389,19 @@ def colher(limite: int, semente: int) -> tuple[list[dict], dict[str, Any]]:
     rnd = random.Random(semente)
     por_estrato = max(1, limite // max(1, len(estratos)))
     escolhidos: list[dict] = []
+    sobras: list[dict] = []
     for nome in sorted(estratos):
         grupo = sorted(estratos[nome], key=lambda p: p["id"])
         rnd.shuffle(grupo)
         escolhidos.extend(grupo[:por_estrato])
+        sobras.extend(grupo[por_estrato:])
+    # A divisao inteira pelos estratos deita fora o resto: pedir 40 dava 39
+    # (40 // 3 = 13, e 13 x 3 = 39) e pedir 200 dava 198. `limite` e o que se
+    # prometeu, por isso as sobras preenchem ate la — baralhadas, para nao
+    # favorecer sempre o primeiro estrato por ordem alfabetica.
+    rnd.shuffle(sobras)
+    while len(escolhidos) < limite and sobras:
+        escolhidos.append(sobras.pop())
     rnd.shuffle(escolhidos)
     escolhidos = escolhidos[:limite]
     return escolhidos, {"pool": len(pool), "frescos": len(frescos), "usados": len(usados),
@@ -370,7 +416,12 @@ def _juiz_definicao(provider: str, modelo: str) -> dict[str, Any]:
     definicao, erros = _modelo().normalizar({
         "activo": True, "provider": provider, "modelo": modelo,
         "esforco": "baixo", "formato_json": "auto",
-        "max_tokens": 1200, "timeout_s": 30, "cache_ttl_s": 0,
+        # `max_tokens` 1200 cortava a resposta a meio: medido a 2026-11-03, o
+        # `deepseek-v4-pro` devolveu um corpo de 1182 tokens (o teto) sem nivel
+        # reconhecivel, e no ciclo seguinte 71 dos 90 casos do gold morreram em
+        # timeout/500 com `timeout_s` 30. O juiz raciocina antes de escrever o
+        # JSON, por isso o orcamento tem de contar com o raciocinio.
+        "max_tokens": 3000, "timeout_s": 120, "cache_ttl_s": 0,
     })
     if erros:
         raise SystemExit(f"definicao do juiz invalida: {erros}")
@@ -384,16 +435,21 @@ def _etiquetar(casos: list[dict], definicao: dict[str, Any], resolver, threads: 
         # Sem rede de seguranca de proposito: uma assinatura que nao aceite
         # `prompt` tem de estourar aqui, e nao virar "sem nivel" — o sintoma
         # seria um juiz que recusa tudo e um kappa de zero sem causa visivel.
-        r = modelo.classificar([{"role": "user", "content": caso["texto"]}],
-                               definicao, resolver, perfil="aprendiz", prompt=PROMPT_JUIZ)
-        if r is None:
-            # `classificar` devolve None quando a rota esta suspensa depois de
-            # falhar (comportamento documentado). Uma falha transitoria suspende
-            # a rota para todos os casos seguintes, por isso espera-se e tenta-se
-            # uma vez; sem isto, um unico 429 apagava o resto do lote.
-            time.sleep(3.0)
+        r = None
+        for tentativa in (1, 2):
             r = modelo.classificar([{"role": "user", "content": caso["texto"]}],
                                    definicao, resolver, perfil="aprendiz", prompt=PROMPT_JUIZ)
+            if r is not None:
+                break
+            # `classificar` devolve None quando a rota esta suspensa: 3 falhas
+            # suspendem-na 300 s. Esse disjuntor existe para nao travar cada
+            # turno de um utilizador, mas num lote de 90 casos apaga o resto
+            # (medido: 71 de 90 perdidos, e o portao fechou com "19 casos
+            # comuns"). Aqui repoe-se o disjuntor e tenta-se outra vez.
+            repor = getattr(modelo, "limpar_cache", None)
+            if callable(repor):
+                repor()
+            time.sleep(2.0 * tentativa)
         if r is None:
             return {"id": caso["id"], "rotulo": None, "erro": "rota suspensa apos falha"}
         nivel = (r.get("nivel") or "").strip().lower()
@@ -906,8 +962,9 @@ def main() -> int:
                 f.write(json.dumps({"id": c["id"], "texto": c["texto"], "rotulo": ""},
                                    ensure_ascii=False) + "\n")
         print(json.dumps({"fila": str(destino), "casos": len(casos),
-                          "como_rotular": "preencher `rotulo` com leve|media|alta; "
-                                          "depois --so-treinar <ficheiro>",
+                          "como_rotular": "preencher `rotulo` com leve|media|alta e gravar em "
+                                          f"{GOLD_HUMANO}/gold3.jsonl; o ciclo seguinte calibra o "
+                                          "juiz contra ele (--so-treinar nao calibra: o portao recusa)",
                           "colheita": colheita}, ensure_ascii=False, indent=1))
         return 0
 
@@ -944,20 +1001,8 @@ def main() -> int:
         falhas = [r for r in rotulos if not r.get("rotulo")]
         casos = [dict(c, rotulo=mapa[c["id"]]["rotulo"]) for c in casos
                  if mapa.get(c["id"], {}).get("rotulo")]
-        # calibracao contra os rotulos humanos do gold
-        gold = []
-        for nome in ("gold.jsonl", "gold2.jsonl"):
-            caminho = EVAL / nome
-            if not caminho.exists():
-                continue
-            for linha in caminho.read_text(encoding="utf-8").splitlines():
-                linha = linha.strip()
-                if not linha:
-                    continue
-                d = json.loads(linha)
-                if d.get("esperado") in NIVEIS:
-                    gold.append({"id": f"{nome}:{d['id']}", "texto": d["texto"],
-                                 "rotulo": d["esperado"]})
+        # calibracao contra os rotulos humanos do gold (inclui a fila humana)
+        gold = _casos_gold()
         if gold:
             rot_gold = _etiquetar(gold, definicao, resolver, args.threads)
             k = kappa(gold, [r for r in rot_gold if r.get("rotulo")])

@@ -125,12 +125,23 @@ class TestNormalizar(Base):
         d, _ = am.normalizar({"activo": True, "provider": "p", "modelo": "m",
                               "timeout_s": 999, "max_tokens": 100000,
                               "cache_ttl_s": -5, "max_chars": 5})
-        self.assertEqual(d["timeout_s"], 30.0)
+        self.assertEqual(d["timeout_s"], am._TIMEOUT_MAX)  # tecto duro, nao um literal
         self.assertEqual(d["max_tokens"], am._MAX_TOKENS_MAX)  # tecto duro, nao um literal
         self.assertEqual(d["cache_ttl_s"], 0)
         self.assertEqual(d["max_chars"], 200)
         d2, _ = am.normalizar({"timeout_s": 0.1})
         self.assertEqual(d2["timeout_s"], 1.0)
+
+    def test_tecto_cabe_o_raciocinio(self):
+        """30 s / 1024 tokens truncavam um juiz que pensa antes de escrever."""
+        self.assertGreaterEqual(am._TIMEOUT_MAX, 120.0)
+        self.assertGreaterEqual(am._MAX_TOKENS_MAX, 3000)
+        self.assertGreater(am._MAX_TOKENS_COM_ESFORCO, 1200)
+        d, erros = am.normalizar({"activo": True, "provider": "p", "modelo": "m",
+                                  "timeout_s": 120, "max_tokens": 3000})
+        self.assertEqual(erros, [])
+        self.assertEqual(d["timeout_s"], 120.0)
+        self.assertEqual(d["max_tokens"], 3000)
 
     def test_lixo_nao_levanta(self):
         for bruto in ("texto", [], 42, None):
