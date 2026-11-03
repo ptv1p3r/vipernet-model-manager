@@ -142,7 +142,30 @@ def testes_gestor() -> None:
     mau = _cfg_base()
     mau["perfis"]["trabalho"]["rodizio"] = {"por": "hora"}
     _, e = g.validar(mau)
-    check("rodizio.por invalido recusado", any("rodizio" in m for m in e), str(e))
+    check("rodizio.por invalido recusado",
+          any("perfis.trabalho.estrategia.por" in m and "hora" in m for m in e), str(e))
+
+    # Estrategia: listas fechadas, ao nivel global e no perfil. O valor errado
+    # tem de trazer os aceites — e o que o painel mostra no `select`.
+    mau = _cfg_base()
+    mau["estrategia"] = {"modo": "aleatorio"}
+    _, e = g.validar(mau)
+    check("estrategia global invalida recusada",
+          any("estrategia.modo invalido" in m and "rodizio, prioridade" in m for m in e),
+          str(e))
+
+    mau = _cfg_base()
+    mau["perfis"]["trabalho"]["estrategia"] = {"por": "semana"}
+    _, e = g.validar(mau)
+    check("estrategia de perfil invalida recusada",
+          any("perfis.trabalho.estrategia.por" in m and "turno, sessao" in m for m in e),
+          str(e))
+
+    mau = _cfg_base()
+    mau["estrategia"] = {"modo": "rodizio", "prioritario": True}
+    _, e = g.validar(mau)
+    check("chave desconhecida na estrategia recusada",
+          any("prioritario desconhecida" in m for m in e), str(e))
 
     _, e = g.validar({"perfis": "nada"})
     check("'perfis' que nao e objecto recusado", any("perfis" in m for m in e), str(e))

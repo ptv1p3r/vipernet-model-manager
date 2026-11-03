@@ -536,8 +536,11 @@ def estado() -> dict[str, Any]:
         )
         saida_perfis[nome] = {
             "activo": bool(dados.get("activo", True)),
-            "estrategia": dados.get("estrategia") or "rodizio",
-            "rodizio": dados.get("rodizio") or {},
+            # Estrategia em vigor + de onde vem (`proprio`/`herdado`/`padrao`).
+            # O cartao mostra os valores que estao a decidir, nao o delta cru:
+            # um perfil que herda tem de mostrar a estrategia do global, senao
+            # parece que nao tem nenhuma.
+            "estrategia": gestor.estrategia_efectiva(cfg, nome),
             # Efectivo, nao o cru do perfil: um perfil que herda os limiares do
             # global tem de mostrar os que estao a decidir, nao uma lista vazia.
             "limiares": (pcfg.get("analise") or {}).get("limiares") or {},
@@ -591,6 +594,12 @@ def estado() -> dict[str, Any]:
         "plugin": _meta_plugin(),
         "activo": bool(cfg.get("activo", True)),
         "registar": bool(cfg.get("registar", True)),
+        # Estrategia global e as listas fechadas. O painel constroi os `select`
+        # a partir daqui: se o backend acrescentar um valor, o painel mostra-o
+        # sem alteracao, e nunca aparece um valor que a validacao recusaria.
+        "estrategia_global": gestor.estrategia_global(cfg),
+        "opcoes": {"estrategia": gestor.opcoes_estrategia()},
+        "rev": _rev(cfg),
         "perfis": saida_perfis,
         "perfil_servido": _perfil_servido(),
         "ledger": {
@@ -651,6 +660,82 @@ def toggle(corpo: Any = Body(default=None)) -> JSONResponse:
             detail=f"gravacao nao confirmada: pedido {activo}, lido {lido}",
         )
     return JSONResponse({"ok": True, "ambito": ambito, "alvo": alvo, "activo": lido})
+
+
+@router.post("/estrategia")
+def estrategia_post(corpo: Any = Body(default=None)) -> JSONResponse:
+    """Muda a estrategia por `select` — valores fechados, um campo de cada vez.
+
+    Nao reescreve a config inteira: le, altera so o bloco, valida e grava pelo
+    `gestor` (backup, validacao e `os.replace`). E o que evita o acidente que o
+    editor de JSON ja provocou: um painel que manda a config toda pode repor
+    tudo o que outra sessao escreveu entretanto.
+
+    `herdar=true` (com `ambito='perfil'`) apaga o bloco do perfil: a ausencia da
+    chave e o unico gesto que exprime "volta a herdar" — sem ele, o perfil
+    ficava preso ao valor do dia em que o escolheu.
+    """
+    corpo = _corpo_objeto(corpo)
+    ambito = str(corpo.get("ambito") or "global").strip().lower()
+    herdar = bool(corpo.get("herdar"))
+    cfg = _cfg()
+    rev = str(corpo.get("rev") or "")
+    if rev and _conflito(rev, _rev(cfg)):
+        raise HTTPException(
+            status_code=409,
+            detail="a configuração mudou desde que este painel leu o estado",
+        )
+    campos = {k: corpo[k] for k in ("modo", "por") if k in corpo}
+    if not herdar and not campos:
+        raise HTTPException(status_code=400, detail="indique 'modo' e/ou 'por'")
+
+    if ambito == "global":
+        if herdar:
+            cfg.pop("estrategia", None)
+        else:
+            est = gestor.estrategia_global(cfg)
+            est.pop("origem", None)
+            est.update(campos)
+            cfg["estrategia"] = est
+        alvo = "global"
+    elif ambito == "perfil":
+        nome = str(corpo.get("perfil") or "").strip()
+        perfis = cfg.get("perfis") or {}
+        if nome not in perfis:
+            raise HTTPException(status_code=404,
+                                detail=f"perfil {nome!r} nao existe na configuracao")
+        perfil = perfis[nome]
+        if herdar:
+            perfil.pop("estrategia", None)
+            perfil.pop("rodizio", None)
+        else:
+            # Funde com o que ESTE perfil ja usa (herdado incluido) para que
+            # mudar so a rotacao nao obrigue a repetir o modo; o `validar`
+            # reduz depois a delta e o que e igual ao global nao vira copia.
+            est = gestor.estrategia_efectiva(cfg, nome)
+            est.pop("origem", None)
+            est.update(campos)
+            perfil["estrategia"] = est
+            perfil.pop("rodizio", None)
+        alvo = nome
+    else:
+        raise HTTPException(status_code=400, detail="'ambito' tem de ser 'global' ou 'perfil'")
+
+    try:
+        gestor.gravar(cfg)
+    except ValueError as exc:
+        # Erro de validacao (valor fora da lista, config inconsistente) e 400
+        # com a razao, nao 500: o pedido e que estava errado, o servidor nao.
+        raise HTTPException(status_code=400, detail=f"nao gravou: {exc}") from exc
+
+    # Releitura independente: o que se devolve e o que ficou no disco.
+    confirmado = _cfg()
+    if ambito == "global":
+        lido = gestor.estrategia_global(confirmado)
+    else:
+        lido = gestor.estrategia_efectiva(confirmado, alvo)
+    return JSONResponse({"ok": True, "ambito": ambito, "alvo": alvo,
+                         "estrategia": lido, "rev": _rev(confirmado)})
 
 
 @router.get("/perfis")

@@ -390,6 +390,79 @@ def main() -> int:
     for cls in (".vmm-classif", ".vmm-classif-linha", ".vmm-classif-nome"):
         check(f"painel: CSS {cls}", cls in css)
 
+    # --- /estrategia -------------------------------------------------------
+    # A estrategia e lista fechada: o endpoint tem de recusar o que a validacao
+    # recusa, gravar so o bloco, e deixar os perfis a herdar (sem copia).
+    est = cli.get("/estado").json()
+    check("/estado estrategia global e bloco",
+          isinstance(est.get("estrategia_global"), dict), str(est.get("estrategia_global")))
+    check("/estado opcoes fechadas",
+          [o["valor"] for o in (((est.get("opcoes") or {}).get("estrategia") or {}).get("modo") or [])]
+          == ["rodizio", "prioridade"], str(est.get("opcoes")))
+    check("/estado rev presente", bool(est.get("rev")))
+    check("/estado estrategia por perfil e bloco com origem",
+          isinstance((est["perfis"]["trabalho"] or {}).get("estrategia"), dict)
+          and "origem" in est["perfis"]["trabalho"]["estrategia"],
+          str(est["perfis"]["trabalho"].get("estrategia")))
+
+    antes = (d / "config.json").read_text(encoding="utf-8")
+    r = cli.post("/estrategia", json={"ambito": "global", "modo": "inventado"})
+    check("/estrategia recusa valor fora da lista", r.status_code == 400, str(r.status_code))
+    check("/estrategia erro diz os valores aceites",
+          "rodizio, prioridade" in r.text, r.text[:200])
+    check("/estrategia nao grava em erro",
+          (d / "config.json").read_text(encoding="utf-8") == antes)
+
+    r = cli.post("/estrategia", json={"ambito": "perfil", "perfil": "nao-existe",
+                                      "modo": "rodizio"})
+    check("/estrategia perfil inexistente da 404", r.status_code == 404, str(r.status_code))
+
+    r = cli.post("/estrategia", json={"ambito": "global", "modo": "prioridade"})
+    check("/estrategia global 200", r.status_code == 200, r.text[:200])
+    check("/estrategia global devolve o lido",
+          ((r.json() or {}).get("estrategia") or {}).get("modo") == "prioridade", r.text[:200])
+    em_disco = json.loads((d / "config.json").read_text(encoding="utf-8"))
+    check("/estrategia global gravada no disco",
+          (em_disco.get("estrategia") or {}).get("modo") == "prioridade",
+          str(em_disco.get("estrategia")))
+    check("/estrategia perfis herdam sem copia",
+          all((p.get("estrategia") or {}).get("modo") != "prioridade"
+              for p in (em_disco.get("perfis") or {}).values()),
+          str({n: p.get("estrategia") for n, p in (em_disco.get("perfis") or {}).items()}))
+    est = cli.get("/estado").json()
+    check("/estado todos os perfis mostram prioridade herdada",
+          all((p.get("estrategia") or {}).get("modo") == "prioridade"
+              for p in (est.get("perfis") or {}).values()),
+          str({n: p.get("estrategia") for n, p in (est.get("perfis") or {}).items()}))
+
+    r = cli.post("/estrategia", json={"ambito": "perfil", "perfil": "trabalho",
+                                      "modo": "rodizio", "por": "turno"})
+    check("/estrategia por perfil 200", r.status_code == 200, r.text[:200])
+    check("/estrategia por perfil devolve origem proprio",
+          ((r.json() or {}).get("estrategia") or {}).get("origem") == "proprio", r.text[:200])
+    est = cli.get("/estado").json()
+    check("/estado trabalho com escolha propria",
+          (est["perfis"]["trabalho"].get("estrategia") or {}).get("por") == "turno",
+          str(est["perfis"]["trabalho"].get("estrategia")))
+    check("/estado default continua herdado",
+          (est["perfis"]["default"].get("estrategia") or {}).get("origem") == "herdado",
+          str(est["perfis"]["default"].get("estrategia")))
+
+    r = cli.post("/estrategia", json={"ambito": "perfil", "perfil": "trabalho", "herdar": True})
+    check("/estrategia herdar 200", r.status_code == 200, r.text[:200])
+    em_disco = json.loads((d / "config.json").read_text(encoding="utf-8"))
+    check("/estrategia herdar apaga o bloco do perfil",
+          "estrategia" not in (em_disco["perfis"]["trabalho"] or {}),
+          str((em_disco["perfis"]["trabalho"] or {}).get("estrategia")))
+
+    velho = (cli.get("/estado").json() or {}).get("rev")
+    cli.post("/estrategia", json={"ambito": "global", "por": "turno"})
+    r = cli.post("/estrategia", json={"ambito": "global", "modo": "rodizio", "rev": velho})
+    check("/estrategia com rev antigo da 409", r.status_code == 409, str(r.status_code))
+    atual = (cli.get("/estado").json() or {}).get("rev")
+    r = cli.post("/estrategia", json={"ambito": "global", "modo": "rodizio", "rev": atual})
+    check("/estrategia com rev actual passa", r.status_code == 200, r.text[:200])
+
     # A logica pura do painel, corrida a serio em node (sem browser).
     node = shutil.which("node")
     if node:

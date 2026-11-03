@@ -417,6 +417,45 @@ check("baseDoBloco: nao muta o bloco de origem",
       && Object.keys(blocoRico).length === chavesAntes,
       String(Object.keys(blocoRico).length) + " vs " + chavesAntes);
 
+// ---- estrategia: rotulo e opcoes fechadas -------------------------------
+// O rotulo tem de dizer as duas coisas: o que decide e de onde vem. Um cartao
+// que mostra "rodizio" sem dizer "herdada do global" esconde a razao pela qual
+// mudar o global muda aquele perfil.
+check("rotuloEstrategia: rotacao herdada do global",
+      T.rotuloEstrategia({ modo: "rodizio", por: "sessao", origem: "herdado" })
+      === "rodação por sessão · herdada do global",
+      T.rotuloEstrategia({ modo: "rodizio", por: "sessao", origem: "herdado" }));
+
+check("rotuloEstrategia: prioridade propria do perfil",
+      T.rotuloEstrategia({ modo: "prioridade", origem: "proprio" })
+      === "prioridade (primeira da lista) · própria do perfil",
+      T.rotuloEstrategia({ modo: "prioridade", origem: "proprio" }));
+
+check("rotuloEstrategia: rotacao por turno",
+      T.rotuloEstrategia({ modo: "rodizio", por: "turno", origem: "global" })
+      === "rodação por turno · definida globalmente",
+      T.rotuloEstrategia({ modo: "rodizio", por: "turno", origem: "global" }));
+
+check("rotuloEstrategia: sem bloco diz por omissao",
+      T.rotuloEstrategia(null) === "rodação por sessão · por omissão",
+      T.rotuloEstrategia(null));
+
+const opcoesEstado = {
+  opcoes: {
+    estrategia: {
+      modo: [{ valor: "rodizio", rotulo: "rotação" },
+             { valor: "prioridade", rotulo: "prioridade (primeira da lista)" }],
+      por: [{ valor: "turno", rotulo: "por turno" },
+            { valor: "sessao", rotulo: "por sessão" }],
+    },
+  },
+};
+check("opcoesEstrategia: le as listas do /estado",
+      T.opcoesEstrategia(opcoesEstado).modo.length === 2
+      && T.opcoesEstrategia(opcoesEstado).por[1].valor === "sessao");
+check("opcoesEstrategia: payload sem opcoes nao rebenta",
+      JSON.stringify(T.opcoesEstrategia(null)) === "{}");
+
 console.log("");
 if (falhas) {
   console.log(falhas + " de " + total + " verificacoes FALHARAM");

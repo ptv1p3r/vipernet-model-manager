@@ -144,6 +144,55 @@
     );
   }
 
+  // ---- estrategia: lista fechada -----------------------------------------
+  // As opcoes vem do backend (`/estado.opcoes.estrategia`), nao de uma copia
+  // escrita aqui. Assim um valor novo aparece no `select` sem mexer no painel,
+  // e nunca aparece uma opcao que a validacao recusaria — a lista que se ve e
+  // a lista que o `gestor` aceita.
+  function Seletor(props) {
+    const opcoes = props.opcoes || [];
+    const valor = props.valor == null ? "" : String(props.valor);
+    // Um valor em vigor que ja nao esta na lista (config antiga, valor
+    // removido) tem de aparecer: sem isto o `select` mostra a primeira opcao e
+    // mente sobre o que esta a decidir.
+    const falta = valor && !opcoes.some(function (o) { return o.valor === valor; });
+    const filhos = [];
+    if (falta) filhos.push(h("option", { key: "__f", value: valor }, valor + " (desconhecido)"));
+    opcoes.forEach(function (o) {
+      filhos.push(h("option", { key: o.valor, value: o.valor }, o.rotulo || o.valor));
+    });
+    return h(
+      "select",
+      {
+        className: "vmm-select",
+        value: valor,
+        disabled: !!props.disabled,
+        title: props.title || "",
+        "aria-label": props.rotulo || props.title || "estratégia",
+        onChange: function (e) { props.onChange(e.target.value); },
+      },
+      filhos
+    );
+  }
+
+  // Texto do que esta em vigor, com a proveniencia. Um perfil que herda tem de
+  // o dizer: sem isso, o utilizador muda o global e nao percebe porque e que
+  // aquele cartao nao mudou.
+  function rotuloEstrategia(est) {
+    const e = est || {};
+    const modo = String(e.modo || "rodizio");
+    const por = String(e.por || "sessao");
+    const origem = String(e.origem || "padrao");
+    const onde = origem === "proprio" ? "própria do perfil"
+      : origem === "herdado" ? "herdada do global"
+      : origem === "global" ? "definida globalmente"
+      : "por omissão";
+    const oque = modo === "rodizio"
+      ? "rodação " + (por === "turno" ? "por turno" : "por sessão")
+      : "prioridade (primeira da lista)";
+    return oque + " · " + onde;
+  }
+
   // ---- indicador modelo/heuristica do cartao -----------------------------
   // A pergunta do cartao nao e "esta ligado?", e "esta a decidir?". Um
   // classificador ligado que falha cai na heuristica, e um perfil sem bloco
@@ -311,10 +360,34 @@
           h("div", { className: "vmm-titulo-perfil" },
             h("strong", null, nome),
             h(Chip, { tone: p.activo ? "default" : "secondary" }, p.activo ? "activo" : "desligado"),
-            h("span", { className: "vmm-mudo" }, "estrategia: " + (p.estrategia || "—")),
-            p.estrategia === "rodizio"
-              ? h("span", { className: "vmm-mudo" }, "rodizio por " + ((p.rodizio || {}).por || "turno"))
-              : null
+            h("span", { className: "vmm-estrategia" },
+              h(Seletor, {
+                rotulo: "estratégia de " + nome,
+                valor: (p.estrategia || {}).modo || "rodizio",
+                opcoes: ((props.opcoes || {}).modo) || [],
+                disabled: props.aGravar,
+                onChange: function (v) { props.onEstrategia(nome, { modo: v }); },
+              }),
+              h(Seletor, {
+                rotulo: "rotação de " + nome,
+                valor: (p.estrategia || {}).por || "sessao",
+                opcoes: ((props.opcoes || {}).por) || [],
+                // `por` so governa a rotacao: em `prioridade` a escolha nao tem
+                // efeito, e um select activo que nao faz nada e uma armadilha.
+                disabled: props.aGravar || (p.estrategia || {}).modo !== "rodizio",
+                title: "Só se aplica à rotação",
+                onChange: function (v) { props.onEstrategia(nome, { por: v }); },
+              }),
+              h("span", { className: "vmm-mudo" }, rotuloEstrategia(p.estrategia)),
+              (p.estrategia || {}).origem === "proprio"
+                ? h(Button, {
+                    size: "sm", variant: "ghost", className: "vmm-herdar",
+                    disabled: props.aGravar,
+                    title: "Apagar a escolha deste perfil e voltar a herdar o global",
+                    onClick: function () { props.onEstrategia(nome, null, true); },
+                  }, "herdar do global")
+                : null
+            )
           ),
           h(Interruptor, {
             activo: p.activo,
@@ -747,6 +820,28 @@
         .then(function () { setAGravar(false); });
     }
 
+    // Grava so o bloco de estrategia (nunca a config inteira): um `select` nao
+    // pode ter o poder de repor tudo o que outra sessao escreveu. O `rev` que
+    // veio do `/estado` volta no corpo para o servidor recusar (409) uma
+    // escolha feita sobre um estado que ja mudou.
+    function mudarEstrategia(ambito, perfil, campos, herdar) {
+      setAGravar(true);
+      const corpo = { ambito: ambito, rev: (estado && estado.rev) || "" };
+      if (perfil) corpo.perfil = perfil;
+      if (herdar) corpo.herdar = true;
+      else Object.assign(corpo, campos || {});
+      pedir("/estrategia", { method: "POST", body: corpo })
+        .then(function () { return carregar(); })
+        .catch(function (e) {
+          const msg = String(e && e.message ? e.message : e);
+          setErro(msg.indexOf("409") !== -1
+            ? "A estratégia mudou noutro sítio — recarreguei o estado. Escolha outra vez."
+            : "Erro ao gravar a estratégia: " + msg);
+          return carregar();
+        })
+        .then(function () { setAGravar(false); });
+    }
+
     function carregarConfig() {
       pedir("/config")
         .then(function (r) {
@@ -908,6 +1003,49 @@
         )
       ),
 
+      // Estrategia global: o sitio onde se muda uma vez e todos os perfis
+      // herdam. Fica antes dos cartoes porque e a regra que os governa — e
+      // cada cartao diz se a sua e esta ou se e propria.
+      h(
+        Card,
+        { className: "vmm-card" },
+        h(
+          CardContent,
+          { className: "vmm-card-content" },
+          h(
+            "div",
+            { className: "vmm-linha vmm-cabecalho-perfil" },
+            h(
+              "div",
+              { className: "vmm-titulo-perfil" },
+              h("strong", null, "estratégia global"),
+              h(
+                "span",
+                { className: "vmm-estrategia" },
+                h(Seletor, {
+                  rotulo: "estratégia global",
+                  valor: (estado.estrategia_global || {}).modo || "rodizio",
+                  opcoes: (((estado.opcoes || {}).estrategia) || {}).modo || [],
+                  disabled: aGravar,
+                  onChange: function (v) { mudarEstrategia("global", null, { modo: v }); },
+                }),
+                h(Seletor, {
+                  rotulo: "rotação global",
+                  valor: (estado.estrategia_global || {}).por || "sessao",
+                  opcoes: (((estado.opcoes || {}).estrategia) || {}).por || [],
+                  disabled: aGravar || (estado.estrategia_global || {}).modo !== "rodizio",
+                  title: "Só se aplica à rotação",
+                  onChange: function (v) { mudarEstrategia("global", null, { por: v }); },
+                }),
+                h("span", { className: "vmm-mudo" },
+                  rotuloEstrategia(estado.estrategia_global)
+                  + " · os perfis sem escolha própria seguem esta")
+              )
+            )
+          )
+        )
+      ),
+
       erro ? h("div", { className: "vmm-erro" }, "erro: " + erro) : null,
 
       // Aviso de sucesso fora do editor: sobrevive ao fecho depois de gravar.
@@ -989,7 +1127,11 @@
             nome: n,
             dados: perfis[n],
             aGravar: aGravar,
+            opcoes: ((estado.opcoes || {}).estrategia) || {},
             onToggle: function (perfil, activo) { alternar("perfil", perfil, activo); },
+            onEstrategia: function (perfil, campos, herdar) {
+              mudarEstrategia("perfil", perfil, campos, herdar);
+            },
           });
         })
       ),
@@ -1047,6 +1189,10 @@
     window.__VMM_TEST__.comBloco = comBloco;
     window.__VMM_TEST__.paresModelo = paresModelo;
     window.__VMM_TEST__.rotuloAnalise = rotuloAnalise;
+    window.__VMM_TEST__.rotuloEstrategia = rotuloEstrategia;
+    window.__VMM_TEST__.opcoesEstrategia = function (estado) {
+      return ((estado || {}).opcoes || {}).estrategia || {};
+    };
     window.__VMM_TEST__.metaPlugin = metaPlugin;
     window.__VMM_TEST__.linhaIdentidade = linhaIdentidade;
   }
