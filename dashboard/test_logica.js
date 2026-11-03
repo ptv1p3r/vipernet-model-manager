@@ -423,7 +423,7 @@ check("baseDoBloco: nao muta o bloco de origem",
 // mudar o global muda aquele perfil.
 check("rotuloEstrategia: rotacao herdada do global",
       T.rotuloEstrategia({ modo: "rodizio", por: "sessao", origem: "herdado" })
-      === "rodação por sessão · herdada do global",
+      === "rotação por sessão · herdada do global",
       T.rotuloEstrategia({ modo: "rodizio", por: "sessao", origem: "herdado" }));
 
 check("rotuloEstrategia: prioridade propria do perfil",
@@ -433,11 +433,11 @@ check("rotuloEstrategia: prioridade propria do perfil",
 
 check("rotuloEstrategia: rotacao por turno",
       T.rotuloEstrategia({ modo: "rodizio", por: "turno", origem: "global" })
-      === "rodação por turno · definida globalmente",
+      === "rotação por turno · definida globalmente",
       T.rotuloEstrategia({ modo: "rodizio", por: "turno", origem: "global" }));
 
 check("rotuloEstrategia: sem bloco diz por omissao",
-      T.rotuloEstrategia(null) === "rodação por sessão · por omissão",
+      T.rotuloEstrategia(null) === "rotação por sessão · por omissão",
       T.rotuloEstrategia(null));
 
 const opcoesEstado = {
@@ -489,6 +489,111 @@ check("rotuloRegra: entrada resolvida no catalogo",
 check("rotuloRegra: entrada fora do catalogo e dita",
       T.rotuloRegra({ entrada: "zz" }, cat) === "zz (fora do catálogo)");
 check("rotuloRegra: anulada", T.rotuloRegra({ activo: false }, cat) === "nunca");
+
+// ---------------------------------------------------------------- render
+// O corpo dos componentes corre em node, com o `h` do SDK. Um nome que nao
+// existe no escopo (ja aconteceu com `perfil`) rebenta aqui, nao no browser
+// do dono.
+function tentar(nome, fn) {
+  try {
+    const r = fn();
+    check(nome, true);
+    return r;
+  } catch (e) {
+    check(nome, false, e && e.message ? e.message : String(e));
+    return null;
+  }
+}
+
+const perfilCompleto = {
+  activo: true,
+  catalogo: cat,
+  tarefas: { relatorio: { termos: ["relatorio"], prioridade: 1 } },
+  superficies: {
+    cron: { entrada: "a", origem_regra: "perfil" },
+    cli: { nivel: "alta", origem_regra: "global" },
+  },
+  estrategia: { modo: "rodizio", por: "sessao", origem: "herdado" },
+  analise: { modelo: "inception/mercury-3", origem: "global" },
+};
+const propsCartao = {
+  nome: "default",
+  dados: perfilCompleto,
+  mais: { niveis: ["leve", "media", "alta"], superficies: ["cron", "cli"] },
+  aGravar: false,
+  onEstrategia: function () {},
+  onSuperficie: function () {},
+  onTarefa: function () {},
+  onToggle: function () {},
+  onModelo: function () {},
+};
+
+const arvore = tentar("render: o cartao de perfil nao rebenta", function () {
+  return T.CartaoPerfil(propsCartao);
+});
+function temTexto(no, texto) {
+  if (no === null || no === undefined) return false;
+  if (typeof no === "string" || typeof no === "number") return String(no).indexOf(texto) >= 0;
+  if (Array.isArray(no)) return no.some(function (n) { return temTexto(n, texto); });
+  // O `h` falso guarda os filhos em `filhos`; um `props.children` tambem conta.
+  if (no.filhos && no.filhos.some(function (n) { return temTexto(n, texto); })) return true;
+  if (no.props) {
+    if (temTexto(no.props.children, texto)) return true;
+    // Rotulos vivem em props (`title`, `rotulo`, `label`): procurar so nos
+    // filhos dava um falso negativo num texto que o browser mostra.
+    return Object.keys(no.props).some(function (k) { return temTexto(no.props[k], texto); });
+  }
+  return false;
+}
+
+/** Procura, na arvore, um no cujo `tag` seja o nome de um componente. */
+function acharComponente(no, nome) {
+  if (!no || typeof no !== "object") return null;
+  if (Array.isArray(no)) {
+    for (let i = 0; i < no.length; i++) {
+      const r = acharComponente(no[i], nome);
+      if (r) return r;
+    }
+    return null;
+  }
+  if (no.tag === nome) return no;
+  const r = acharComponente(no.filhos, nome) || acharComponente(no.props && no.props.children, nome);
+  return r || null;
+}
+check("render: o cartao mostra a estrategia em vigor",
+      temTexto(arvore, "rotação por sessão"), "");
+const noSuperficies = acharComponente(arvore, "Superficies");
+check("render: o cartao passa as regras ao bloco de superficies",
+      !!noSuperficies && Object.keys(noSuperficies.props.regras || {}).join(",") === "cron,cli",
+      JSON.stringify(noSuperficies && noSuperficies.props.regras));
+check("render: o cartao passa o catalogo ao bloco de superficies",
+      !!noSuperficies && (noSuperficies.props.catalogo || []).length === cat.length, "");
+check("render: a regra global e dita como tal", temTexto(arvore, "global"), "");
+
+tentar("render: cartao sem catalogo, sem superficies e sem estrategia nao rebenta",
+       function () {
+         return T.CartaoPerfil({ nome: "vazio", dados: { activo: false }, mais: {},
+                                 aGravar: true, onEstrategia: function () {},
+                                 onSuperficie: function () {} });
+       });
+
+const blocoSup = tentar("render: o bloco de superficies nao rebenta", function () {
+  return T.Superficies({ perfil: "default", regras: perfilCompleto.superficies,
+                         catalogo: cat, niveis: ["leve", "media", "alta"],
+                         conhecidas: ["cron", "cli"], aGravar: false,
+                         onMudar: function () {} });
+});
+check("render: uma linha por regra", (function () {
+  const linhas = [];
+  (function varrer(no) {
+    if (!no || typeof no !== "object") return;
+    if (Array.isArray(no)) return no.forEach(varrer);
+    if (no.props && no.props.className === "vmm-sup-linha") linhas.push(no);
+    if (no.filhos) no.filhos.forEach(varrer);
+    if (no.props) varrer(no.props.children);
+  })(blocoSup);
+  return linhas.length === 2;
+})(), "esperava 2 linhas");
 
 console.log("");
 if (falhas) {

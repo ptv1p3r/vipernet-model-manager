@@ -1206,19 +1206,52 @@ vai; o `config.example.json` vai).
 
 ```sh
 P=/opt/hermes/.venv/bin/python
-$P /opt/data/plugins/vipernet-model-manager/selftest.py              # 190
+$P /opt/data/plugins/vipernet-model-manager/selftest.py              # 196
 $P /opt/data/plugins/vipernet-model-manager/test_analise.py          # 40
 $P /opt/data/plugins/vipernet-model-manager/test_tarefas.py          # 16
 $P /opt/data/plugins/vipernet-model-manager/test_classificador.py    # 55
 $P /opt/data/plugins/vipernet-model-manager/test_triagem.py          # 51
 $P /opt/data/plugins/vipernet-model-manager/test_turno.py            # 23
+$P /opt/data/plugins/vipernet-model-manager/test_estrategia.py        # lista fechada + herança
+$P /opt/data/plugins/vipernet-model-manager/test_superficies.py       # 32
 $P /opt/data/plugins/vipernet-model-manager/test_eval.py             # 32
 $P /opt/data/plugins/vipernet-model-manager/test_holdout.py          # 18
 $P /opt/data/plugins/vipernet-model-manager/eval/test_amostra.py     # 22
-$P /opt/data/plugins/vipernet-model-manager/eval/test_aprender.py    # 55
-$P /opt/data/plugins/vipernet-model-manager/dashboard/selftest.py    # 79 (exige fastapi)
-node /opt/data/plugins/vipernet-model-manager/dashboard/test_logica.js  # 35
+$P /opt/data/plugins/vipernet-model-manager/eval/test_aprender.py    # 86
+$P /opt/data/plugins/vipernet-model-manager/dashboard/selftest.py    # 125 (exige fastapi)
+node /opt/data/plugins/vipernet-model-manager/dashboard/test_logica.js  # 95, inclui render
 ```
+
+O `test_logica.js` inclui um **teste de render**: chama `CartaoPerfil` e `Superficies`
+com o `h` falso do SDK, para que um nome fora do escopo rebente em node em vez de
+rebentar no browser do dono — foi o que aconteceu quando o cartão referia
+`perfil.superficies` sem binding.
+
+## Pôr código novo no ar (sem restart)
+
+`hermes plugins reload` **não existe**; o caminho é o socket de controlo do gateway, que
+força a redescoberta dos plugins no processo vivo — sem cortar sessões:
+
+```sh
+/opt/hermes/.venv/bin/python -c "
+import json
+from pathlib import Path
+from gateway.control_socket import reload_gateway_plugins
+print(json.dumps(reload_gateway_plugins(Path('/opt/data')))['reloaded'])"
+```
+
+Prova de que entrou: a linha seguinte do ledger (`/opt/data/plugin-data/vipernet-model-manager/uso.jsonl`)
+traz um `motor` novo **e** um `inst` novo; `motor` é lido do `plugin.yaml` no import, logo
+um `motor` igual ao anterior significa que o código **não** recarregou. Antes de o saber,
+o gateway esteve horas a decidir com 3.16.0 enquanto o disco tinha 3.17.0 — daí o campo.
+
+O painel (`hermes-dashboard`, no host 13) é outro processo e outra imagem: exige
+`docker restart hermes-dashboard`. Ele lê o mesmo `/opt/data`, portanto os ficheiros lá
+estão assim que são escritos aqui.
+
+Não vale a pena pôr `gestor.py` a recarregar por `mtime` dentro do middleware: foi tentado
+e re-executa o módulo a meio do turno, o que parte o harness de testes e não acrescenta nada
+ao `reload-plugins`.
 
 O nível fixado por turno tem ainda duas provas próprias:
 

@@ -311,7 +311,7 @@
       : origem === "global" ? "definida globalmente"
       : "por omissão";
     const oque = modo === "rodizio"
-      ? "rodação " + (por === "turno" ? "por turno" : "por sessão")
+      ? "rotação " + (por === "turno" ? "por turno" : "por sessão")
       : "prioridade (primeira da lista)";
     return oque + " · " + onde;
   }
@@ -1328,5 +1328,11 @@
     window.__VMM_TEST__.rotuloRegra = rotuloRegra;
     window.__VMM_TEST__.metaPlugin = metaPlugin;
     window.__VMM_TEST__.linhaIdentidade = linhaIdentidade;
+    // Componentes expostos para o teste de render: um erro de referencia no
+    // corpo do cartao so aparecia no browser do dono (ja aconteceu — o cartao
+    // referia `perfil.superficies` sem binding). Chamar o componente em node
+    // executa o corpo e apanha-o antes de publicar.
+    window.__VMM_TEST__.CartaoPerfil = CartaoPerfil;
+    window.__VMM_TEST__.Superficies = Superficies;
   }
 })();

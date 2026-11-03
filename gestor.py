@@ -79,7 +79,7 @@ ESTRATEGIA_PADRAO: dict[str, str] = {"modo": "rodizio", "por": "sessao"}
 #: Rotulos do painel. Ficam aqui — e nao no JS — para o `select` ser construido
 #: a partir da mesma lista que valida, e nao de uma copia que envelhece.
 ROTULOS_ESTRATEGIA: dict[str, dict[str, str]] = {
-    "modo": {"rodizio": "rodação", "prioridade": "prioridade (primeira da lista)"},
+    "modo": {"rodizio": "rotação", "prioridade": "prioridade (primeira da lista)"},
     "por": {"turno": "por turno", "sessao": "por sessão"},
 }
 
