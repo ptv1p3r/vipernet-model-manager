@@ -951,6 +951,7 @@ const OPCOES = {
   esforcos: ["baixo", "medio", "alto"],
   modalidades: ["texto", "imagem", "audio", "ferramentas"],
   tarefas: [{ valor: "arquitetura", rotulo: "arquitetura · prioridade 10" }],
+  providers: ["deepseek", "openrouter"],
 };
 
 const volta = T.formParaEntrada(forma, OPCOES);
@@ -1102,14 +1103,23 @@ check("grupo de opcao: o escolhido anuncia-se com aria-pressed",
       }).map(function (b) { return textoPlano(b.filhos).trim(); }).join(",") === "alta");
 
 const seletores = comTag(arvoreModelo, "Seletor");
-check("pagina do modelo: quatro listas fechadas em Seletor (acesso, esforco, estado, JSON)",
-      seletores.length === 4, String(seletores.length));
+check("pagina do modelo: cinco listas fechadas em Seletor (provider, acesso, esforco, estado, JSON)",
+      seletores.length === 5, String(seletores.length));
+check("pagina do modelo: o provider e lista fechada vinda de opcoes.providers",
+      (function () {
+        const doProv = seletores.filter(function (s) {
+          const vals = ((s.props && s.props.opcoes) || []).map(function (o) { return o.valor; });
+          return vals.length && vals.every(function (v) { return OPCOES.providers.indexOf(v) !== -1; });
+        });
+        return doProv.length === 1;
+      })(), seletores.map(function (s) { return JSON.stringify(((s.props || {}).opcoes || []).map(function (o) { return o.valor; })); }).join(" ; "));
 check("pagina do modelo: os Seletor so recebem valores das listas",
       seletores.every(function (s) {
         const vals = ((s.props && s.props.opcoes) || []).map(function (o) { return o.valor; });
         return vals.every(function (v) {
           return v === "" || v === "sim" || v === "nao"
-            || OPCOES.acessos.indexOf(v) !== -1 || OPCOES.esforcos.indexOf(v) !== -1;
+            || OPCOES.acessos.indexOf(v) !== -1 || OPCOES.esforcos.indexOf(v) !== -1
+            || OPCOES.providers.indexOf(v) !== -1;
         });
       }), seletores.map(function (s) { return JSON.stringify((s.props || {}).opcoes); }).join(" ; "));
 
