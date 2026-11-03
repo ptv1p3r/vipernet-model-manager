@@ -764,6 +764,43 @@
     return novo;
   }
 
+  // ---- estrategia no editor ------------------------------------------------
+  // A estrategia tem de estar no mesmo sitio que o classificador: quem abre o
+  // editor para decidir "como se escolhe o modelo" procura as duas coisas
+  // juntas. Le-se e escreve-se no JSON que o editor ja tem, por isso nao ha
+  // gravacao parcial: o "Salvar" continua a ser o unico que escreve.
+  function estrategiaDe(cfg, perfil) {
+    if (!cfg) return null;
+    if (perfil === null) return cfg.estrategia || null;
+    const p = cfg.perfis && cfg.perfis[perfil];
+    return (p && p.estrategia) || null;
+  }
+
+  function comEstrategia(cfg, perfil, campos, herdar) {
+    const novo = JSON.parse(JSON.stringify(cfg));
+    let alvo;
+    if (perfil === null) {
+      alvo = novo;
+    } else {
+      novo.perfis = novo.perfis || {};
+      novo.perfis[perfil] = novo.perfis[perfil] || {};
+      alvo = novo.perfis[perfil];
+    }
+    if (herdar) {
+      delete alvo.estrategia;
+      return novo;
+    }
+    const est = Object.assign({}, alvo.estrategia || {}, campos || {});
+    // Um campo vazio e "nao declarado": sai, para nao ficar `""` na config,
+    // que a validacao aceita mas o `select` mostra como escolha propria.
+    Object.keys(est).forEach(function (k) {
+      if (est[k] === null || est[k] === "") delete est[k];
+    });
+    if (Object.keys(est).length) alvo.estrategia = est;
+    else delete alvo.estrategia;
+    return novo;
+  }
+
   function SecaoClassificador(props) {
     const cfg = lerJSON(props.configJSON);
     if (!cfg) {
@@ -773,6 +810,15 @@
     const pares = paresModelo(cfg);
     const globalBloco = blocoDe(cfg, null);
     const linhas = [null].concat(Object.keys(cfg.perfis || {}).sort());
+    // Listas fechadas de estrategia vindas do backend: a mesma lista que o
+    // `gestor` aceita, nunca uma copia escrita aqui.
+    const opcoesEst = props.opcoes || {};
+    const modosEst = opcoesEst.modo || [];
+    const porEst = opcoesEst.por || [];
+
+    function aplicarEstrategia(perfil, campos, herdar) {
+      props.onMudar(JSON.stringify(comEstrategia(cfg, perfil, campos, herdar), null, 2));
+    }
 
     function aplicar(perfil, bloco) {
       props.onMudar(JSON.stringify(comBloco(cfg, perfil, bloco), null, 2));
@@ -806,10 +852,11 @@
 
     return h("div", { className: "vmm-classif" },
       h("div", { className: "vmm-classif-titulo" },
-        h("strong", null, "Análise da complexidade"),
+        h("strong", null, "Complexidade e estratégia"),
         h("span", { className: "vmm-mudo" },
-          "  sem modelo (ou desligado) decide a heurística; com modelo, decide o modelo — "
-          + "a associação de tarefa continua a ganhar.")
+          "  por linha: o classificador decide o nível (sem modelo decide a heurística) "
+          + "e a estratégia decide como se escolhe o modelo dentro do nível — "
+          + "a associação de tarefa continua a ganhar às duas.")
       ),
       linhas.map(function (perfil) {
         const bloco = blocoDe(cfg, perfil);
@@ -865,7 +912,50 @@
             [["auto", "formato: JSON automático"], ["on", "formato: JSON obrigatório"],
              ["off", "formato: texto"]]
               .map(function (o) { return h("option", { key: o[0], value: o[0] }, o[1]); })
-          ) : null
+          ) : null,
+          // ---- estrategia (na mesma linha: e a mesma decisao de rota) ----
+          (function () {
+            const est = estrategiaDe(cfg, perfil);
+            const estGlobal = estrategiaDe(cfg, null);
+            const rotuloModo = {
+              rodizio: "estratégia: rotação",
+              prioridade: "estratégia: prioridade (primeira da lista)",
+            };
+            // forma curta, para o rotulo "herdar do global (rotação)".
+            const curtoModo = { rodizio: "rotação", prioridade: "prioridade" };
+            const opcoesModo = modosEst.map(function (o) {
+              return { valor: o.valor, rotulo: rotuloModo[o.valor] || o.rotulo || o.valor };
+            });
+            const primeira = perfil === null
+              ? [{ valor: "", rotulo: "estratégia: não declarada" }]
+              : [{ valor: "", rotulo: "estratégia: herdar do global"
+                    + (estGlobal && estGlobal.modo ? " (" + (curtoModo[estGlobal.modo] || estGlobal.modo) + ")" : "") }];
+            const porModo = (est && est.modo) || (perfil === null ? "" : (estGlobal && estGlobal.modo) || "");
+            return [
+              h(Seletor, {
+                key: "est-modo",
+                rotulo: "estratégia de " + (perfil === null ? "todos os perfis" : perfil),
+                valor: est ? est.modo || "" : "",
+                opcoes: primeira.concat(opcoesModo),
+                onChange: function (v) {
+                  aplicarEstrategia(perfil, v ? { modo: v } : null, !v);
+                },
+              }),
+              h(Seletor, {
+                key: "est-por",
+                rotulo: "rotação de " + (perfil === null ? "todos os perfis" : perfil),
+                valor: est ? est.por || "" : "",
+                opcoes: [{ valor: "", rotulo: "rotação: por omissão (sessão)" }].concat(
+                  porEst.map(function (o) { return { valor: o.valor, rotulo: "rotação: " + (o.rotulo || o.valor) }; })
+                ),
+                // `por` so governa a rotacao: em `prioridade` um select activo
+                // que nao faz nada e uma armadilha.
+                disabled: porModo === "prioridade",
+                title: "Só se aplica à rotação",
+                onChange: function (v) { aplicarEstrategia(perfil, v ? { por: v } : null, false); },
+              }),
+            ];
+          })()
         );
       }),
       h("datalist", { id: "vmm-modelos" },
@@ -1198,6 +1288,9 @@
             { className: "vmm-editor-corpo" },
             h(SecaoClassificador, {
               configJSON: configJSON,
+              // As opcoes de estrategia vem do `/estado`, a mesma lista que a
+              // validacao aceita. Sem elas o `select` nao teria o que mostrar.
+              opcoes: ((estado.opcoes || {}).estrategia) || {},
               onMudar: function (novo) {
                 setConfigJSON(novo);
                 // o texto mudou: o "validado" anterior deixa de ser verdade
@@ -1324,6 +1417,9 @@
       return ((estado || {}).opcoes || {}).estrategia || {};
     };
     window.__VMM_TEST__.opcoesAlvo = opcoesAlvo;
+    window.__VMM_TEST__.estrategiaDe = estrategiaDe;
+    window.__VMM_TEST__.comEstrategia = comEstrategia;
+    window.__VMM_TEST__.SecaoClassificador = SecaoClassificador;
     window.__VMM_TEST__.valorDaRegra = valorDaRegra;
     window.__VMM_TEST__.rotuloRegra = rotuloRegra;
     window.__VMM_TEST__.metaPlugin = metaPlugin;

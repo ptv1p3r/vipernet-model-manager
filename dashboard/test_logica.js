@@ -595,6 +595,125 @@ check("render: uma linha por regra", (function () {
   return linhas.length === 2;
 })(), "esperava 2 linhas");
 
+// ---- estrategia no editor: a mesma linha do classificador ------------------
+check("estrategiaDe: nao inventa bloco global quando nao existe",
+      T.estrategiaDe(base, null) === null, String(T.estrategiaDe(base, null)));
+check("estrategiaDe: nao inventa bloco de perfil quando nao existe",
+      T.estrategiaDe(base, "pessoal") === null, String(T.estrategiaDe(base, "pessoal")));
+
+const comEst = T.comEstrategia(base, null, { modo: "rodizio", por: "turno" }, false);
+check("comEstrategia: global cria o bloco com os dois eixos",
+      comEst.estrategia && comEst.estrategia.modo === "rodizio"
+      && comEst.estrategia.por === "turno", JSON.stringify(comEst.estrategia));
+check("comEstrategia: nao muta o objecto de origem",
+      base.estrategia === undefined && base.perfis.pessoal.estrategia === undefined);
+check("comEstrategia: nao perde o catalogo do perfil",
+      comEst.perfis.pessoal.catalogo.length === 2);
+
+const comEstPerfil = T.comEstrategia(comEst, "pessoal", { modo: "prioridade" }, false);
+check("comEstrategia: perfil ganha bloco proprio",
+      comEstPerfil.perfis.pessoal.estrategia.modo === "prioridade");
+check("comEstrategia: perfil nao mexe no global",
+      comEstPerfil.estrategia.modo === "rodizio");
+
+const semEstPerfil = T.comEstrategia(comEstPerfil, "pessoal", null, true);
+check("comEstrategia: herdar remove a chave do perfil",
+      semEstPerfil.perfis.pessoal.estrategia === undefined
+      && semEstPerfil.estrategia.modo === "rodizio");
+check("comEstrategia: herdar no global remove o bloco",
+      T.comEstrategia(comEst, null, null, true).estrategia === undefined);
+
+// Um campo vazio nao fica gravado como escolha propria: sai do bloco.
+const comVazio = T.comEstrategia(comEstPerfil, "pessoal", { modo: "" }, false);
+check("comEstrategia: campo vazio sai do bloco",
+      comVazio.perfis.pessoal.estrategia === undefined, JSON.stringify(comVazio.perfis.pessoal));
+const comPorVazio = T.comEstrategia(comEst, null, { por: "" }, false);
+check("comEstrategia: `por` vazio mantem o `modo` e perde o eixo",
+      comPorVazio.estrategia.modo === "rodizio" && comPorVazio.estrategia.por === undefined,
+      JSON.stringify(comPorVazio.estrategia));
+
+// ---- render: a estrategia aparece onde o classificador aparece -------------
+const opcoesReais = {
+  modo: [{ valor: "rodizio", rotulo: "rotação" }, { valor: "prioridade", rotulo: "prioridade (primeira da lista)" }],
+  por: [{ valor: "turno", rotulo: "por turno" }, { valor: "sessao", rotulo: "por sessão" }],
+};
+
+function recolher(no, predicado, out) {
+  out = out || [];
+  if (!no || typeof no !== "object") return out;
+  if (Array.isArray(no)) { no.forEach(function (f) { recolher(f, predicado, out); }); return out; }
+  if (predicado(no)) out.push(no);
+  if (no.filhos) no.filhos.forEach(function (f) { recolher(f, predicado, out); });
+  if (no.props) recolher(no.props.children, predicado, out);
+  return out;
+}
+
+function renderSecao(config, opcoes) {
+  return T.SecaoClassificador({
+    configJSON: JSON.stringify(config),
+    opcoes: opcoes || {},
+    onMudar: function () {},
+  });
+}
+
+const cfgSecao = {
+  analise: { limiares: { media: 3, alta: 6 }, classificador: { activo: true, provider: "inception", modelo: "mercury-3" } },
+  estrategia: { modo: "rodizio", por: "sessao" },
+  perfis: { pessoal: { catalogo: [] }, trabalho: { catalogo: [] } },
+};
+const arvoreSecao = renderSecao(cfgSecao, opcoesReais);
+
+check("render: o titulo diz que a estrategia esta na mesma seccao",
+      textoDaArvore(arvoreSecao).indexOf("Complexidade e estratégia") !== -1);
+
+const seletoresModo = recolher(arvoreSecao, function (no) {
+  return no.tag === "Seletor" && String(no.props && no.props.rotulo || "").indexOf("estratégia de") === 0;
+});
+check("render: um select de estrategia por linha (global + 2 perfis)",
+      seletoresModo.length === 3, "obtive " + seletoresModo.length);
+
+const globalSel = seletoresModo.filter(function (no) {
+  return no.props.rotulo === "estratégia de todos os perfis";
+})[0];
+check("render: o global mostra o modo declarado",
+      globalSel && globalSel.props.valor === "rodizio", globalSel && globalSel.props.valor);
+
+const perfilSel = seletoresModo.filter(function (no) {
+  return no.props.rotulo === "estratégia de pessoal";
+})[0];
+check("render: o perfil sem bloco mostra herdar do global",
+      perfilSel && perfilSel.props.valor === ""
+      && perfilSel.props.opcoes[0].rotulo.indexOf("herdar do global") !== -1
+      && perfilSel.props.opcoes[0].rotulo.indexOf("rotação") !== -1,
+      perfilSel && JSON.stringify(perfilSel.props.opcoes[0]));
+
+check("render: as opcoes de modo vem do backend (rotação e prioridade)",
+      globalSel && globalSel.props.opcoes.map(function (o) { return o.valor; }).join(",")
+        === ",rodizio,prioridade");
+check("render: sem opcoes do backend nao se inventam valores",
+      (function () {
+        const semOpcoes = recolher(renderSecao(cfgSecao, {}), function (no) {
+          return no.tag === "Seletor" && no.props.rotulo === "estratégia de todos os perfis";
+        })[0];
+        return semOpcoes && semOpcoes.props.opcoes.length === 1 && semOpcoes.props.opcoes[0].valor === "";
+      })());
+
+const rotacaoSel = recolher(arvoreSecao, function (no) {
+  return no.tag === "Seletor" && String(no.props && no.props.rotulo || "").indexOf("rotação de") === 0;
+});
+check("render: o eixo da rotacao esta desactivado em prioridade", (function () {
+  const cfgPrioridade = JSON.parse(JSON.stringify(cfgSecao));
+  cfgPrioridade.perfis.pessoal.estrategia = { modo: "prioridade" };
+  const sel = recolher(renderSecao(cfgPrioridade, opcoesReais), function (no) {
+    return no.tag === "Seletor" && no.props.rotulo === "rotação de pessoal";
+  })[0];
+  const outro = recolher(renderSecao(cfgPrioridade, opcoesReais), function (no) {
+    return no.tag === "Seletor" && no.props.rotulo === "rotação de trabalho";
+  })[0];
+  return sel && sel.props.disabled === true && outro && !outro.props.disabled;
+})(), "esperava pessoal desactivado e trabalho activo");
+check("render: ha um select de rotacao por linha", rotacaoSel.length === 3, "obtive " + rotacaoSel.length);
+
 console.log("");
 if (falhas) {
   console.log(falhas + " de " + total + " verificacoes FALHARAM");
