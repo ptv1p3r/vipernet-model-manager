@@ -50,6 +50,7 @@ Regras que decidem o resultado:
 from __future__ import annotations
 
 import copy
+import difflib
 import hashlib
 import json
 import os
@@ -68,6 +69,20 @@ NIVEIS = ("leve", "media", "alta")
 ESTRATEGIAS = ("rodizio", "prioridade")
 POR = ("turno", "sessao")
 ACESSOS = ("api", "subscricao")
+
+#: Estrategia: listas FECHADAS. `modo` decide como se escolhe dentro do nivel;
+#: `por` so tem efeito em `rodizio` e diz quando a roda avanca (por turno ou
+#: por sessao). Um valor fora destas listas e erro de validacao, nao um
+#: silencioso "usa o default": gravar `rodizioo` e ver o plugin a ignorar a
+#: escolha e pior do que o painel recusar.
+ESTRATEGIA_PADRAO: dict[str, str] = {"modo": "rodizio", "por": "sessao"}
+#: Rotulos do painel. Ficam aqui — e nao no JS — para o `select` ser construido
+#: a partir da mesma lista que valida, e nao de uma copia que envelhece.
+ROTULOS_ESTRATEGIA: dict[str, dict[str, str]] = {
+    "modo": {"rodizio": "rotação", "prioridade": "prioridade (primeira da lista)"},
+    "por": {"turno": "por turno", "sessao": "por sessão"},
+}
+
 
 #: Esforco de raciocinio por rota. Vocabulario do dono (pt-PT); no fio fala a
 #: escada canonica do Hermes (`agent.reasoning_effort`), que depois a adapta a
@@ -173,11 +188,13 @@ SEED: dict[str, Any] = {
     "activo": True,
     "registar": True,
     "analise": copy.deepcopy(ANALISE_PADRAO),
+    # Estrategia global: e a partir daqui que todos os perfis herdam. A semente
+    # nao repete o bloco em cada perfil — repetir era precisamente o que impedia
+    # mudar a estrategia num sitio so.
+    "estrategia": dict(ESTRATEGIA_PADRAO),
     "perfis": {
         "default": {
             "activo": True,
-            "estrategia": "rodizio",
-            "rodizio": {"por": "sessao"},
             "catalogo": [
                 {"id": "deepseek-flash", "provider": "deepseek",
                  "modelo": "deepseek-flash", "complexidade": ["leve", "media"]},
@@ -190,8 +207,6 @@ SEED: dict[str, Any] = {
         },
         "pessoal": {
             "activo": True,
-            "estrategia": "rodizio",
-            "rodizio": {"por": "sessao"},
             "catalogo": [
                 {"id": "deepseek-flash", "provider": "deepseek",
                  "modelo": "deepseek-flash", "complexidade": ["leve", "media"]},
@@ -205,8 +220,6 @@ SEED: dict[str, Any] = {
         },
         "trabalho": {
             "activo": True,
-            "estrategia": "rodizio",
-            "rodizio": {"por": "sessao"},
             "catalogo": [
                 {"id": "deepseek-flash", "provider": "deepseek",
                  "modelo": "deepseek-flash", "complexidade": "leve"},
@@ -317,6 +330,17 @@ def normalizar_superficies(
         if regra.get("activo") is False:
             saida[nome] = {"activo": False}
             continue
+        # Anti-gralha: vale com e sem catalogo. Uma regra para `crom` nunca
+        # dispara (a superficie e `cron`) e o silencio e o pior resultado —
+        # o utilizador fica convencido de ter configurado o cron.
+        if nome not in SUPERFICIES_CONHECIDAS and nome.isalpha():
+            parecida = difflib.get_close_matches(
+                nome, SUPERFICIES_CONHECIDAS, n=1, cutoff=0.75)
+            if parecida:
+                erros.append(f"{contexto}.{nome}: superficie parecida com "
+                             f"'{parecida[0]}' — corrija o nome ou use uma "
+                             f"superficie real")
+                continue
         limpa: dict[str, Any] = {}
         if regra.get("entrada") not in (None, ""):
             limpa["entrada"] = str(regra["entrada"]).strip()
@@ -349,11 +373,6 @@ def normalizar_superficies(
                 erros.append(f"{contexto}.{nome}: {limpa['provider']}/"
                              f"{limpa['modelo']} nao esta no catalogo do perfil")
                 continue
-        elif nome not in SUPERFICIES_CONHECIDAS and nome.isalpha():
-            # Aviso, nao erro: um provider novo traz superficies novas, e a
-            # regra continua valida. Mas uma gralha (`corm`) nunca dispara.
-            erros.append(f"{contexto}.{nome}: superficie nao vista neste ambiente "
-                         f"(conhecidas: {', '.join(SUPERFICIES_CONHECIDAS)})")
         saida[nome] = limpa
     return saida
 
@@ -555,6 +574,69 @@ def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str
     return saida
 
 
+def normalizar_estrategia(valor: Any, prefixo: str = "estrategia",
+                          erros: list[str] | None = None
+                          ) -> tuple[dict[str, str], list[str]]:
+    """Normaliza o bloco de estrategia contra as listas fechadas.
+
+    Aceita a forma nova (`{"modo": ..., "por": ...}`) e a antiga (string, com o
+    `por` em `rodizio.por`) — a config viva foi gravada na antiga e um `gravar`
+    sem esta conversao apagava a estrategia do perfil. Devolve **so** as chaves
+    declaradas: a ausencia e o que significa "herda do global", e preencher aqui
+    as que faltam transformaria toda a heranca numa copia.
+
+    Chave desconhecida e erro: e a garantia de que a lista e fechada. Um
+    `{"modo": "rodizio", "prioridade": 3}` typo ficava a ser ignorado em
+    silencio e o utilizador julgava que tinha mudado alguma coisa.
+    """
+    if erros is None:
+        erros = []
+    if valor is None or valor == "":
+        return {}, erros
+    modo: Any = None
+    por: Any = None
+    if isinstance(valor, str):
+        modo = valor
+    elif isinstance(valor, dict):
+        for chave in sorted(set(valor) - {"modo", "por"}):
+            erros.append(f"{prefixo}.{chave} desconhecida "
+                         f"(aceita: modo, por)")
+        modo = valor.get("modo")
+        por = valor.get("por")
+    else:
+        erros.append(f"{prefixo} tem de ser objecto com 'modo' e 'por' "
+                     f"(ou a string antiga com o modo)")
+        return {}, erros
+    saida: dict[str, str] = {}
+    if modo is not None and modo != "":
+        m = str(modo).strip().lower()
+        if m not in ESTRATEGIAS:
+            erros.append(f"{prefixo}.modo invalido: {str(modo)!r} "
+                         f"(aceita: {', '.join(ESTRATEGIAS)})")
+        else:
+            saida["modo"] = m
+    if por is not None and por != "":
+        p = str(por).strip().lower()
+        if p not in POR:
+            erros.append(f"{prefixo}.por invalido: {str(por)!r} "
+                         f"(aceita: {', '.join(POR)})")
+        else:
+            saida["por"] = p
+    return saida, erros
+
+
+def opcoes_estrategia() -> dict[str, list[dict[str, str]]]:
+    """Listas fechadas com rotulo, para o painel construir os `select`.
+
+    Uma casa so: o painel nao repete os valores em JS, pede-os aqui. Um valor
+    novo passa a aparecer no `select` por acrescento em `ESTRATEGIAS`/`POR`.
+    """
+    return {
+        campo: [{"valor": v, "rotulo": ROTULOS_ESTRATEGIA[campo][v]} for v in valores]
+        for campo, valores in (("modo", ESTRATEGIAS), ("por", POR))
+    }
+
+
 def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
     """Normaliza e valida; devolve `(config, erros)`. Nunca levanta."""
     erros: list[str] = []
@@ -621,6 +703,21 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
             else:
                 saida["analise"][chave] = valor
 
+    # Estrategia global: listas fechadas (`rodizio`|`prioridade`,
+    # `turno`|`sessao`). A ausencia do bloco nao e erro — vale o padrao; mas um
+    # valor declarado fora da lista e erro, porque "ignorar em silencio" faz o
+    # utilizador julgar que mudou a estrategia quando nada mudou.
+    est_global, erros_est = normalizar_estrategia(cfg.get("estrategia"), "estrategia")
+    erros.extend(erros_est)
+    # So se grava o que foi declarado. Escrever aqui os valores por omissao
+    # transformava "nao escolhi" numa escolha, e a origem passava a ser
+    # `herdado` para toda a gente — o painel deixava de poder dizer "por
+    # omissao", que e a informacao util quando nada foi decidido.
+    base_est = dict(ESTRATEGIA_PADRAO)
+    base_est.update(est_global)
+    if est_global:
+        saida["estrategia"] = dict(est_global)
+
     perfis = cfg.get("perfis")
     if not isinstance(perfis, dict):
         erros.append("'perfis' ausente ou nao e um objecto")
@@ -633,14 +730,25 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         if not isinstance(pcfg, dict):
             erros.append(f"perfis.{nome} nao e um objecto")
             continue
-        estrategia = str(pcfg.get("estrategia") or "rodizio").strip().lower()
-        if estrategia not in ESTRATEGIAS:
-            erros.append(f"perfis.{nome}.estrategia invalida: {estrategia}")
-            estrategia = "rodizio"
-        por = str((pcfg.get("rodizio") or {}).get("por") or "sessao").strip().lower()
-        if por not in POR:
-            erros.append(f"perfis.{nome}.rodizio.por invalido: {por}")
-            por = "sessao"
+        # Estrategia do perfil: bloco opcional. Ausente = herda o global; com
+        # chaves = sobrepoe-se chave a chave. Aceita a forma antiga (string mais
+        # `rodizio.por`) e converte-a — sem isto, gravar apagava a estrategia de
+        # um perfil que a tinha declarado antes desta versao.
+        bruto_est = pcfg.get("estrategia")
+        por_antigo = (pcfg.get("rodizio") or {}).get("por") \
+            if isinstance(pcfg.get("rodizio"), dict) else None
+        if isinstance(bruto_est, str):
+            bruto_est = {"modo": bruto_est, "por": por_antigo}
+        elif bruto_est is None and por_antigo is not None:
+            bruto_est = {"por": por_antigo}
+        est_limpa, erros_est = normalizar_estrategia(
+            bruto_est, f"perfis.{nome}.estrategia")
+        erros.extend(erros_est)
+        # Grava-se so o delta: um valor igual ao global nao e uma declaracao, e
+        # uma copia que fixa o perfil ao dia em que foi gravada (a mesma regra
+        # da `analise`, e a razao pela qual os perfis nao devem repetir valores).
+        delta_est = {k: v for k, v in est_limpa.items()
+                     if base_est.get(k) != v}
         # `teto_latencia` e tolerante em tempo de execucao (0 = sem teto), mas
         # um valor declarado e invalido tem de aparecer no editor, senao o
         # utilizador grava um teto que nao existe e nunca sabe por que.
@@ -750,8 +858,10 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         saida["perfis"][nome] = {
             "tarefas": tarefas,
             "activo": bool(pcfg.get("activo", True)),
-            "estrategia": estrategia,
-            "rodizio": {"por": por},
+            # Sem delta nao se grava `estrategia`: a ausencia da chave e o que
+            # significa "herda o global" (e o que permite mudar o global sem
+            # tocar nos perfis).
+            **(lambda e: {"estrategia": e} if e else {})(delta_est),
             # Teto de latencia do perfil: so se grava quando declarado, pela
             # mesma razao que a `analise` — ausencia e "sem teto", e um valor
             # herdado do global fixaria o perfil ao numero do dia.
@@ -1052,10 +1162,59 @@ def perfil_config(cfg: dict[str, Any], perfil: str) -> dict[str, Any] | None:
                     base = dict(analise.get("limiares") or {})
                     base.update(valor)
                     analise["limiares"] = base
+                elif chave == "superficies" and isinstance(valor, dict):
+                    # Uma regra global vale para todos, superficie a superficie:
+                    # se o perfil declarasse `cron` e substituisse o bloco
+                    # inteiro, as regras globais das outras superficies
+                    # desapareciam sem ninguem as ter apagado.
+                    base = dict(analise.get("superficies") or {})
+                    base.update(copy.deepcopy(valor))
+                    analise["superficies"] = base
                 else:
                     analise[chave] = copy.deepcopy(valor)
         saida["analise"] = analise
+    # Estrategia: o global vale para todos; o perfil sobrepoe-se **chave a
+    # chave** (`modo` e `por` sao independentes — declarar so a rotacao nao
+    # obriga a repetir o modo). A fundicao e na leitura, pela mesma razao da
+    # `analise`: um perfil gravado antes de o global mudar nao pode ficar preso.
+    global_est = cfg.get("estrategia")
+    est: dict[str, str] = dict(ESTRATEGIA_PADRAO)
+    if isinstance(global_est, dict):
+        est.update({k: v for k, v in global_est.items() if k in ("modo", "por")})
+    cru_est = saida.get("estrategia")
+    if isinstance(cru_est, str):
+        cru_est = {"modo": cru_est, "por": (saida.get("rodizio") or {}).get("por")}
+    if isinstance(cru_est, dict):
+        est.update({k: v for k, v in cru_est.items()
+                    if k in ("modo", "por") and isinstance(v, str) and v})
+    saida["estrategia"] = est
+    # De onde veio o que esta em vigor: e o que o cartao mostra. Sem isto, um
+    # perfil que herda parece ter escolhido, e o utilizador muda o global sem
+    # perceber porque e que aquele perfil nao mudou.
+    saida["estrategia_origem"] = ("proprio" if isinstance(cru_est, dict) and cru_est
+                                  else "herdado" if isinstance(global_est, dict) and global_est
+                                  else "padrao")
+    saida.pop("rodizio", None)
     return saida
+
+
+def estrategia_global(cfg: dict[str, Any]) -> dict[str, str]:
+    """Estrategia do global, ja normalizada, com a origem (`global`/`padrao`)."""
+    est = dict(ESTRATEGIA_PADRAO)
+    bruto = cfg.get("estrategia")
+    if isinstance(bruto, dict):
+        est.update({k: v for k, v in bruto.items() if k in ("modo", "por")})
+    return {"modo": est["modo"], "por": est["por"],
+            "origem": "global" if isinstance(bruto, dict) and bruto else "padrao"}
+
+
+def estrategia_efectiva(cfg: dict[str, Any], perfil: str) -> dict[str, str]:
+    """O que este perfil usa: bloco herdado/proprio mais a origem."""
+    pcfg = perfil_config(cfg, perfil) or {}
+    est = pcfg.get("estrategia") or dict(ESTRATEGIA_PADRAO)
+    return {"modo": str(est.get("modo") or "rodizio"),
+            "por": str(est.get("por") or "sessao"),
+            "origem": str(pcfg.get("estrategia_origem") or "padrao")}
 
 
 def classificador_efectivo(cfg: dict[str, Any], perfil: str) -> dict[str, Any]:

@@ -135,6 +135,75 @@
   font-size: 0.75rem;
 }
 
+/* Estrategia: `<select>` nativo do tema, nao um widget proprio — o painel
+   corre dentro do dashboard e um select nativo herda o esquema de cores, o
+   foco e o teclado sem CSS a competir com o tema. */
+.vmm-estrategia {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+}
+
+.vmm-select {
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.375rem;
+  border: 1px solid hsl(var(--border, 214 32% 91%));
+  background: hsl(var(--background, 0 0% 100%));
+  color: hsl(var(--foreground, 222 47% 11%));
+  max-width: 15rem;
+}
+
+.vmm-select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.vmm-select:focus-visible {
+  outline: 2px solid hsl(var(--ring, 215 20% 65%));
+  outline-offset: 1px;
+}
+
+/* --- superficies de sessao -----------------------------------------------
+   Cada regra e uma linha nome + select: a superficie a esquerda (o que o core
+   entrega) e a rota a direita. O nome e mono porque e um identificador do
+   Hermes, nao texto de interface. */
+.vmm-superficies {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.6rem;
+}
+.vmm-sup-linha {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.vmm-sup-nome {
+  font-family: var(--vmm-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.8rem;
+  min-width: 7rem;
+}
+.vmm-sup-add {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.vmm-sup-add input.vmm-select {
+  max-width: 12rem;
+}
+.vmm-sup-add input.vmm-select::placeholder {
+  opacity: 0.65;
+}
+
+.vmm-herdar {
+  font-size: 0.6875rem !important;
+  padding: 0 0.25rem !important;
+  height: auto !important;
+}
+
 .vmm-ultimo {
   font-size: 0.75rem;
   color: hsl(var(--muted-foreground, 215 16% 47%));

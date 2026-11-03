@@ -176,12 +176,19 @@ def testes() -> None:
     check("recusa nivel invalido", any("nivel invalido" in e for e in erros), str(erros))
 
     erros = []
-    gestor.normalizar_superficies({"corm": {"nivel": "alta"}}, "x", erros)
-    check("avisa superficie desconhecida (gralha)", any("nao vista" in e for e in erros),
+    gestor.normalizar_superficies({"crom": {"nivel": "alta"}}, "x", erros)
+    check("recusa gralha de superficie conhecida",
+          any("parecida com 'cron'" in e for e in erros), str(erros))
+    check("a gralha nao entra na config",
+          gestor.normalizar_superficies({"crom": {"nivel": "alta"}}, "x", []) == {})
+
+    # Superficie genuinamente nova (provider novo, contexto novo) e aceite: a
+    # lista e um anti-gralha, nao uma lista fechada.
+    erros = []
+    novas = gestor.normalizar_superficies({"mcp": {"entrada": "a"}}, "x", erros,
+                                          catalogo=[{"id": "a"}])
+    check("superficie nova e aceite", novas == {"mcp": {"entrada": "a"}} and not erros,
           str(erros))
-    check("o aviso nao impede a regra de existir",
-          gestor.normalizar_superficies({"corm": {"nivel": "alta"}}, "x", [])
-          == {"corm": {"nivel": "alta"}})
 
     erros = []
     gestor.normalizar_superficies({"cron": "alta"}, "x", erros)
@@ -226,6 +233,16 @@ def testes() -> None:
     check("a regra do global continua la",
           (c2.plugin._config().get("analise", {}).get("superficies") or {})
           .get("cron") == {"entrada": "flash-alta"})
+
+    # Uma regra por perfil nao pode apagar as regras globais das outras
+    # superficies: a heranca e superficie a superficie, nao bloco a bloco.
+    c2b = Cenario("misto", _cfg(superficies={"cli": {"entrada": "flash-alta"}},
+                                perfil_superficies={"cron": {"nivel": "alta"}}))
+    pcfg2b = c2b.plugin.gestor.perfil_config(c2b.plugin._config(), "pessoal")
+    check("o perfil ve a sua regra e a global ao mesmo tempo",
+          c2b.plugin.gestor.regra_de_superficie(pcfg2b, "cron") is not None
+          and c2b.plugin.gestor.regra_de_superficie(pcfg2b, "cli") is not None,
+          str((pcfg2b.get("analise") or {}).get("superficies")))
 
     # ------------------------------------------------------------------ 4 e 5
     print("\n== 4 e 5. prioridade e troca no middleware ==")

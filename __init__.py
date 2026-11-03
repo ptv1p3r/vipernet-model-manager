@@ -153,6 +153,7 @@ def _recarregar_analise_modelo_se_mudou() -> None:
     _analise_modelo_mod = _recarregar_modulo(
         _analise_modelo_mod, _FICHEIRO_ANALISE_MODELO, _MTIME_ANALISE_MODELO, "classificador")
 
+
 NOME = gestor.NOME
 _AMBIENTE_DESLIGADO = ("VMM_DESATIVADO", "VIPERNET_MODEL_MANAGER_OFF")
 
@@ -371,6 +372,25 @@ def resolver_rota(perfil: str, provider: str, modelo: str) -> dict[str, Any]:
     return dict(rota)
 
 
+def _estrategia_do_perfil(pcfg: dict[str, Any]) -> tuple[str, str]:
+    """`(modo, por)` da estrategia em vigor neste perfil.
+
+    O bloco chega normalizado por `gestor.perfil_config`; a leitura da forma
+    antiga (string em `estrategia` e `por` em `rodizio`) fica aqui para que uma
+    config passada directamente a `escolher()` — testes, import — nao caia em
+    `rodizio` por omissao e ignore em silencio um `prioridade` declarado.
+    """
+    est = pcfg.get("estrategia")
+    por_antigo = (pcfg.get("rodizio") or {}).get("por") \
+        if isinstance(pcfg.get("rodizio"), dict) else None
+    if isinstance(est, dict):
+        return (str(est.get("modo") or "rodizio"),
+                str(est.get("por") or "sessao"))
+    if isinstance(est, str) and est.strip():
+        return (est.strip().lower(), str(por_antigo or "sessao"))
+    return ("rodizio", str(por_antigo or "sessao"))
+
+
 def _entrada_do_catalogo(pcfg: dict[str, Any], entrada_id: Any) -> dict[str, Any] | None:
     """Entrada do catalogo pelo id; `None` se o dono a removeu ou renomeou."""
     alvo = str(entrada_id or "")
@@ -385,9 +405,9 @@ def escolher(pcfg: dict[str, Any], nivel: str, *, perfil: str, sessao: str) -> d
     lista = gestor.candidatos(catalogo, nivel)
     if not lista:
         return None
-    if str(pcfg.get("estrategia") or "rodizio") != "rodizio" or len(lista) == 1:
+    modo, por = _estrategia_do_perfil(pcfg)
+    if modo != "rodizio" or len(lista) == 1:
         return lista[0]
-    por = str((pcfg.get("rodizio") or {}).get("por") or "sessao")
     chave = gestor.chave_rodizio(perfil, sessao, nivel)
     with _lock:
         indice = gestor.indice_rodizio(chave, len(lista), por=por, perfil=perfil,
@@ -425,8 +445,8 @@ def escolher_com_rota(pcfg: dict[str, Any], nivel: str, *, perfil: str,
         if not viaveis:
             return None, None, falhadas
         lista = viaveis
-    if str(pcfg.get("estrategia") or "rodizio") == "rodizio" and len(lista) > 1:
-        por = str((pcfg.get("rodizio") or {}).get("por") or "sessao")
+    modo, por = _estrategia_do_perfil(pcfg)
+    if modo == "rodizio" and len(lista) > 1:
         chave = gestor.chave_rodizio(perfil, sessao, nivel)
         with _lock:
             indice = gestor.indice_rodizio(chave, len(lista), por=por, perfil=perfil,

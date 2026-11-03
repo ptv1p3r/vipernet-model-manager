@@ -94,14 +94,20 @@ def cmd_status(args) -> int:
     print(f"global: {'ligado' if cfg.get('activo', True) else 'DESLIGADO'}"
           f" · registar: {'sim' if cfg.get('registar', True) else 'nao'}")
     print(f"perfis geridos: {len(perfis)}")
-    linhas = [["perfil", "activo", "estrategia", "rodizio", "rotas", "niveis"]]
+    est_g = g.estrategia_global(cfg)
+    print(f"estrategia global: {est_g['modo']}"
+          + (f" por {est_g['por']}" if est_g["modo"] == "rodizio" else "")
+          + f" ({est_g['origem']})")
+    linhas = [["perfil", "activo", "estrategia", "rotacao", "origem", "rotas", "niveis"]]
     for nome, p in sorted(perfis.items()):
         rotas = p.get("catalogo") or []
         niveis = sorted({n for r in rotas for n in (r.get("complexidade") or [])},
                         key=lambda n: g.NIVEIS.index(n))
+        # A estrategia em vigor, nao o delta: um perfil que herda tem de mostrar
+        # o que esta a decidir, e a coluna `origem` diz de onde vem.
+        est = g.estrategia_efectiva(cfg, nome)
         linhas.append([nome, "sim" if p.get("activo", True) else "NAO",
-                       str(p.get("estrategia") or "rodizio"),
-                       str((p.get("rodizio") or {}).get("por") or "sessao"),
+                       est["modo"], est["por"], est["origem"],
                        str(len(rotas)), ",".join(niveis) or "-"])
     print(_tabela(linhas))
     return 1 if erros else 0
@@ -310,8 +316,7 @@ def cmd_perfil_add(args) -> int:
             return _erro(f"perfil de origem '{args.copiar_de}' nao existe", 3)
         novo = json.loads(json.dumps(base))
     else:
-        novo = {"activo": True, "estrategia": "rodizio", "rodizio": {"por": "sessao"},
-                "catalogo": []}
+        novo = {"activo": True, "catalogo": []}
     perfis[args.nome] = novo
     try:
         g.gravar(cfg)
@@ -319,6 +324,77 @@ def cmd_perfil_add(args) -> int:
         return _erro(f"config recusada: {exc}")
     print(f"perfil '{args.nome}' acrescentado"
           + (f" (copia de '{args.copiar_de}')" if args.copiar_de else " (sem rotas)"))
+    return 0
+
+
+def cmd_estrategia(args) -> int:
+    """Le ou muda a estrategia: global, ou de um perfil. Listas fechadas.
+
+    Sem `--modo`/`--por`/`--herdar` e leitura. Muda-se o que se declarar; o
+    `--herdar` apaga o bloco (no perfil) ou o global, e e o unico gesto que
+    exprime "volta ao que estava" — sem ele o bloco ficava a fixar o valor de
+    hoje para sempre.
+    """
+    cfg, _ = _cfg()
+    perfis = cfg.get("perfis") or {}
+    if args.perfil and args.perfil not in perfis:
+        return _erro(f"perfil '{args.perfil}' nao existe", 3)
+
+    if not (args.modo or args.por or args.herdar):
+        if args.json:
+            print(json.dumps({
+                "global": g.estrategia_global(cfg),
+                "opcoes": g.opcoes_estrategia(),
+                "perfis": {n: g.estrategia_efectiva(cfg, n) for n in sorted(perfis)},
+            }, ensure_ascii=False, indent=2))
+            return 0
+        eg = g.estrategia_global(cfg)
+        print(f"global: {eg['modo']} / {eg['por']} ({eg['origem']})")
+        linhas = [["perfil", "estrategia", "rotacao", "origem"]]
+        for nome in sorted(perfis):
+            e = g.estrategia_efectiva(cfg, nome)
+            linhas.append([nome, e["modo"], e["por"], e["origem"]])
+        print(_tabela(linhas))
+        print(f"valores possiveis: modo={'|'.join(g.ESTRATEGIAS)} "
+              f"por={'|'.join(g.POR)}")
+        return 0
+
+    if args.herdar:
+        if args.perfil:
+            perfis[args.perfil].pop("estrategia", None)
+            perfis[args.perfil].pop("rodizio", None)
+        else:
+            cfg.pop("estrategia", None)
+    else:
+        if args.perfil:
+            est = g.estrategia_efectiva(cfg, args.perfil)
+            alvo = perfis[args.perfil]
+            alvo.pop("rodizio", None)
+        else:
+            est = g.estrategia_global(cfg)
+            alvo = cfg
+        est.pop("origem", None)
+        if args.modo:
+            est["modo"] = args.modo
+        if args.por:
+            est["por"] = args.por
+        alvo["estrategia"] = est
+
+    try:
+        g.gravar(cfg)
+    except ValueError as exc:
+        # O `ValueError` traz a razao com os valores aceites: mostra-la e o que
+        # ensina a lista fechada, um "invalido" seco nao.
+        return _erro(f"config recusada: {exc}")
+
+    lido = g.estrategia_efectiva(_cfg()[0], args.perfil) if args.perfil \
+        else dict(g.estrategia_global(_cfg()[0]))
+    if args.herdar:
+        print(f"{args.perfil or 'global'}: voltou a herdar -> "
+              f"{lido['modo']} / {lido['por']}")
+    else:
+        print(f"{args.perfil or 'global'}: {lido['modo']} / {lido['por']}"
+              f" ({lido.get('origem', 'global')})")
     return 0
 
 
@@ -348,8 +424,9 @@ def cmd_rota_list(args) -> int:
         return 0
     for nome in alvos:
         p = perfis[nome]
-        print(f"[{nome}] estrategia={p.get('estrategia')} "
-              f"rodizio={(p.get('rodizio') or {}).get('por')} "
+        est = g.estrategia_efectiva(cfg, nome)
+        print(f"[{nome}] estrategia={est['modo']} rotacao_por={est['por']} "
+              f"origem={est['origem']} "
               f"activo={'sim' if p.get('activo', True) else 'NAO'}")
         linhas = [["id", "provider", "modelo", "acesso", "complexidade", "esforco"]]
         for r in p.get("catalogo") or []:
@@ -749,6 +826,18 @@ def build_parser() -> argparse.ArgumentParser:
     r = sp.add_parser("rm")
     r.add_argument("nome")
     r.set_defaults(func=cmd_perfil_rm)
+
+    s = sub.add_parser("estrategia",
+                       help="ver ou mudar a estrategia (global ou por perfil)")
+    s.add_argument("--perfil", help="sem isto, mexe-se na estrategia global")
+    # `choices` no argparse e a lista fechada ja na linha de comando: o erro
+    # aparece antes de ler a config, e as mensagens do `validar` cobrem o resto.
+    s.add_argument("--modo", choices=list(g.ESTRATEGIAS))
+    s.add_argument("--por", choices=list(g.POR), help="so se aplica a rodizio")
+    s.add_argument("--herdar", action="store_true",
+                   help="apagar o bloco e voltar a herdar o global")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_estrategia)
 
     s = sub.add_parser("rota", help="gerir rotas (provider+modelo+complexidade)")
     sr = s.add_subparsers(dest="sub", required=True)

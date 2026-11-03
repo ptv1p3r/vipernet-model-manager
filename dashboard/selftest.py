@@ -390,6 +390,172 @@ def main() -> int:
     for cls in (".vmm-classif", ".vmm-classif-linha", ".vmm-classif-nome"):
         check(f"painel: CSS {cls}", cls in css)
 
+    # --- /estrategia -------------------------------------------------------
+    # A estrategia e lista fechada: o endpoint tem de recusar o que a validacao
+    # recusa, gravar so o bloco, e deixar os perfis a herdar (sem copia).
+    # A fixture repoe-se aqui: os testes anteriores exercitam o caminho de
+    # "config ausente" e deixam a pasta sem `config.json`.
+    (d / "config.json").write_text(json.dumps(CONFIG, ensure_ascii=False, indent=2),
+                                   encoding="utf-8")
+    est = cli.get("/estado").json()
+    check("/estado estrategia global e bloco",
+          isinstance(est.get("estrategia_global"), dict), str(est.get("estrategia_global")))
+    check("/estado opcoes fechadas",
+          [o["valor"] for o in (((est.get("opcoes") or {}).get("estrategia") or {}).get("modo") or [])]
+          == ["rodizio", "prioridade"], str(est.get("opcoes")))
+    check("/estado rev presente", bool(est.get("rev")))
+    check("/estado estrategia por perfil e bloco com origem",
+          isinstance((est["perfis"]["trabalho"] or {}).get("estrategia"), dict)
+          and "origem" in est["perfis"]["trabalho"]["estrategia"],
+          str(est["perfis"]["trabalho"].get("estrategia")))
+
+    antes = (d / "config.json").read_text(encoding="utf-8")
+    r = cli.post("/estrategia", json={"ambito": "global", "modo": "inventado"})
+    check("/estrategia recusa valor fora da lista", r.status_code == 400, str(r.status_code))
+    check("/estrategia erro diz os valores aceites",
+          "rodizio, prioridade" in r.text, r.text[:200])
+    check("/estrategia nao grava em erro",
+          (d / "config.json").read_text(encoding="utf-8") == antes)
+
+    r = cli.post("/estrategia", json={"ambito": "perfil", "perfil": "nao-existe",
+                                      "modo": "rodizio"})
+    check("/estrategia perfil inexistente da 404", r.status_code == 404, str(r.status_code))
+
+    r = cli.post("/estrategia", json={"ambito": "global", "modo": "prioridade"})
+    check("/estrategia global 200", r.status_code == 200, r.text[:200])
+    check("/estrategia global devolve o lido",
+          ((r.json() or {}).get("estrategia") or {}).get("modo") == "prioridade", r.text[:200])
+    em_disco = json.loads((d / "config.json").read_text(encoding="utf-8"))
+    check("/estrategia global gravada no disco",
+          (em_disco.get("estrategia") or {}).get("modo") == "prioridade",
+          str(em_disco.get("estrategia")))
+    check("/estrategia perfis herdam sem copia",
+          all((p.get("estrategia") or {}).get("modo") != "prioridade"
+              for p in (em_disco.get("perfis") or {}).values()),
+          str({n: p.get("estrategia") for n, p in (em_disco.get("perfis") or {}).items()}))
+    est = cli.get("/estado").json()
+    check("/estado todos os perfis mostram prioridade herdada",
+          all((p.get("estrategia") or {}).get("modo") == "prioridade"
+              for p in (est.get("perfis") or {}).values()),
+          str({n: p.get("estrategia") for n, p in (est.get("perfis") or {}).items()}))
+
+    r = cli.post("/estrategia", json={"ambito": "perfil", "perfil": "trabalho",
+                                      "modo": "rodizio", "por": "turno"})
+    check("/estrategia por perfil 200", r.status_code == 200, r.text[:200])
+    check("/estrategia por perfil devolve origem proprio",
+          ((r.json() or {}).get("estrategia") or {}).get("origem") == "proprio", r.text[:200])
+    est = cli.get("/estado").json()
+    check("/estado trabalho com escolha propria",
+          (est["perfis"]["trabalho"].get("estrategia") or {}).get("por") == "turno",
+          str(est["perfis"]["trabalho"].get("estrategia")))
+    check("/estado default continua herdado",
+          (est["perfis"]["default"].get("estrategia") or {}).get("origem") == "herdado",
+          str(est["perfis"]["default"].get("estrategia")))
+
+    r = cli.post("/estrategia", json={"ambito": "perfil", "perfil": "trabalho", "herdar": True})
+    check("/estrategia herdar 200", r.status_code == 200, r.text[:200])
+    em_disco = json.loads((d / "config.json").read_text(encoding="utf-8"))
+    check("/estrategia herdar apaga o bloco do perfil",
+          "estrategia" not in (em_disco["perfis"]["trabalho"] or {}),
+          str((em_disco["perfis"]["trabalho"] or {}).get("estrategia")))
+
+    velho = (cli.get("/estado").json() or {}).get("rev")
+    cli.post("/estrategia", json={"ambito": "global", "por": "turno"})
+    r = cli.post("/estrategia", json={"ambito": "global", "modo": "rodizio", "rev": velho})
+    check("/estrategia com rev antigo da 409", r.status_code == 409, str(r.status_code))
+    atual = (cli.get("/estado").json() or {}).get("rev")
+    r = cli.post("/estrategia", json={"ambito": "global", "modo": "rodizio", "rev": atual})
+    check("/estrategia com rev actual passa", r.status_code == 200, r.text[:200])
+
+    # --- /superficies ------------------------------------------------------
+    # A superficie e o unico criterio que o core entrega de forma
+    # deterministica; a regra tem de ser gravavel por perfil, ter as tres
+    # formas do contrato, e recusar o que nunca dispararia.
+    (d / "config.json").write_text(json.dumps(CONFIG, ensure_ascii=False, indent=2),
+                                   encoding="utf-8")
+    est = cli.get("/estado").json()
+    p0 = (est.get("perfis") or {}).get("trabalho") or {}
+    cat0 = p0.get("catalogo") or [{}]
+    entrada = (cat0[0] or {}).get("id")
+    check("/superficies: o perfil tem catalogo para testar", bool(entrada),
+          str(cat0)[:120])
+    check("/estado opcoes de superficie e niveis",
+          "cron" in ((est.get("opcoes") or {}).get("superficies") or [])
+          and "alta" in ((est.get("opcoes") or {}).get("niveis") or []),
+          str(est.get("opcoes"))[:160])
+
+    r = cli.post("/superficies", json={"ambito": "perfil", "perfil": "trabalho",
+                                       "superficie": "cron", "alvo": "entrada:" + entrada})
+    check("/superficies grava por perfil", r.status_code == 200, r.text[:200])
+    check("/superficies rele o que gravou",
+          ((r.json() or {}).get("regra") or {}).get("entrada") == entrada, r.text[:200])
+    e2 = cli.get("/estado").json()
+    sup2 = (e2["perfis"]["trabalho"].get("superficies") or {}).get("cron") or {}
+    check("/estado mostra a regra no perfil", sup2.get("entrada") == entrada, str(sup2))
+    check("/estado diz que a regra e do perfil", sup2.get("origem_regra") == "perfil", str(sup2))
+    check("/estado nao estende a regra aos outros perfis",
+          not ((e2["perfis"]["default"].get("superficies") or {}).get("cron")),
+          str(e2["perfis"]["default"].get("superficies")))
+
+    r = cli.post("/superficies", json={"ambito": "perfil", "perfil": "trabalho",
+                                       "superficie": "cli", "alvo": "nivel:alta"})
+    check("/superficies aceita nivel",
+          r.status_code == 200 and ((r.json() or {}).get("regra") or {}).get("nivel") == "alta",
+          r.text[:200])
+
+    m0 = cat0[0] or {}
+    par = str(m0.get("provider")) + "/" + str(m0.get("modelo"))
+    r = cli.post("/superficies", json={"ambito": "perfil", "perfil": "trabalho",
+                                       "superficie": "whatsapp", "alvo": par})
+    check("/superficies aceita provider/modelo",
+          r.status_code == 200
+          and ((r.json() or {}).get("regra") or {}).get("provider") == m0.get("provider"),
+          r.text[:200])
+
+    r = cli.post("/superficies", json={"ambito": "perfil", "perfil": "trabalho",
+                                       "superficie": "cron", "alvo": "lixo"})
+    check("/superficies recusa alvo sem forma", r.status_code == 400, str(r.status_code))
+    r = cli.post("/superficies", json={"ambito": "perfil", "perfil": "trabalho",
+                                       "superficie": "crom", "alvo": "entrada:" + entrada})
+    check("/superficies recusa gralha de superficie", r.status_code == 400, r.text[:200])
+    check("/superficies diz qual era a superficie certa",
+          "cron" in r.text and "parecida" in r.text, r.text[:200])
+    r = cli.post("/superficies", json={"ambito": "perfil", "perfil": "nao-existe",
+                                       "superficie": "cron", "alvo": "entrada:" + entrada})
+    check("/superficies perfil inexistente da 404", r.status_code == 404, str(r.status_code))
+    r = cli.post("/superficies", json={"ambito": "perfil", "perfil": "trabalho",
+                                       "superficie": "cron", "alvo": "entrada:nao-existe"})
+    check("/superficies recusa entrada fora do catalogo", r.status_code == 400, r.text[:200])
+
+    cli.post("/superficies", json={"ambito": "global", "superficie": "cron",
+                                   "alvo": "entrada:" + entrada})
+    r = cli.post("/superficies", json={"ambito": "perfil", "perfil": "trabalho",
+                                       "superficie": "cron", "alvo": "nunca"})
+    check("/superficies grava 'nunca'",
+          r.status_code == 200 and ((r.json() or {}).get("regra") or {}).get("activo") is False,
+          r.text[:200])
+    e3 = cli.get("/estado").json()
+    check("/estado marca a regra anulada",
+          ((e3["perfis"]["trabalho"].get("superficies") or {}).get("cron") or {}).get("activo") is False)
+    check("/estado mantem a regra global viva nos outros perfis",
+          ((e3["perfis"]["default"].get("superficies") or {}).get("cron") or {}).get("origem_regra") == "global",
+          str(e3["perfis"]["default"].get("superficies")))
+
+    r = cli.post("/superficies", json={"ambito": "perfil", "perfil": "trabalho",
+                                       "superficie": "cron", "alvo": ""})
+    check("/superficies apaga a do perfil", r.status_code == 200, r.text[:200])
+    e4 = cli.get("/estado").json()
+    check("/estado volta a herdar o global",
+          ((e4["perfis"]["trabalho"].get("superficies") or {}).get("cron") or {}).get("origem_regra") == "global",
+          str(e4["perfis"]["trabalho"].get("superficies")))
+
+    velho = (cli.get("/estado").json() or {}).get("rev")
+    cli.post("/superficies", json={"ambito": "global", "superficie": "cli",
+                                   "alvo": "nivel:media"})
+    r = cli.post("/superficies", json={"ambito": "global", "superficie": "cli",
+                                       "alvo": "nivel:leve", "rev": velho})
+    check("/superficies com rev antigo da 409", r.status_code == 409, str(r.status_code))
+
     # A logica pura do painel, corrida a serio em node (sem browser).
     node = shutil.which("node")
     if node:
