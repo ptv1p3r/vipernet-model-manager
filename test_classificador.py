@@ -843,5 +843,61 @@ class TestTransporteDecisoes(Base):
             self.assertIn(campo, trecho)
 
 
+class TestInstanciaPartilhada(unittest.TestCase):
+    """O `gestor` valida com o `analise_modelo` que o plugin tem em memoria.
+
+    Medido a 2026-11-03: o plugin recarrega `analise_modelo.py` a quente, mas o
+    `gestor` guardava a instancia do arranque na sua propria cache. A chave nova
+    `via` era apagada pelo `normalizar` antigo ao carregar a config e o
+    transporte de decisoes nunca chegou a ser usado — sem erro nenhum, porque
+    uma chave desconhecida nao e um erro, e simplesmente descartada.
+    """
+
+    def test_instancia_do_pacote_ao_vivo_vence_a_do_arranque(self):
+        import sys as _sys
+        import types as _types
+
+        marcador = _types.ModuleType("fakepkg.analise_modelo")
+        marcador.__file__ = "/tmp/fakepkg/analise_modelo.py"
+        antigo_pkg = gestor.__package__
+        antigo_am, antigo_mt = gestor._AM, gestor._AM_MTIME
+        try:
+            gestor.__package__ = "fakepkg"
+            _sys.modules["fakepkg.analise_modelo"] = marcador
+            gestor._AM, gestor._AM_MTIME = am, 0  # instancia do arranque
+            self.assertIs(gestor._analise_modelo(), marcador)
+        finally:
+            _sys.modules.pop("fakepkg.analise_modelo", None)
+            gestor.__package__ = antigo_pkg
+            gestor._AM, gestor._AM_MTIME = antigo_am, antigo_mt
+
+    def test_validar_preserva_via_e_confianca_min(self):
+        import copy
+
+        bruto = copy.deepcopy(gestor.SEED)
+        bruto["perfis"].setdefault("default", {})
+        bruto["perfis"]["default"]["analise"] = {"classificador": {
+            "activo": True, "provider": "openrouter",
+            "modelo": "~typesafe/jev-latest",
+            "via": "decisoes", "confianca_min": 0.7}}
+        limpo, erros = gestor.validar(bruto)
+        self.assertEqual([e for e in erros if "catalogo" not in e], [])
+        d = limpo["perfis"]["default"]["analise"]["classificador"]
+        self.assertEqual(d["via"], "decisoes")
+        self.assertAlmostEqual(d["confianca_min"], 0.7)
+
+    def test_validar_recusa_via_desconhecido(self):
+        import copy
+
+        bruto = copy.deepcopy(gestor.SEED)
+        bruto["perfis"].setdefault("default", {})
+        bruto["perfis"]["default"]["analise"] = {"classificador": {
+            "activo": True, "provider": "openrouter",
+            "modelo": "~typesafe/jev-latest", "via": "telepatia"}}
+        _limpo, erros = gestor.validar(bruto)
+        self.assertTrue(any("via" in e.lower() or "telepatia" in e.lower() for e in erros),
+                        f"esperava erro de via, veio {erros}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

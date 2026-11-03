@@ -849,27 +849,6 @@ def middleware_llm_request(
             classificador_motivo = ""
             if not associada and decisao.get("origem") != "marcador":
                 definicao = _analise_modelo_mod.efectiva(analise)
-                try:
-                    if Path("/opt/data/cache/scratch/VMM_DEBUG").exists():
-                        with open("/opt/data/cache/scratch/vmm-debug.log", "a") as _f:
-                            _f.write(json.dumps({
-                                "ts": time.strftime("%FT%T"),
-                                "perfil": perfil,
-                                "dir": str(gestor.directorio()),
-                                "cfg_cache_mtime": _cfg.get("mtime"),
-                                "cfg_ficheiro": str(gestor.ficheiro_config()),
-                                "cfg_ficheiro_mtime": gestor.ficheiro_config().stat().st_mtime,
-                                "cfg_lido_ha_s": round(time.monotonic() - (_cfg.get("lido") or 0), 1),
-                                "cls_fresco": (gestor.carregar(gestor.ficheiro_config())[0]
-                                               .get("perfis", {}).get(perfil, {})
-                                               .get("analise", {}).get("classificador", {}).get("via")),
-                                "analise_cls": (analise or {}).get("classificador"),
-                                "definicao": None if definicao is None else definicao.get("modelo"),
-                                "erros_norm": _analise_modelo_mod.normalizar(
-                                    (analise or {}).get("classificador"))[1],
-                            }, ensure_ascii=False) + "\n")
-                except Exception as _exc:  # noqa: BLE001
-                    pass
                 if definicao is not None:
                     resultado_m = _analise_modelo_mod.classificar(
                         mensagens, definicao,
