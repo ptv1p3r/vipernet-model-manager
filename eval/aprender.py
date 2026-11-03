@@ -428,7 +428,14 @@ def _juiz_definicao(provider: str, modelo: str) -> dict[str, Any]:
     return definicao
 
 
-def _etiquetar(casos: list[dict], definicao: dict[str, Any], resolver, threads: int) -> list[dict]:
+def _etiquetar(casos: list[dict], definicao: dict[str, Any], resolver, threads: int,
+               lote: int = 0) -> list[dict]:
+    if lote > 0:
+        return _etiquetar_lote(casos, definicao, resolver, tamanho=lote)
+    return _etiquetar_um_a_um(casos, definicao, resolver, threads)
+
+
+def _etiquetar_um_a_um(casos: list[dict], definicao: dict[str, Any], resolver, threads: int) -> list[dict]:
     modelo = _modelo()
 
     def um(caso: dict) -> dict:
@@ -459,6 +466,54 @@ def _etiquetar(casos: list[dict], definicao: dict[str, Any], resolver, threads: 
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, threads)) as ex:
         return list(ex.map(um, casos))
+
+
+#: Tamanho do lote do juiz. Medido a 2026-11-03 no `inception/mercury-3`: 130
+#: casos um a um com 4 threads dao `HTTP 429 too many requests per minute`, e a
+#: corrida seguinte devolve **0/130** porque o limite e por minuto e o arranque
+#: em rajada esgota-o (dois pedidos isolados 70 s depois voltaram a passar). Em
+#: lotes de 10 sao 13 pedidos: cabe no limite e e o modo que o modelo faz
+#: melhor (contexto longo — medido a 2026-11-02: 10 pedidos em 2,5 s e 9/10
+#: acertos, contra 6,6 s e os mesmos 9/10 um a um). `0` mantem o um-a-um, que
+#: serve os providers sem limite apertado.
+JUIZ_LOTE_PADRAO = 10
+
+
+def _etiquetar_lote(casos: list[dict], definicao: dict[str, Any], resolver,
+                    tamanho: int = JUIZ_LOTE_PADRAO, pausa: float = 2.5) -> list[dict]:
+    """Rotula por lotes com `classificar_lote`, com recuo proprio no 429.
+
+    O lote paga-se em latencia e nao em qualidade (mesmo 9/10 medido), e evita
+    o unico defeito que o mercury-3 trouxe: nao aceita 130 pedidos por minuto.
+    Um 429 espera e repete o **mesmo** lote — tratado como falha definitiva,
+    apagava o corpus e o portao fechava por falta de casos comuns, nao por
+    discordancia.
+    """
+    modelo = _modelo()
+    saida: list[dict] = []
+    grupos = [casos[i:i + max(1, tamanho)] for i in range(0, len(casos), max(1, tamanho))]
+    for n, grupo in enumerate(grupos, 1):
+        for tentativa in (1, 2, 3):
+            r = modelo.classificar_lote([c["texto"] for c in grupo], definicao, resolver,
+                                       perfil="aprendiz")
+            erro = str(r.get("erro") or "")
+            if not erro:
+                niveis = list(r.get("niveis") or [])
+                for c, nivel in zip(grupo, niveis):
+                    nivel = (nivel or "").strip().lower()
+                    if nivel in NIVEIS:
+                        saida.append({"id": c["id"], "rotulo": nivel, "lote": n})
+                    else:
+                        saida.append({"id": c["id"], "rotulo": None,
+                                      "erro": "lote sem nivel para este caso"})
+                break
+            recuo = 20.0 * tentativa if "429" in erro else 2.0 * tentativa
+            if tentativa == 3:
+                saida.extend({"id": c["id"], "rotulo": None, "erro": erro} for c in grupo)
+                break
+            time.sleep(recuo)
+        time.sleep(pausa)
+    return saida
 
 
 def _resolver():
@@ -920,12 +975,20 @@ def _relatorio(dados: dict[str, Any]) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Ciclo de aprendizagem do ViperNet Model Manager")
     ap.add_argument("--casos", type=int, default=240, help="pedidos a rotular neste ciclo")
-    ap.add_argument("--juiz-provider", default="deepseek")
+    ap.add_argument("--juiz-provider", default="inception")
     # O dono proibiu o `deepseek-v4-pro` em qualquer funcao (2026-11-03), salvo
-    # indicacao explicita. O default passa a `deepseek-flash`; o v4-pro so entra
-    # com `--juiz-permitir-v4-pro`, para que a regra seja executavel e nao uma
-    # nota num README que a proxima sessao nao le.
-    ap.add_argument("--juiz-modelo", default="deepseek-flash")
+    # indicacao explicita: o v4-pro so entra com `--juiz-permitir-v4-pro`, para
+    # que a regra seja executavel e nao uma nota num README que a proxima sessao
+    # nao le.
+    #
+    # 2026-11-03, decisao do dono: o juiz alinha com o classificador, em
+    # `inception/mercury-3`. O deepseek deixa de ser o default em qualquer
+    # funcao do ciclo; continua escolhivel por `--juiz-provider deepseek`.
+    ap.add_argument("--juiz-modelo", default="mercury-3")
+    ap.add_argument("--juiz-lote", type=int, default=None,
+                    help=("casos por pedido ao juiz; 0 = um a um. Por omissao 10 "
+                          f"quando o provider e `inception` (limite de pedidos por "
+                          f"minuto medido), 0 nos restantes"))
     ap.add_argument("--juiz-permitir-v4-pro", action="store_true",
                     help="autoriza explicitamente o deepseek-v4-pro como juiz")
     ap.add_argument("--threads", type=int, default=4)
@@ -944,6 +1007,11 @@ def main() -> int:
     ap.add_argument("--pausa-abc", type=float, default=1.2,
                     help="segundos entre chamadas do A/B (o provedor limita por minuto)")
     args = ap.parse_args()
+
+    if args.juiz_lote is None:
+        # O limite de pedidos por minuto do `inception` e o unico motivo do lote.
+        args.juiz_lote = JUIZ_LOTE_PADRAO if args.juiz_provider == "inception" else 0
+    args.juiz_lote = max(0, int(args.juiz_lote))
 
     if "v4-pro" in (args.juiz_modelo or "") and not args.juiz_permitir_v4_pro:
         print(json.dumps({"ok": False, "erro": (
@@ -1009,7 +1077,7 @@ def main() -> int:
     if not args.so_treinar:
         definicao = _juiz_definicao(args.juiz_provider, args.juiz_modelo)
         resolver = _resolver()
-        rotulos = _etiquetar(casos, definicao, resolver, args.threads)
+        rotulos = _etiquetar(casos, definicao, resolver, args.threads, args.juiz_lote)
         mapa = {r["id"]: r for r in rotulos}
         falhas = [r for r in rotulos if not r.get("rotulo")]
         casos = [dict(c, rotulo=mapa[c["id"]]["rotulo"]) for c in casos
@@ -1017,7 +1085,7 @@ def main() -> int:
         # calibracao contra os rotulos humanos do gold (inclui a fila humana)
         gold = _casos_gold()
         if gold:
-            rot_gold = _etiquetar(gold, definicao, resolver, args.threads)
+            rot_gold = _etiquetar(gold, definicao, resolver, args.threads, args.juiz_lote)
             k = kappa(gold, [r for r in rot_gold if r.get("rotulo")])
         if not casos:
             print(json.dumps({"ok": False, "falhas": falhas[:5], "colheita": colheita},

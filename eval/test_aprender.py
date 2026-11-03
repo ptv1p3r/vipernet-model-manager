@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 EVAL = Path(__file__).resolve().parent
@@ -821,8 +822,11 @@ class TestJuizProibido(unittest.TestCase):
                 A.main()
         finally:
             argparse.ArgumentParser.parse_args = original
-        self.assertEqual(parser_defaults.get("juiz_modelo"), "deepseek-flash")
+        self.assertEqual(parser_defaults.get("juiz_modelo"), "mercury-3")
+        self.assertEqual(parser_defaults.get("juiz_provider"), "inception")
         self.assertIn("juiz_permitir_v4_pro", parser_defaults)
+        # o lote resolve-se depois do parse: `None` significa "decide pelo provider"
+        self.assertIsNone(parser_defaults.get("juiz_lote"))
 
     def test_guarda_recusa_v4_pro_sem_autorizacao(self):
         import subprocess
@@ -832,6 +836,105 @@ class TestJuizProibido(unittest.TestCase):
             capture_output=True, text=True, timeout=120)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("recusado", r.stdout)
+
+
+class TestJuizLote(unittest.TestCase):
+    """Rotulagem em lote: o mercury-3 recusa 130 pedidos por minuto.
+
+    Medido a 2026-11-03: 130 casos um a um com 4 threads deram HTTP 429 e a
+    corrida seguinte devolveu 0/130. O lote existe para isso; se ele perder
+    casos em silencio, o portao fecha por falta de corpus e a causa fica
+    invisivel.
+    """
+
+    def _casos(self, n):
+        return [{"id": f"c{i}", "texto": f"pedido {i}"} for i in range(n)]
+
+    def test_agrupa_no_tamanho_e_alinha_por_ordem(self):
+        vistos = []
+
+        class Falso:
+            def classificar_lote(self, textos, definicao, resolver, perfil=""):
+                vistos.append(len(textos))
+                return {"niveis": ["leve"] * len(textos), "erro": ""}
+
+        with unittest.mock.patch.object(A, "_modelo", lambda: Falso()), \
+                unittest.mock.patch.object(A.time, "sleep", lambda s: None):
+            r = A._etiquetar_lote(self._casos(25), {}, None, tamanho=10)
+        self.assertEqual(vistos, [10, 10, 5])
+        self.assertEqual([x["id"] for x in r], [f"c{i}" for i in range(25)])
+        self.assertTrue(all(x["rotulo"] == "leve" for x in r))
+
+    def test_repete_o_mesmo_lote_no_429_sem_perder_casos(self):
+        chamadas = []
+
+        class Falso:
+            def classificar_lote(self, textos, definicao, resolver, perfil=""):
+                chamadas.append(len(textos))
+                if len(chamadas) == 1:
+                    return {"niveis": [None] * len(textos),
+                            "erro": "HTTP 429: Rate limit reached"}
+                return {"niveis": ["media"] * len(textos), "erro": ""}
+
+        with unittest.mock.patch.object(A, "_modelo", lambda: Falso()), \
+                unittest.mock.patch.object(A.time, "sleep", lambda s: None):
+            r = A._etiquetar_lote(self._casos(10), {}, None, tamanho=10)
+        self.assertEqual(len(chamadas), 2, "o 429 tem de repetir o mesmo lote")
+        self.assertEqual(len(r), 10)
+        self.assertTrue(all(x["rotulo"] == "media" for x in r))
+
+    def test_falha_definitiva_marca_none_sem_derrubar_o_resto(self):
+        class Falso:
+            def __init__(self):
+                self.n = 0
+
+            def classificar_lote(self, textos, definicao, resolver, perfil=""):
+                self.n += 1
+                # as 3 tentativas do primeiro lote falham (nao e 429, logo recuo curto)
+                if self.n <= 3:
+                    return {"niveis": [None] * len(textos), "erro": "HTTP 500: boom"}
+                return {"niveis": ["alta"] * len(textos), "erro": ""}
+
+        with unittest.mock.patch.object(A, "_modelo", lambda: Falso()), \
+                unittest.mock.patch.object(A.time, "sleep", lambda s: None):
+            r = A._etiquetar_lote(self._casos(20), {}, None, tamanho=10)
+        self.assertEqual(len(r), 20)
+        self.assertTrue(all(x["rotulo"] is None for x in r[:10]))
+        self.assertTrue(all(x["rotulo"] == "alta" for x in r[10:]))
+
+    def test_nivel_invalido_no_lote_nao_vira_rotulo(self):
+        class Falso:
+            def classificar_lote(self, textos, definicao, resolver, perfil=""):
+                return {"niveis": ["leve", "enorme", None], "erro": ""}
+
+        with unittest.mock.patch.object(A, "_modelo", lambda: Falso()), \
+                unittest.mock.patch.object(A.time, "sleep", lambda s: None):
+            r = A._etiquetar_lote(self._casos(3), {}, None, tamanho=10)
+        self.assertEqual([x["rotulo"] for x in r], ["leve", None, None])
+
+    def test_lote_zero_usa_o_caminho_um_a_um(self):
+        chamadas = []
+
+        def falso(*a):
+            chamadas.append(a[3])
+            return [{"id": "x"}]
+
+        with unittest.mock.patch.object(A, "_etiquetar_um_a_um", falso):
+            r = A._etiquetar(self._casos(1), {}, None, 4, 0)
+        self.assertEqual(chamadas, [4])
+        self.assertEqual(r, [{"id": "x"}])
+
+    def test_lote_positivo_usa_o_caminho_do_lote(self):
+        chamadas = []
+
+        def falso(*a, **k):
+            chamadas.append(k.get("tamanho"))
+            return [{"id": "y"}]
+
+        with unittest.mock.patch.object(A, "_etiquetar_lote", falso):
+            r = A._etiquetar(self._casos(1), {}, None, 4, 10)
+        self.assertEqual(chamadas, [10])
+        self.assertEqual(r, [{"id": "y"}])
 
 
 if __name__ == "__main__":
