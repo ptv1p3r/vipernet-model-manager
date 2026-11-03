@@ -1165,7 +1165,7 @@
                 variant: "outline",
                 onClick: props.onNovaTarefa,
                 title: "Acrescentar uma tarefa a este perfil",
-              }, "＋ tarefa"),
+              }, "+ tarefa"),
               h("span", { className: "vmm-mudo vmm-campo-ajuda" },
                 " o id é o nome por que as rotas lhe chamam; só as tarefas daqui podem ser associadas")
             ),
@@ -1318,7 +1318,19 @@
           "div",
           { className: "vmm-linha vmm-cabecalho-perfil" },
           h("div", { className: "vmm-titulo-perfil" },
+            // O ⚙ fica COLADO ao nome: e o perfil que ele edita. Na cauda do
+            // titulo caia sozinho numa segunda linha (medido em 2026-11-03 numa
+            // caixa de 535 px), porque a fila ja nao cabia — o mesmo defeito que
+            // cortou o ✎ dos modelos. Ao lado da identidade nunca sobra.
             h("strong", null, nome),
+            h(Button, {
+              size: "sm",
+              variant: "outline",
+              className: "vmm-icone vmm-icone-perfil",
+              title: "Editar todas as configurações do perfil " + nome,
+              "aria-label": "Editar todas as configurações do perfil " + nome,
+              onClick: function () { props.onPerfil(nome); },
+            }, "⚙"),
             h(Chip, { tone: p.activo ? "default" : "secondary" }, p.activo ? "activo" : "desligado"),
             // So leitura. A escolha faz-se no editor de configuracao: este
             // cartao responde a "porque este modelo", nao serve para decidir.
@@ -1331,18 +1343,6 @@
             ),
             // Uma rota nova abre uma pagina propria: o catalogo deste perfil e
             // o que se edita, nao o perfil (que se liga no interruptor ao lado).
-            // O ⚙ abre a pagina DESTE perfil — activacao, tarefas, limites,
-            // classificador e estrategia. Primeira celula do titulo, como o ✎
-            // dos modelos: a ultima coluna depende da largura do cartao e ja
-            // foi cortada por `overflow:hidden`.
-            h(Button, {
-              size: "sm",
-              variant: "outline",
-              className: "vmm-icone vmm-icone-perfil",
-              title: "Editar todas as configurações do perfil " + nome,
-              "aria-label": "Editar todas as configurações do perfil " + nome,
-              onClick: function () { props.onPerfil(nome); },
-            }, "⚙"),
             h(Button, {
               size: "sm",
               variant: "outline",
@@ -1350,7 +1350,7 @@
               title: "Criar um modelo novo no catálogo de " + nome,
               "aria-label": "Criar um modelo novo no catálogo de " + nome,
               onClick: function () { props.onNovoModelo(nome); },
-            }, "＋ modelo")
+            }, "+ modelo")
           ),
           h(Interruptor, {
             activo: p.activo,
