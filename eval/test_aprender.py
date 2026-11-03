@@ -685,8 +685,14 @@ class TestLeitorGold(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             raiz = self._eval_falso(d)
             original = A.EVAL
+            original_humano = A.GOLD_HUMANO
             try:
                 A.EVAL = raiz
+                # Isolar a pasta do gold humano: ela vive fora do repo e cresce
+                # com os rotulos novos — sem isto o teste media o ambiente, nao
+                # a funcao (falhou com 43 casos em vez de 3 quando a fila humana
+                # ganhou o gold1.jsonl).
+                A.GOLD_HUMANO = Path(d) / "sem-gold-humano"
                 nomes = [p.name for p in A._ficheiros_gold()]
                 self.assertEqual(nomes, ["gold.jsonl", "gold2.jsonl", "gold3.jsonl"])
                 casos = A._casos_gold()
@@ -695,6 +701,7 @@ class TestLeitorGold(unittest.TestCase):
                 self.assertIn("gold3.jsonl:p001", ids)
             finally:
                 A.EVAL = original
+                A.GOLD_HUMANO = original_humano
 
     def test_aceita_esperado_e_rotulo(self):
         with tempfile.TemporaryDirectory() as d:
@@ -715,13 +722,39 @@ class TestLeitorGold(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             raiz = self._eval_falso(d)
             original = A.EVAL
+            original_humano = A.GOLD_HUMANO
             try:
                 A.EVAL = raiz
+                A.GOLD_HUMANO = Path(d) / "sem-gold-humano"
                 shas = A._textos_gold()
                 self.assertIn(A._sha("renova o cert do nginx"), shas)
                 self.assertEqual(len(shas), 3)
             finally:
                 A.EVAL = original
+                A.GOLD_HUMANO = original_humano
+
+    def test_barreira_apanha_o_gold_humano_real(self):
+        """O gold humano tambem entra na barreira de contaminacao.
+
+        A fila rotulada e o que impede o treino de avaliar sobre o que ja viu;
+        se ela ficasse de fora da barreira, um caso repetido entre `eval/` e a
+        fila passava despercebido.
+        """
+        with tempfile.TemporaryDirectory() as h:
+            original_humano = A.GOLD_HUMANO
+            original_eval = A.EVAL
+            try:
+                A.GOLD_HUMANO = Path(h)
+                A.EVAL = Path(h)  # sem os gold do repo: conta-se so o humano
+                (Path(h) / "gold9.jsonl").write_text(
+                    json.dumps({"id": "h001", "texto": "renova o cert do nginx",
+                                "rotulo": "media"}) + "\n", encoding="utf-8")
+                shas = A._textos_gold()
+                self.assertEqual(len(shas), 1)
+                self.assertIn(A._sha("renova o cert do nginx"), shas)
+            finally:
+                A.GOLD_HUMANO = original_humano
+                A.EVAL = original_eval
 
     def test_le_o_gold_humano_fora_do_repositorio(self):
         """A fila rotulada sobre conversa real vive fora do repo publicado.

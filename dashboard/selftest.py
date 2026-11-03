@@ -219,8 +219,12 @@ def main() -> int:
         "activo": True, "provider": "inception", "modelo": "mercury-3",
         "esforco": "baixo", "max_tokens": 1200,
     }
+    # Trabalho LIGADO e a falhar: e o cartao que tem de mostrar o ⚠, porque a
+    # falha e do classificador que esta em vigor. O caso "desligado" — em que a
+    # mesma falha passa a historia — verifica-se mais abaixo.
     cfg_ind["perfis"]["trabalho"].setdefault("analise", {})["classificador"] = {
-        "activo": False, "provider": "inception", "modelo": "mercury-3",
+        "activo": True, "provider": "inception", "modelo": "mercury-3",
+        "esforco": "baixo",
     }
     (d / "config.json").write_text(json.dumps(cfg_ind, ensure_ascii=False, indent=2),
                                    encoding="utf-8")
@@ -265,9 +269,8 @@ def main() -> int:
           ((pdef.get("analise") or {}).get("rasto") or {}).get("lido") == "alta"
           and ((pdef.get("analise") or {}).get("rasto") or {}).get("ms") == 1620,
           str((pdef.get("analise") or {}).get("rasto")))
-    check("indicador: perfil que desliga o global aparece como heuristica",
-          ctrb.get("modo") == "heuristica" and ctrb.get("origem") == "proprio"
-          and ctrb.get("motivo") == "desligado", str(ctrb))
+    check("indicador: perfil com classificador proprio ligado aparece como modelo",
+          ctrb.get("modo") == "modelo" and ctrb.get("origem") == "proprio", str(ctrb))
     check("indicador: falha do classificador chega ao cartao",
           "length 320tok" in str((ptrb.get("analise") or {}).get("erro")),
           str((ptrb.get("analise") or {}).get("erro")))
@@ -277,8 +280,42 @@ def main() -> int:
     check("indicador: leitura boa nao fica marcada como falhada",
           ((pdef.get("analise") or {}).get("rasto") or {}).get("falhou") == "",
           str((pdef.get("analise") or {}).get("rasto")))
+    check("indicador: leitura valida nao deixa historico",
+          (pdef.get("analise") or {}).get("historico") is None,
+          str((pdef.get("analise") or {}).get("historico")))
     check("indicador: limiares do cartao sao os efectivos (herdados)",
           (pdef.get("limiares") or {}).get("alta") == 7, str(pdef.get("limiares")))
+
+    # --- desligar o classificador: a falha antiga passa a historia ---------
+    # Uma falha de um classificador que ja nao esta em vigor nao e estado do
+    # cartao: mostra-se como historico datado, senao o cartao acusa um erro que
+    # ja nao pode acontecer (o classificador esta desligado).
+    cfg_off = json.loads(json.dumps(cfg_ind))
+    cfg_off["perfis"]["trabalho"]["analise"]["classificador"] = {
+        "activo": False, "provider": "inception", "modelo": "mercury-3",
+    }
+    (d / "config.json").write_text(json.dumps(cfg_off, ensure_ascii=False, indent=2),
+                                   encoding="utf-8")
+    est_off = cli.get("/estado").json()
+    ptb_off = (est_off.get("perfis") or {}).get("trabalho") or {}
+    ana_off = ptb_off.get("analise") or {}
+    ctrb_off = ana_off.get("classificador") or {}
+    check("desligado: aparece como heuristica",
+          ctrb_off.get("modo") == "heuristica" and ctrb_off.get("origem") == "proprio"
+          and ctrb_off.get("motivo") == "desligado", str(ctrb_off))
+    check("desligado: a falha antiga nao aparece como erro actual",
+          ana_off.get("erro") == "", str(ana_off.get("erro")))
+    check("desligado: o rasto deixa de ser estado", ana_off.get("rasto") is None,
+          str(ana_off.get("rasto")))
+    check("desligado: a leitura passa a historico datado",
+          (ana_off.get("historico") or {}).get("falhou") == "ValueError"
+          or (ana_off.get("historico") or {}).get("lido") is not None
+          or (ana_off.get("historico") or {}).get("ts") is not None,
+          str(ana_off.get("historico")))
+    # Repor o estado do fixture para as verificacoes seguintes.
+    (d / "config.json").write_text(json.dumps(cfg_ind, ensure_ascii=False, indent=2),
+                                   encoding="utf-8")
+
 
     # --- ledger ausente ----------------------------------------------------
     (d / "uso.jsonl").unlink()
