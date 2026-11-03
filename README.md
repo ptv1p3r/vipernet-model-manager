@@ -315,6 +315,36 @@ o turno segue num modelo de `media`, com `degradado_de` no ledger. É o
 comportamento desejado — mas é uma dependência de um só provider, e deve ser
 lembrada quando se decidir o catálogo.
 
+### Juiz do ciclo de aprendizagem
+
+O juiz que rotula o corpus de treino é **`inception/mercury-3`** (decisão do dono,
+2026-11-03): alinha com o classificador e tira o deepseek de todas as funções do
+ciclo. `--juiz-provider deepseek` continua disponível como alternativa, e o
+`deepseek-v4-pro` continua bloqueado pelo guard de rc 2. O juiz **não** decide o
+nível de nenhum turno — só rotula o corpus — e não é o mesmo que o modelo da
+resposta.
+
+Duas coisas medidas, que quem mexer aqui tem de saber:
+
+- **O `mercury-3` limita pedidos por minuto.** Medi a 2026-11-03: 130 casos um a
+  um com 4 threads deram `HTTP 429 too many requests per minute`, e a corrida
+  seguinte devolveu **0/130** — o limite é por minuto e o arranque em rajada
+  esgota-o. Vinte pedidos espaçados de 3 s passam todos. Por isso o juiz rotula
+  **em lotes de 10** (`_etiquetar_lote`, `--juiz-lote`, por omissão 10 quando o
+  provider é `inception`): 13 pedidos, 130/130 respondidos em todas as corridas,
+  ~100 s. Um 429 espera e repete o **mesmo** lote; tratá-lo como falha definitiva
+  apagava o corpus e o portão fechava por falta de casos comuns, não por
+  discordância.
+- **O `mercury-3` ainda não tem autoridade de juiz.** Kappa contra os 130 rótulos
+  do gold, em 5 corridas: fronteira `alta` **0,443 / 0,490 / 0,479** (esforço
+  baixo) e **0,506 / 0,450** (médio); fronteira `baixa` 0,587 / 0,517 / 0,452 e
+  0,517 / 0,617. O portão exige **0,60** por fronteira operacional. Fica abaixo
+  em todas as corridas, e a precisão da classe `alta` (0,38–0,43) mostra o erro:
+  chama `alta` a pedidos que o gold rotula `media`. O `deepseek-flash` media
+  0,599–0,631 em `alta` e 0,483–0,545 em `baixa`, com estabilidade 0,877 contra
+  0,754–0,808 do mercury. **Nenhum dos dois passa o portão**: o bloqueio real é o
+  gold (40 rótulos humanos, 2 de `alta`), não a escolha do juiz.
+
 ### Subscrição vs API
 
 A mesma família de modelos tem duas rotas de acesso distintas, e o plugin não
