@@ -12,6 +12,7 @@ O catalogo e o log sao leitura — mudar modelos e no ficheiro que o dono contro
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -1126,4 +1127,247 @@ def modelo_post(corpo: Any = Body(default=None)) -> JSONResponse:
     return JSONResponse(content={
         "ok": True, "perfil": perfil, "id": novo_id,
         "entrada": catalogo_lido[indice], "rev": _rev(confirmado),
+    })
+
+
+# --------------------------------------------------------------- um perfil
+# Uma pagina por perfil, a semelhanca da pagina de um modelo. O que se edita
+# aqui e o que o perfil DECLARA — nao o catalogo (esse tem pagina propria, por
+# modelo) nem as superficies (tem bloco proprio no editor de configuracao).
+#
+# A gravacao e cirurgica: toca so nas chaves do perfil que esta pagina mostra.
+# Reescrever o bloco inteiro a partir do formulario apagaria o `catalogo` e as
+# `superficies` que outra pagina (ou outra sessao) escreveu entretanto.
+
+#: Superficies que a pagina oferece no `select`. A lista do gestor e a mesma que
+#: o middleware usa; aqui so se acrescenta o rotulo.
+_ROTULOS_SUPERFICIE = {
+    "cron": "cron (execução agendada)",
+    "api_server": "api_server (API/chat)",
+    "cli": "cli (terminal)",
+    "whatsapp": "whatsapp",
+    "subagent": "subagent",
+    "tui": "tui",
+    "oneshot": "oneshot",
+}
+
+
+def _opcoes_perfil(cfg: dict[str, Any], perfil: str) -> dict[str, Any]:
+    """Listas FECHADAS que a pagina do perfil mostra.
+
+    Uma casa so: os valores saem do `gestor`/`analise_modelo`, nunca de uma
+    copia em JS. Acrescentar um nivel em `gestor.NIVEIS` faz aparecer a opcao
+    sem tocar no bundle — e, o que importa mais, o `select` nao pode oferecer
+    um valor que a validacao recusa.
+    """
+    modelo = gestor._analise_modelo()
+    pcfg = (cfg.get("perfis") or {}).get(perfil) or {}
+    # Providers a partir do que a config ja usa: nao se inventa um provider
+    # que o perfil nao tem credencial para servir.
+    providers = sorted({
+        str(e.get("provider"))
+        for p in (cfg.get("perfis") or {}).values()
+        for e in (p.get("catalogo") or [])
+        if e.get("provider")
+    })
+    superficies = sorted(set(gestor.SUPERFICIES_CONHECIDAS))
+    return {
+        "activo": [{"valor": True, "rotulo": "activo"},
+                   {"valor": False, "rotulo": "desligado"}],
+        "niveis": [{"valor": v, "rotulo": v} for v in gestor.NIVEIS],
+        "acessos": [{"valor": v, "rotulo": v} for v in gestor.ACESSOS],
+        "esforcos": [{"valor": v, "rotulo": v} for v in gestor.ESFORCOS],
+        "modalidades": [{"valor": v, "rotulo": v} for v in gestor.MODALIDADES],
+        "providers": [{"valor": v, "rotulo": v} for v in providers],
+        "vias": [{"valor": v, "rotulo": v} for v in sorted(set(modelo.VIAS.values()))],
+        "presets": [{"valor": v, "rotulo": v} for v in sorted(modelo.PRESETS)],
+        "estados": [{"valor": v, "rotulo": v} for v in modelo.ESTADOS_DECISAO],
+        "formatos_json": [{"valor": v, "rotulo": v} for v in ("auto", "on", "off")],
+        "estrategia": gestor.opcoes_estrategia(),
+        "superficies": [
+            {"valor": s, "rotulo": _ROTULOS_SUPERFICIE.get(s, s)} for s in superficies
+        ],
+        # Tarefas declaradas NESTE perfil: e o unico universo valido para
+        # associar uma rota a uma tarefa (a validacao recusa um id que nao
+        # exista aqui).
+        "tarefas": [{"valor": t, "rotulo": t} for t in sorted((pcfg.get("tarefas") or {}))],
+    }
+
+
+@router.get("/perfil")
+def perfil_get(nome: str = Query(...)) -> dict[str, Any]:
+    """O bloco que este perfil DECLARA, mais o que esta em vigor.
+
+    Devolve duas coisas distintas de proposito: `declarado` (o que o ficheiro
+    tem para este perfil, cru) e `efectivo` (o que o middleware usa, ja com a
+    heranca do global resolvida). Sem esta separacao o formulario nao sabia
+    distinguir \"herdo\" de \"declaro o mesmo valor\", e gravar punha uma copia
+    que fixava o perfil ao valor do dia.
+    """
+    cfg = _cfg()
+    perfis = cfg.get("perfis") or {}
+    if nome not in perfis:
+        raise HTTPException(status_code=404, detail=f"perfil {nome!r} nao existe")
+    cru = perfis.get(nome) or {}
+    analise = cru.get("analise") if isinstance(cru.get("analise"), dict) else {}
+    estrategia_cru = cru.get("estrategia")
+    est_efectiva = gestor.estrategia_efectiva(cfg, nome)
+    cls_efectivo = gestor.classificador_efectivo(cfg, nome)
+
+    # So o que esta DECLARADO: uma chave ausente e "herda", e e isso que o
+    # formulario tem de mostrar como vazio, nao o valor herdado ja resolvido.
+    declarado: dict[str, Any] = {
+        "activo": bool(cru.get("activo", True)),
+        "tarefas": copy.deepcopy(cru.get("tarefas") or {}),
+        "classificador": copy.deepcopy(analise.get("classificador")) if "classificador" in analise else None,
+        "estrategia": copy.deepcopy(estrategia_cru) if estrategia_cru else None,
+        "latencia_max_ms": cru.get("latencia_max_ms") or 0,
+    }
+    # O classificador global, para o formulario poder mostrar o que se herda.
+    global_cls = copy.deepcopy((cfg.get("analise") or {}).get("classificador") or {})
+    return {
+        "perfil": nome,
+        "rev": _rev(cfg),
+        "declarado": declarado,
+        "efectivo": {
+            "classificador": cls_efectivo,
+            "estrategia": est_efectiva,
+            "n_modelos": len(cru.get("catalogo") or []),
+        },
+        "global": {"classificador": global_cls,
+                   "estrategia": copy.deepcopy(cfg.get("estrategia") or gestor.ESTRATEGIA_PADRAO)},
+        "opcoes": _opcoes_perfil(cfg, nome),
+    }
+
+
+@router.post("/perfil")
+def perfil_post(corpo: Any = Body(default=None)) -> JSONResponse:
+    """Grava (ou valida) o bloco deste perfil, sem tocar no resto.
+
+    `validar: true` corre o mesmo caminho e para antes do `gravar` — nao deixa
+    rasto no ficheiro. Sem isso, o botao \"Validar\" teria de escrever para saber
+    se o que o dono escreveu serve, que e o oposto de validar.
+    """
+    obj = _corpo_objeto(corpo)
+    nome = str(obj.get("perfil") or "").strip()
+    if not nome:
+        return JSONResponse(status_code=400, content={"ok": False, "detail": "falta 'perfil'"})
+    apenas_validar = bool(obj.get("validar"))
+
+    cfg = _cfg()
+    if nome not in (cfg.get("perfis") or {}):
+        return JSONResponse(status_code=404, content={"ok": False, "detail": f"perfil {nome!r} nao existe"})
+
+    rev_cliente = str(obj.get("rev") or "")
+    rev_antes = _rev(cfg)
+    if rev_cliente and _conflito(rev_cliente, rev_antes):
+        return JSONResponse(status_code=409, content={
+            "ok": False, "rev": rev_antes, "detail": "a configuração mudou noutro sítio — recarregue",
+        })
+
+    # Trabalha-se sobre uma copia: a validacao devolve uma config NOVA e o que
+    # nao for tocado tem de sobreviver tal e qual (catalogo, superficies, pesos).
+    novo = copy.deepcopy(cfg)
+    pcfg = novo["perfis"][nome]
+
+    if "activo" in obj:
+        pcfg["activo"] = bool(obj.get("activo"))
+
+    if "tarefas" in obj:
+        tarefas = obj.get("tarefas")
+        if tarefas is None:
+            tarefas = {}
+        if not isinstance(tarefas, dict):
+            return JSONResponse(status_code=400, content={
+                "ok": False, "detail": "'tarefas' tem de ser um objecto (id -> {termos, prioridade})"})
+        # Normaliza as listas de termos: aceita lista ou texto separado por
+        # virgulas (o formulario escreve texto), e descarta vazios.
+        limpas: dict[str, Any] = {}
+        for tid, regra in tarefas.items():
+            chave = str(tid).strip()
+            if not chave:
+                continue
+            if not isinstance(regra, dict):
+                regra = {}
+            termos = regra.get("termos", [])
+            if isinstance(termos, str):
+                termos = [t.strip() for t in termos.split(",")]
+            termos = [str(t).strip() for t in (termos or []) if str(t).strip()]
+            prioridade = regra.get("prioridade", 0)
+            try:
+                prioridade = int(prioridade)
+            except (TypeError, ValueError):
+                prioridade = 0
+            limpas[chave] = {"termos": list(dict.fromkeys(termos)), "prioridade": prioridade}
+        pcfg["tarefas"] = limpas
+
+    if "latencia_max_ms" in obj:
+        try:
+            teto = int(obj.get("latencia_max_ms") or 0)
+        except (TypeError, ValueError):
+            return JSONResponse(status_code=400, content={
+                "ok": False, "detail": "'latencia_max_ms' tem de ser inteiro (0 = sem teto)"})
+        if teto > 0:
+            pcfg["latencia_max_ms"] = teto
+        else:
+            pcfg.pop("latencia_max_ms", None)
+
+    analise = pcfg.get("analise") if isinstance(pcfg.get("analise"), dict) else {}
+    analise = copy.deepcopy(analise)
+    mexeu_analise = False
+
+    if "classificador" in obj:
+        valor = obj.get("classificador")
+        if valor is None or valor == "" or valor == "herdar":
+            analise.pop("classificador", None)      # volta a herdar o global
+        else:
+            analise["classificador"] = valor        # o `normalizar` valida-o depois
+        mexeu_analise = True
+
+    if mexeu_analise:
+        if analise:
+            pcfg["analise"] = analise
+        else:
+            pcfg.pop("analise", None)               # ausencia = herda tudo
+
+    if "estrategia" in obj:
+        valor = obj.get("estrategia")
+        if valor is None or valor == "" or valor == "herdar":
+            pcfg.pop("estrategia", None)
+        else:
+            pcfg["estrategia"] = valor
+
+    limpa, erros = gestor.validar(novo)
+    if erros:
+        return JSONResponse(status_code=400, content={"ok": False, "erros": erros,
+                                                      "detail": "; ".join(erros)})
+
+    if apenas_validar:
+        return JSONResponse(content={"ok": True, "validado": True, "perfil": nome,
+                                     "erros": [], "rev": rev_antes})
+
+    try:
+        gestor.gravar(limpa)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "detail": "não gravou: " + str(exc),
+            "erros": [p for p in str(exc).split("; ") if p],
+        })
+
+    # Releitura independente: a resposta diz o que ficou no ficheiro.
+    confirmado = _cfg()
+    rev_depois = _rev(confirmado)
+    _registar_escrita(rev_antes=rev_antes, rev_depois=rev_depois,
+                      rev_cliente=rev_cliente, conflito=False, origem="perfil")
+    cru = (confirmado.get("perfis") or {}).get(nome) or {}
+    return JSONResponse(content={
+        "ok": True,
+        "perfil": nome,
+        "rev": rev_depois,
+        "activo": bool(cru.get("activo", True)),
+        "tarefas": cru.get("tarefas") or {},
+        "efectivo": {
+            "classificador": gestor.classificador_efectivo(confirmado, nome),
+            "estrategia": gestor.estrategia_efectiva(confirmado, nome),
+        },
     })

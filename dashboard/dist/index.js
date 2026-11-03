@@ -783,6 +783,525 @@
     );
   }
 
+  // ---- pagina de um perfil ------------------------------------------------
+  // Gemea da pagina de um modelo: um icone por perfil abre uma pagina propria
+  // com TUDO o que o perfil declara. As rotas do catalogo continuam a ter
+  // pagina propria, por modelo; aqui edita-se o resto — activacao, tarefas,
+  // limites, classificador e estrategia.
+  //
+  // A distincao que a pagina tem de manter a vista e DECLARADO vs HERDADO. Um
+  // perfil sem bloco de classificador herda o global; gravar o valor herdado
+  // como se fosse proprio fixa o perfil ao valor do dia e a heranca morre em
+  // silencio — ja aconteceu neste plugin. Por isso o formulario tem um selector
+  // "herdar / declarar" e nao campos preenchidos com o que esta em vigor.
+
+  // Uma so descricao dos campos do classificador: a pagina desenha-se a partir
+  // dela e os testes contam-na. Acrescentar uma chave aqui faz aparecer o campo
+  // sem tocar no resto — e um campo que o `analise_modelo.PADRAO` nao conheca
+  // seria recusado na gravacao, por isso as chaves sao as dele.
+  const CAMPOS_CLASSIFICADOR = [
+    { chave: "provider", rotulo: "provider", tipo: "seletor", lista: "providers",
+      ajuda: "quem serve o classificador; o provider tem de existir neste perfil" },
+    { chave: "modelo", rotulo: "modelo", tipo: "texto",
+      ajuda: "id exacto no provider (o Jev leva o til: ~typesafe/jev-latest)" },
+    { chave: "via", rotulo: "via", tipo: "seletor", lista: "vias",
+      ajuda: "«auto» descobre o transporte pelo preset do modelo" },
+    { chave: "preset", rotulo: "preset", tipo: "seletor", lista: "presets",
+      ajuda: "forma do pedido; vazio = inferir do id do modelo" },
+    { chave: "estado", rotulo: "estado", tipo: "seletor", lista: "estados",
+      ajuda: "que estado acompanha o pedido — medidas, nao transcricao" },
+    { chave: "esforco", rotulo: "esforço", tipo: "seletor", lista: "esforcos",
+      ajuda: "esforço de raciocínio pedido ao modelo" },
+    { chave: "formato_json", rotulo: "formato JSON", tipo: "seletor", lista: "formatos_json",
+      ajuda: "«auto» tenta JSON nativo e degrada para texto" },
+    { chave: "confianca_min", rotulo: "piso de confiança", tipo: "numero",
+      ajuda: "abaixo disto o classificador abstém-se; 0 = nunca por confiança" },
+    { chave: "temperatura", rotulo: "temperatura", tipo: "numero",
+      ajuda: "0 = determinístico; modelos de raciocínio recusam o campo" },
+    { chave: "timeout_s", rotulo: "timeout (s)", tipo: "numero",
+      ajuda: "acima disto o turno segue pela heurística" },
+    { chave: "max_tokens", rotulo: "max tokens", tipo: "numero",
+      ajuda: "orçamento da resposta do classificador" },
+    { chave: "max_tokens_campo", rotulo: "nome do campo de tokens", tipo: "texto",
+      ajuda: "alguns modelos usam max_completion_tokens" },
+    { chave: "cache_ttl_s", rotulo: "cache do classificador (s)", tipo: "numero",
+      ajuda: "cache do classificador, não do provider" },
+    { chave: "janela_mensagens", rotulo: "janela de mensagens", tipo: "numero",
+      ajuda: "quantas mensagens anteriores entram no pedido" },
+    { chave: "max_chars", rotulo: "máximo de caracteres", tipo: "numero",
+      ajuda: "tecto do texto enviado ao classificador" },
+    { chave: "prompt_variante", rotulo: "variante do prompt", tipo: "texto",
+      ajuda: "só o transporte chat a usa; em decisões a rubrica vai no criteria" },
+    { chave: "caminho", rotulo: "caminho (chat)", tipo: "texto",
+      ajuda: "vazio = /chat/completions do provider" },
+    { chave: "caminho_decisoes", rotulo: "caminho (decisões)", tipo: "texto",
+      ajuda: "vazio = /api/alpha/decisions" },
+  ];
+
+  // Chaves que sao objectos livres e nao cabem num campo simples: editam-se em
+  // JSON, com o valor actual a vista. Escondê-las seria pior — o formulario
+  // diria que mostra \"todas as opcoes\" e estaria a mentir.
+  const CAMPOS_JSON_CLASSIFICADOR = [
+    { chave: "parametros_extra", rotulo: "parâmetros extra", tipo: "json",
+      ajuda: "objecto JSON fundido no corpo do pedido" },
+    { chave: "headers_extra", rotulo: "headers extra", tipo: "json",
+      ajuda: "objecto JSON de headers do pedido" },
+  ];
+
+  function vazio(v) {
+    return v === null || v === undefined || v === "";
+  }
+
+  // `declarado` -> formulario. Numeros ficam vazios quando nao ha valor (para o
+  // campo poder dizer \"nao declarado\" em vez de um 0 inventado), e os objectos
+  // viram texto JSON legivel.
+  function perfilParaForm(r) {
+    r = r || {};
+    const cls = (r.classificador && typeof r.classificador === "object") ? r.classificador : null;
+    const est = (r.estrategia && typeof r.estrategia === "object") ? r.estrategia : null;
+    const tarefas = Object.keys(r.tarefas || {}).map(function (id) {
+      const t = (r.tarefas || {})[id] || {};
+      return {
+        id: id,
+        termos: (t.termos || []).join(", "),
+        prioridade: t.prioridade == null ? 0 : t.prioridade,
+      };
+    }).sort(function (a, b) { return a.id.localeCompare(b.id); });
+
+    const campos = {};
+    CAMPOS_CLASSIFICADOR.concat(CAMPOS_JSON_CLASSIFICADOR).forEach(function (c) {
+      const v = cls ? cls[c.chave] : undefined;
+      if (c.tipo === "json") {
+        campos[c.chave] = (v && typeof v === "object" && Object.keys(v).length)
+          ? JSON.stringify(v, null, 2) : "";
+      } else {
+        campos[c.chave] = vazio(v) ? "" : String(v);
+      }
+    });
+
+    return {
+      activo: !!r.activo,
+      latencia_max_ms: r.latencia_max_ms ? String(r.latencia_max_ms) : "",
+      tarefas: tarefas,
+      clsHerdar: !cls,
+      clsActivo: cls ? !!cls.activo : true,
+      cls: campos,
+      estHerdar: !est,
+      estModo: est && est.modo ? String(est.modo) : "",
+      estPor: est && est.por ? String(est.por) : "",
+    };
+  }
+
+  // formulario -> corpo do POST. Devolve `{corpo, erro}`: um numero que nao e
+  // numero ou um JSON que nao abre param aqui, com a mensagem do campo, em vez
+  // de irem partir na validacao do gestor sem se saber qual.
+  function formParaPerfil(form, perfil, rev) {
+    const f = form || {};
+    const corpo = { perfil: perfil, rev: rev || "" };
+    const erro = [];
+
+    corpo.activo = !!f.activo;
+
+    const lat = String(f.latencia_max_ms == null ? "" : f.latencia_max_ms).trim();
+    if (lat === "") {
+      corpo.latencia_max_ms = 0;
+    } else if (!/^\d+$/.test(lat)) {
+      erro.push("latência máxima: tem de ser um inteiro em ms (0 = sem teto)");
+    } else {
+      corpo.latencia_max_ms = parseInt(lat, 10);
+    }
+
+    const tarefas = {};
+    (f.tarefas || []).forEach(function (t, i) {
+      const id = String(t.id || "").trim();
+      if (!id) {
+        erro.push("tarefa #" + (i + 1) + ": falta o id");
+        return;
+      }
+      if (tarefas[id]) {
+        erro.push("tarefa «" + id + "»: id repetido");
+        return;
+      }
+      const pr = String(t.prioridade == null ? "" : t.prioridade).trim();
+      if (pr !== "" && !/^-?\d+$/.test(pr)) {
+        erro.push("tarefa «" + id + "»: a prioridade tem de ser um inteiro");
+        return;
+      }
+      const termos = String(t.termos || "")
+        .split(",")
+        .map(function (x) { return x.trim(); })
+        .filter(function (x) { return x; });
+      tarefas[id] = { termos: termos, prioridade: pr === "" ? 0 : parseInt(pr, 10) };
+    });
+    corpo.tarefas = tarefas;
+
+    if (f.clsHerdar) {
+      corpo.classificador = "herdar";
+    } else {
+      const cls = { activo: !!f.clsActivo };
+      CAMPOS_CLASSIFICADOR.forEach(function (c) {
+        const bruto = (f.cls || {})[c.chave];
+        const txt = String(bruto == null ? "" : bruto).trim();
+        if (c.tipo === "numero") {
+          if (txt === "") return;                       // ausente = o padrao decide
+          const n = Number(txt.replace(",", "."));
+          if (!isFinite(n)) {
+            erro.push(c.rotulo + ": tem de ser um número");
+            return;
+          }
+          cls[c.chave] = n;
+        } else if (txt !== "") {
+          cls[c.chave] = txt;
+        }
+      });
+      CAMPOS_JSON_CLASSIFICADOR.forEach(function (c) {
+        const txt = String((f.cls || {})[c.chave] || "").trim();
+        if (txt === "") return;
+        try {
+          const obj = JSON.parse(txt);
+          if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+            erro.push(c.rotulo + ": tem de ser um objecto JSON");
+            return;
+          }
+          cls[c.chave] = obj;
+        } catch (e) {
+          erro.push(c.rotulo + ": JSON inválido (" + e.message + ")");
+        }
+      });
+      corpo.classificador = cls;
+    }
+
+    if (f.estHerdar) {
+      corpo.estrategia = "herdar";
+    } else {
+      corpo.estrategia = {};
+      if (f.estModo) corpo.estrategia.modo = f.estModo;
+      if (f.estPor) corpo.estrategia.por = f.estPor;
+    }
+
+    return { corpo: corpo, erro: erro };
+  }
+
+  function PaginaPerfil(props) {
+    const form = props.form || {};
+    const opcoes = props.opcoes || {};
+    const meta = metaPlugin(props.estado || {});
+    const perfil = props.perfil || "";
+    const efectivo = props.efectivo || {};
+    const global = props.global || {};
+
+    const opc = function (lista, sub) {
+      const fonte = sub ? ((opcoes[lista] || {})[sub] || []) : (opcoes[lista] || []);
+      return fonte.map(function (o) {
+        return { valor: String(o.valor), rotulo: o.rotulo || String(o.valor) };
+      });
+    };
+
+    const mudar = function (campo) {
+      return function (valor) { props.onCampo(campo, valor); };
+    };
+    const mudarCls = function (campo) {
+      return function (valor) { props.onCampoCls(campo, valor); };
+    };
+
+    const tarefas = form.tarefas || [];
+    const cls = form.cls || {};
+    const estrategiaEfectiva = efectivo.estrategia || {};
+
+    return h(
+      "div",
+      { className: "vmm-pagina vmm-pagina-perfil" },
+      h(
+        "div",
+        { className: "vmm-topo" },
+        h(
+          "div",
+          null,
+          h("h1", { className: "vmm-h1" }, "Perfil · " + perfil),
+          h(
+            "div",
+            { className: "vmm-sub" },
+            "Tudo o que este perfil declara: activação, tarefas, limites, classificador e estratégia. "
+              + "As rotas do catálogo têm página própria, por modelo. "
+              + "Gravar volta ao painel e passa a valer no turno seguinte."
+          ),
+          linhaIdentidade(meta)
+        ),
+        h(
+          "div",
+          { className: "vmm-accoes" },
+          h(Button, {
+            size: "sm",
+            variant: "outline",
+            onClick: props.onValidar,
+            disabled: props.aGravar || props.aCarregar,
+            title: "Validar este perfil contra o schema, sem gravar",
+          }, props.aValidar ? "A validar…" : "Validar"),
+          h(Button, {
+            size: "sm",
+            variant: "default",
+            className: props.validacaoOk ? "vmm-btn-ok" : undefined,
+            onClick: props.onGravar,
+            disabled: props.aGravar || props.aCarregar,
+            title: "Validar, gravar e voltar ao painel",
+          }, props.aGravar ? "A gravar…" : (props.validacaoOk ? "✓ Gravar e voltar" : "Gravar e voltar")),
+          h(Button, {
+            size: "sm",
+            variant: "ghost",
+            onClick: props.onDescartar,
+            title: "Voltar ao painel sem gravar as alterações",
+          }, "Descartar")
+        )
+      ),
+
+      props.erro ? h("div", { className: "vmm-erro" }, "erro: " + props.erro) : null,
+
+      props.validacaoOk
+        ? h("div", { className: "vmm-ok", role: "status", "aria-live": "polite" }, "✓ " + props.validacaoOk)
+        : null,
+
+      (props.erros || []).length
+        ? h(
+            "div",
+            { className: "vmm-erro vmm-erros-lista" },
+            h("strong", null, "O gestor recusou:"),
+            props.erros.map(function (e, i) { return h("div", { key: i }, "• " + e); })
+          )
+        : null,
+
+      props.aCarregar
+        ? h("div", { className: "vmm-mudo" }, "a ler o perfil…")
+        : h(
+            "div",
+            { className: "vmm-perfil-grelha" },
+
+            // --- 1. activacao e limites ------------------------------------
+            h(
+              "div",
+              { className: "vmm-bloco" },
+              h("div", { className: "vmm-bloco-titulo" }, h("strong", null, "Activação e limites")),
+              h(
+                "div",
+                { className: "vmm-perfil-campos" },
+                h(
+                  "div",
+                  { className: "vmm-campo" },
+                  h("span", { className: "vmm-campo-rotulo" }, "gestor neste perfil"),
+                  h(Seletor, {
+                    rotulo: "activo",
+                    valor: form.activo ? "true" : "false",
+                    opcoes: [{ valor: "true", rotulo: "activo" }, { valor: "false", rotulo: "desligado" }],
+                    onChange: function (v) { props.onCampo("activo", v === "true"); },
+                  }),
+                  h("span", { className: "vmm-mudo vmm-campo-ajuda" },
+                    "desligado neste perfil, o turno segue com o modelo da sessão")
+                ),
+                h(Campo, {
+                  rotulo: "latência máxima (ms)",
+                  ajuda: "0 ou vazio = sem teto; acima disto a rota é descartada",
+                }, h(EntradaTexto, {
+                  valor: form.latencia_max_ms,
+                  tipo: "number",
+                  rotulo: "latência máxima em ms",
+                  placeholder: "0",
+                  onChange: mudar("latencia_max_ms"),
+                }))
+              ),
+              h("div", { className: "vmm-mudo vmm-campo-ajuda" },
+                "rotas no catálogo: " + (efectivo.n_modelos == null ? "—" : efectivo.n_modelos)
+                  + " · editem-se na página de cada modelo")
+            ),
+
+            // --- 2. tarefas ------------------------------------------------
+            h(
+              "div",
+              { className: "vmm-bloco" },
+              h(
+                "div",
+                { className: "vmm-bloco-titulo" },
+                h("strong", null, "Tarefas"),
+                h("span", { className: "vmm-mudo" },
+                  "  uma associação de tarefa manda sobre a complexidade e sobre a superfície")
+              ),
+              tarefas.length
+                ? h("div", { className: "vmm-tabela-tarefas" },
+                    tarefas.map(function (t, i) {
+                      return h(
+                        "div",
+                        { className: "vmm-tarefa-linha", key: i },
+                        h(EntradaTexto, {
+                          valor: t.id,
+                          rotulo: "id da tarefa",
+                          placeholder: "arquitetura",
+                          onChange: function (v) { props.onTarefa(i, "id", v); },
+                        }),
+                        h(EntradaTexto, {
+                          valor: t.termos,
+                          rotulo: "termos",
+                          placeholder: "termos separados por vírgulas",
+                          onChange: function (v) { props.onTarefa(i, "termos", v); },
+                        }),
+                        h(EntradaTexto, {
+                          valor: t.prioridade,
+                          tipo: "number",
+                          rotulo: "prioridade",
+                          placeholder: "0",
+                          onChange: function (v) { props.onTarefa(i, "prioridade", v); },
+                        }),
+                        h(Button, {
+                          size: "sm",
+                          variant: "ghost",
+                          className: "vmm-icone",
+                          title: "Remover a tarefa " + (t.id || i + 1),
+                          "aria-label": "Remover a tarefa " + (t.id || i + 1),
+                          onClick: function () { props.onRemoverTarefa(i); },
+                        }, "×")
+                      );
+                    })
+                  )
+                : h("div", { className: "vmm-mudo" }, "sem tarefas declaradas neste perfil"),
+              h(Button, {
+                size: "sm",
+                variant: "outline",
+                onClick: props.onNovaTarefa,
+                title: "Acrescentar uma tarefa a este perfil",
+              }, "＋ tarefa"),
+              h("span", { className: "vmm-mudo vmm-campo-ajuda" },
+                " o id é o nome por que as rotas lhe chamam; só as tarefas daqui podem ser associadas")
+            ),
+
+            // --- 3. classificador ------------------------------------------
+            h(
+              "div",
+              { className: "vmm-bloco" },
+              h(
+                "div",
+                { className: "vmm-bloco-titulo" },
+                h("strong", null, "Classificador"),
+                h("span", { className: "vmm-mudo" },
+                  "  em vigor: " + (efectivo.classificador
+                    ? String(efectivo.classificador.provider || "?") + "/"
+                      + String(efectivo.classificador.modelo || "?")
+                      + " · " + String(efectivo.classificador.origem || "?")
+                    : "—"))
+              ),
+              h(
+                "div",
+                { className: "vmm-perfil-campos" },
+                h(Campo, {
+                  rotulo: "definição",
+                  ajuda: "herdar segue o global; declarar cria um bloco próprio neste perfil",
+                }, h(Seletor, {
+                  rotulo: "definição do classificador",
+                  valor: form.clsHerdar ? "herdar" : "proprio",
+                  opcoes: [
+                    { valor: "herdar", rotulo: "herdar do global" },
+                    { valor: "proprio", rotulo: "declarar neste perfil" },
+                  ],
+                  onChange: function (v) { props.onCampo("clsHerdar", v === "herdar"); },
+                })),
+                form.clsHerdar
+                  ? h("div", { className: "vmm-mudo vmm-campo-ajuda" },
+                      "herda " + String((global.classificador || {}).provider || "?") + "/"
+                        + String((global.classificador || {}).modelo || "?"))
+                  : h(Seletor, {
+                      rotulo: "classificador activo",
+                      valor: form.clsActivo ? "true" : "false",
+                      opcoes: [{ valor: "true", rotulo: "activo" }, { valor: "false", rotulo: "desligado" }],
+                      onChange: function (v) { props.onCampo("clsActivo", v === "true"); },
+                    })
+              ),
+              form.clsHerdar
+                ? null
+                : h(
+                    "div",
+                    { className: "vmm-perfil-campos" },
+                    CAMPOS_CLASSIFICADOR.map(function (c) {
+                      const valor = cls[c.chave] == null ? "" : cls[c.chave];
+                      return h(Campo, { rotulo: c.rotulo, ajuda: c.ajuda, key: c.chave },
+                        c.tipo === "seletor"
+                          ? h(Seletor, {
+                              rotulo: c.rotulo,
+                              valor: valor,
+                              opcoes: [{ valor: "", rotulo: "— não declarado —" }].concat(opc(c.lista)),
+                              onChange: mudarCls(c.chave),
+                            })
+                          : h(EntradaTexto, {
+                              valor: valor,
+                              tipo: c.tipo === "numero" ? "number" : "text",
+                              rotulo: c.rotulo,
+                              onChange: mudarCls(c.chave),
+                            }));
+                    }),
+                    CAMPOS_JSON_CLASSIFICADOR.map(function (c) {
+                      return h(Campo, { rotulo: c.rotulo, ajuda: c.ajuda, key: c.chave },
+                        h("textarea", {
+                          className: "vmm-input vmm-textarea",
+                          rows: 3,
+                          value: cls[c.chave] == null ? "" : cls[c.chave],
+                          placeholder: "{}",
+                          "aria-label": c.rotulo,
+                          onChange: function (e) { props.onCampoCls(c.chave, e.target.value); },
+                        }));
+                    })
+                  )
+            ),
+
+            // --- 4. estrategia ---------------------------------------------
+            h(
+              "div",
+              { className: "vmm-bloco" },
+              h(
+                "div",
+                { className: "vmm-bloco-titulo" },
+                h("strong", null, "Estratégia"),
+                h("span", { className: "vmm-mudo" },
+                  "  em vigor: " + String(estrategiaEfectiva.modo || "?")
+                    + " / " + String(estrategiaEfectiva.por || "?")
+                    + " · " + String(estrategiaEfectiva.origem || "?"))
+              ),
+              h(
+                "div",
+                { className: "vmm-perfil-campos" },
+                h(Campo, {
+                  rotulo: "definição",
+                  ajuda: "herdar segue o global; declarar sobrepõe-se neste perfil",
+                }, h(Seletor, {
+                  rotulo: "definição da estratégia",
+                  valor: form.estHerdar ? "herdar" : "proprio",
+                  opcoes: [
+                    { valor: "herdar", rotulo: "herdar do global" },
+                    { valor: "proprio", rotulo: "declarar neste perfil" },
+                  ],
+                  onChange: function (v) { props.onCampo("estHerdar", v === "herdar"); },
+                })),
+                form.estHerdar
+                  ? h("div", { className: "vmm-mudo vmm-campo-ajuda" },
+                      "herda " + String((global.estrategia || {}).modo || "?")
+                        + " / " + String((global.estrategia || {}).por || "?"))
+                  : h("div", null,
+                      h(Campo, { rotulo: "modo" },
+                        h(Seletor, {
+                          rotulo: "modo",
+                          valor: form.estModo,
+                          opcoes: [{ valor: "", rotulo: "— não declarado —" }].concat(opc("estrategia", "modo")),
+                          onChange: mudar("estModo"),
+                        })),
+                      h(Campo, {
+                        rotulo: "rotação",
+                        ajuda: "por sessão mantém a sessão no mesmo modelo dentro do nível; por turno alterna e invalida a cache do provider",
+                      }, h(Seletor, {
+                        rotulo: "por",
+                        valor: form.estPor,
+                        opcoes: [{ valor: "", rotulo: "— não declarado —" }].concat(opc("estrategia", "por")),
+                        onChange: mudar("estPor"),
+                      })))
+              )
+            )
+          )
+    );
+  }
+
   function CartaoPerfil(props) {
     const p = props.dados;
     const nome = props.nome;
@@ -812,6 +1331,18 @@
             ),
             // Uma rota nova abre uma pagina propria: o catalogo deste perfil e
             // o que se edita, nao o perfil (que se liga no interruptor ao lado).
+            // O ⚙ abre a pagina DESTE perfil — activacao, tarefas, limites,
+            // classificador e estrategia. Primeira celula do titulo, como o ✎
+            // dos modelos: a ultima coluna depende da largura do cartao e ja
+            // foi cortada por `overflow:hidden`.
+            h(Button, {
+              size: "sm",
+              variant: "outline",
+              className: "vmm-icone vmm-icone-perfil",
+              title: "Editar todas as configurações do perfil " + nome,
+              "aria-label": "Editar todas as configurações do perfil " + nome,
+              onClick: function () { props.onPerfil(nome); },
+            }, "⚙"),
             h(Button, {
               size: "sm",
               variant: "outline",
@@ -1486,6 +2017,21 @@
     const [modeloOk, setModeloOk] = useState(null);
     const [modeloAGravar, setModeloAGravar] = useState(false);
     const [modeloACarregar, setModeloACarregar] = useState(false);
+    // Um perfil aberto na sua propria pagina. Estado separado do da pagina de
+    // um modelo porque as duas nao se sobrepoem: cada uma tem o seu early
+    // return e os seus proprios buffers — partilhar `form` obrigaria a limpar
+    // campos de uma quando se abre a outra.
+    const [perfilAberto, setPerfilAberto] = useState(null);
+    const [perfilForm, setPerfilForm] = useState({});
+    const [perfilOpcoes, setPerfilOpcoes] = useState({});
+    const [perfilRev, setPerfilRev] = useState("");
+    const [perfilEfectivo, setPerfilEfectivo] = useState({});
+    const [perfilGlobal, setPerfilGlobal] = useState({});
+    const [perfilErro, setPerfilErro] = useState(null);
+    const [perfilErros, setPerfilErros] = useState([]);
+    const [perfilOk, setPerfilOk] = useState(null);
+    const [perfilAGravar, setPerfilAGravar] = useState(false);
+    const [perfilACarregar, setPerfilACarregar] = useState(false);
 
     const carregar = useCallback(function () {
       setACarregar(true);
@@ -1804,6 +2350,168 @@
       setValidacaoOk(null);
     }
 
+    // ---- pagina de um perfil: abrir, editar, validar, gravar, descartar ----
+    // Le sempre do servidor. O `/estado` traz o resumo do cartao, nao o bloco
+    // que o perfil declara — e o que se edita aqui e o declarado, com a
+    // heranca a vista. Editar o resumo seria editar outro objecto.
+    function abrirPerfil(perfil) {
+      setPerfilAberto(perfil);
+      setPerfilForm({});
+      setPerfilOpcoes({});
+      setPerfilRev("");
+      setPerfilEfectivo({});
+      setPerfilGlobal({});
+      setPerfilErro(null);
+      setPerfilErros([]);
+      setPerfilOk(null);
+      setValidacaoOk(null);
+      setPerfilACarregar(true);
+      pedir("/perfil?nome=" + encodeURIComponent(perfil))
+        .then(function (r) {
+          setPerfilOpcoes((r && r.opcoes) || {});
+          setPerfilForm(perfilParaForm((r && r.declarado) || {}));
+          setPerfilRev(r && r.rev ? String(r.rev) : "");
+          setPerfilEfectivo((r && r.efectivo) || {});
+          setPerfilGlobal((r && r.global) || {});
+        })
+        .catch(function (e) { setPerfilErro("Erro ao ler o perfil: " + textoDoErro(e)); })
+        .then(function () { setPerfilACarregar(false); });
+    }
+
+    function mudarCampoPerfil(campo, valor) {
+      const proximo = Object.assign({}, perfilForm);
+      proximo[campo] = valor;
+      setPerfilForm(proximo);
+      setPerfilOk(null);
+      setPerfilErros([]);
+      setPerfilErro(null);
+    }
+
+    function mudarCampoCls(campo, valor) {
+      const proximo = Object.assign({}, perfilForm);
+      proximo.cls = Object.assign({}, perfilForm.cls || {});
+      proximo.cls[campo] = valor;
+      setPerfilForm(proximo);
+      setPerfilOk(null);
+      setPerfilErros([]);
+      setPerfilErro(null);
+    }
+
+    function mudarTarefa(indice, campo, valor) {
+      const proximo = Object.assign({}, perfilForm);
+      proximo.tarefas = (perfilForm.tarefas || []).map(function (t, i) {
+        return i === indice ? Object.assign({}, t, { [campo]: valor }) : t;
+      });
+      setPerfilForm(proximo);
+      setPerfilOk(null);
+      setPerfilErros([]);
+      setPerfilErro(null);
+    }
+
+    function novaTarefa() {
+      const proximo = Object.assign({}, perfilForm);
+      proximo.tarefas = (perfilForm.tarefas || []).concat([{ id: "", termos: "", prioridade: 0 }]);
+      setPerfilForm(proximo);
+      setPerfilOk(null);
+    }
+
+    function removerTarefa(indice) {
+      const proximo = Object.assign({}, perfilForm);
+      proximo.tarefas = (perfilForm.tarefas || []).filter(function (_, i) { return i !== indice; });
+      setPerfilForm(proximo);
+      setPerfilOk(null);
+      setPerfilErros([]);
+    }
+
+    // O corpo do POST. Os erros do formulario param aqui, com o campo nomeado:
+    // um 400 do gestor por causa de um numero escrito com uma letra nao diz
+    // qual dos vinte campos e.
+    function corpoDoPerfil() {
+      const r = formParaPerfil(perfilForm, perfilAberto, perfilRev);
+      return r;
+    }
+
+    function validarPerfil() {
+      setPerfilErros([]);
+      setPerfilOk(null);
+      setPerfilErro(null);
+      const r = corpoDoPerfil();
+      if (r.erro.length) {
+        setPerfilErros(r.erro);
+        setPerfilErro("Formulário incompleto: " + r.erro.join("; "));
+        return;
+      }
+      setPerfilAGravar(true);
+      pedir("/perfil", { method: "POST", body: Object.assign({}, r.corpo, { validar: true }) })
+        .then(function (v) {
+          const erros = (v && v.erros) || [];
+          if (erros.length) {
+            setPerfilErros(erros);
+            setPerfilErro("Configuração inválida: " + erros.join("; "));
+            return;
+          }
+          setPerfilOk("Validado — perfil " + perfilAberto
+            + " · " + Object.keys(r.corpo.tarefas || {}).length + " tarefa(s)"
+            + " · classificador " + (r.corpo.classificador === "herdar" ? "herdado" : "próprio")
+            + " · estratégia " + (r.corpo.estrategia === "herdar" ? "herdada" : "própria")
+            + " · 0 erros");
+        })
+        .catch(function (e) { setPerfilErro("Erro ao validar: " + textoDoErro(e)); })
+        .then(function () { setPerfilAGravar(false); });
+    }
+
+    function gravarPerfil() {
+      setPerfilErros([]);
+      setPerfilOk(null);
+      setPerfilErro(null);
+      const r = corpoDoPerfil();
+      if (r.erro.length) {
+        setPerfilErros(r.erro);
+        setPerfilErro("Formulário incompleto: " + r.erro.join("; "));
+        return;
+      }
+      setPerfilAGravar(true);
+      pedir("/perfil", { method: "POST", body: Object.assign({}, r.corpo, { validar: true }) })
+        .then(function (v) {
+          const erros = (v && v.erros) || [];
+          if (erros.length) {
+            setPerfilErros(erros);
+            setPerfilErro("Configuração inválida: " + erros.join("; "));
+            return null;
+          }
+          return pedir("/perfil", { method: "POST", body: r.corpo });
+        })
+        .then(function (res) {
+          if (res === null) return;
+          setPerfilAberto(null);
+          setPerfilForm({});
+          setPerfilRev("");
+          setValidacaoOk("Perfil " + r.corpo.perfil + " gravado — o gestor já o lê");
+          carregar();
+        })
+        .catch(function (e) {
+          const msg = textoDoErro(e);
+          setPerfilErro(msg.indexOf("409") !== -1
+            ? "A configuração foi alterada noutro sítio desde que abriu esta página. "
+              + "Descartar e abrir outra vez para ver o estado actual."
+            : "Erro ao gravar: " + msg);
+        })
+        .then(function () { setPerfilAGravar(false); });
+    }
+
+    function descartarPerfil() {
+      setPerfilAberto(null);
+      setPerfilForm({});
+      setPerfilOpcoes({});
+      setPerfilRev("");
+      setPerfilEfectivo({});
+      setPerfilGlobal({});
+      setPerfilErros([]);
+      setPerfilErro(null);
+      setPerfilOk(null);
+      setValidacaoOk(null);
+    }
+
     if (!estado && !erro) {
       return h("div", { className: "vmm-pagina" }, h("div", { className: "vmm-mudo" }, "a ler o estado do gestor…"));
     }
@@ -1818,6 +2526,34 @@
     // arvore deixava os cartoes de estado por baixo do formulario.
     // A pagina de uma rota do catalogo tem o seu proprio early return, e vem
     // primeiro: sao dois formularios distintos, nunca os dois ao mesmo tempo.
+    // A pagina de um perfil vem primeiro: tem o seu proprio early return, para
+    // o painel principal nunca ficar construido por baixo do formulario.
+    if (perfilAberto) {
+      return h(PaginaPerfil, {
+        estado: estado,
+        perfil: perfilAberto,
+        form: perfilForm,
+        opcoes: perfilOpcoes,
+        rev: perfilRev,
+        efectivo: perfilEfectivo,
+        global: perfilGlobal,
+        erro: perfilErro,
+        erros: perfilErros,
+        validacaoOk: perfilOk,
+        aGravar: perfilAGravar,
+        aValidar: perfilAGravar,
+        aCarregar: perfilACarregar,
+        onCampo: mudarCampoPerfil,
+        onCampoCls: mudarCampoCls,
+        onTarefa: mudarTarefa,
+        onNovaTarefa: novaTarefa,
+        onRemoverTarefa: removerTarefa,
+        onValidar: validarPerfil,
+        onGravar: gravarPerfil,
+        onDescartar: descartarPerfil,
+      });
+    }
+
     if (modeloAberto) {
       return h(PaginaModelo, {
         estado: estado,
@@ -1933,6 +2669,7 @@
             dados: perfis[n],
             aGravar: aGravar,
             onToggle: function (perfil, activo) { alternar("perfil", perfil, activo); },
+            onPerfil: function (perfil) { abrirPerfil(perfil); },
             onModelo: function (perfil, id) { abrirModelo(perfil, id); },
             onNovoModelo: function (perfil) { abrirModelo(perfil, null); },
           });
@@ -2019,5 +2756,13 @@
     window.__VMM_TEST__.emOrdem = emOrdem;
     window.__VMM_TEST__.BotoesOpcao = BotoesOpcao;
     window.__VMM_TEST__.PaginaModelo = PaginaModelo;
+    // A pagina de um perfil: as funcoes puras que decidem o que vai para o
+    // ficheiro sao testadas em node, sem browser — sao o sitio onde um erro se
+    // paga caro (escrevem no bloco que o middleware le).
+    window.__VMM_TEST__.PaginaPerfil = PaginaPerfil;
+    window.__VMM_TEST__.perfilParaForm = perfilParaForm;
+    window.__VMM_TEST__.formParaPerfil = formParaPerfil;
+    window.__VMM_TEST__.CAMPOS_CLASSIFICADOR = CAMPOS_CLASSIFICADOR;
+    window.__VMM_TEST__.CAMPOS_JSON_CLASSIFICADOR = CAMPOS_JSON_CLASSIFICADOR;
   }
 })();

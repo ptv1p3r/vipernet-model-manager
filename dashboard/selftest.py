@@ -695,6 +695,47 @@ def main() -> int:
                                        "alvo": "nivel:leve", "rev": velho})
     check("/superficies com rev antigo da 409", r.status_code == 409, str(r.status_code))
 
+    # ---- pagina de um perfil: GET/POST proprios, como a pagina de um modelo
+    r = cli.get("/perfil", params={"nome": "default"})
+    check("/perfil devolve o perfil pedido", r.status_code == 200, str(r.status_code))
+    corpo = r.json() if r.status_code == 200 else {}
+    check("/perfil separa declarado de efectivo",
+          "declarado" in corpo and "efectivo" in corpo and "global" in corpo,
+          ", ".join(sorted(corpo)) if corpo else "-")
+    check("/perfil traz as listas fechadas", (corpo.get("opcoes") or {}).get("niveis") is not None
+          and (corpo.get("opcoes") or {}).get("estrategia") is not None)
+    check("/perfil traz a revisao para o 409", bool(corpo.get("rev")))
+    r = cli.get("/perfil", params={"nome": "nao-existe"})
+    check("/perfil de perfil inexistente da 404", r.status_code == 404, str(r.status_code))
+
+    # Validar nao pode escrever: e o que distingue validar de gravar.
+    antes = (Path(os.environ["VMM_DIR"]) / "config.json").read_bytes()
+    r = cli.post("/perfil", json={"perfil": "default", "validar": True})
+    check("/perfil validar responde ok", r.status_code == 200 and (r.json() or {}).get("validado") is True,
+          str(r.status_code))
+    depois = (Path(os.environ["VMM_DIR"]) / "config.json").read_bytes()
+    check("/perfil validar nao escreve no ficheiro", antes == depois)
+
+    r = cli.post("/perfil", json={"perfil": "default", "validar": True,
+                                  "estrategia": {"modo": "rodizioo"}})
+    check("/perfil recusa modo fora da lista fechada", r.status_code == 400, str(r.status_code))
+    check("/perfil mostra os valores aceites no erro",
+          "rodizio" in (r.text or "") and "prioridade" in (r.text or ""))
+
+    # Gravar cirurgico: o catalogo nao pode desaparecer por se gravar o perfil.
+    cat_antes = json.loads(depois.decode())["perfis"]["default"]["catalogo"]
+    r = cli.post("/perfil", json={"perfil": "default", "validar": False,
+                                  "latencia_max_ms": 30000,
+                                  "tarefas": {"revisao": {"termos": "codigo, review",
+                                                          "prioridade": 5}}})
+    check("/perfil grava", r.status_code == 200, (r.text or "")[:200])
+    gravado = json.loads((Path(os.environ["VMM_DIR"]) / "config.json").read_text())
+    check("/perfil gravar preserva o catalogo",
+          gravado["perfis"]["default"]["catalogo"] == cat_antes)
+    check("/perfil gravar normaliza os termos",
+          gravado["perfis"]["default"]["tarefas"]["revisao"]["termos"] == ["codigo", "review"],
+          json.dumps(gravado["perfis"]["default"]["tarefas"], ensure_ascii=False))
+
     # A logica pura do painel, corrida a serio em node (sem browser).
     node = shutil.which("node")
     if node:
