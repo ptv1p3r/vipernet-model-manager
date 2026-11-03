@@ -563,11 +563,12 @@ function acharComponente(no, nome) {
 check("render: o cartao mostra a estrategia em vigor",
       temTexto(arvore, "rotação por sessão"), "");
 const noSuperficies = acharComponente(arvore, "Superficies");
-check("render: o cartao passa as regras ao bloco de superficies",
-      !!noSuperficies && Object.keys(noSuperficies.props.regras || {}).join(",") === "cron,cli",
-      JSON.stringify(noSuperficies && noSuperficies.props.regras));
-check("render: o cartao passa o catalogo ao bloco de superficies",
-      !!noSuperficies && (noSuperficies.props.catalogo || []).length === cat.length, "");
+check("render: o cartao de perfil ja nao tem o editor de superficies",
+      noSuperficies === null,
+      "o cartao nao deve ser painel de controlo — a configuracao vive no editor");
+check("render: o cartao nao tem select de estrategia (so leitura)",
+      acharComponente(arvore, "Seletor") === null,
+      "o cartao mostra o que esta a valer, nao deixa escolher");
 check("render: a regra global e dita como tal", temTexto(arvore, "global"), "");
 
 tentar("render: cartao sem catalogo, sem superficies e sem estrategia nao rebenta",
@@ -648,11 +649,13 @@ function recolher(no, predicado, out) {
   return out;
 }
 
-function renderSecao(config, opcoes) {
+function renderSecao(config, opcoes, estado) {
   return T.SecaoClassificador({
     configJSON: JSON.stringify(config),
     opcoes: opcoes || {},
+    estado: estado || {},
     onMudar: function () {},
+    onSuperficie: function () {},
   });
 }
 
@@ -663,9 +666,31 @@ const cfgSecao = {
 };
 const arvoreSecao = renderSecao(cfgSecao, opcoesReais);
 
-check("render: dois blocos distintos — Complexidade e Estrategia",
+check("render: os blocos distintos — Complexidade, Estrategia e Superficies",
       textoDaArvore(arvoreSecao).indexOf("Complexidade") !== -1
-      && textoDaArvore(arvoreSecao).indexOf("Estratégia") !== -1);
+      && textoDaArvore(arvoreSecao).indexOf("Estratégia") !== -1
+      && textoDaArvore(arvoreSecao).indexOf("Superfícies") !== -1);
+
+// O bloco de superficies vive no editor e mostra um por perfil, com o catalogo
+// desse perfil — a mesma informacao que o cartao mostrava, mas onde se edita.
+const estadoComSuperficies = {
+  perfis: {
+    default: { catalogo: [{ modelo: "m1", provider: "p1", complexidade: "leve" }],
+               superficies: { cron: "m1" } },
+    pessoal: { catalogo: [], superficies: {} },
+  },
+  opcoes: { niveis: ["leve", "media", "alta"], superficies: ["cli", "cron"] },
+};
+const blocosSup = recolher(
+  renderSecao({ perfis: { default: {}, pessoal: {} } }, {}, estadoComSuperficies),
+  function (no) { return no.tag === "Superficies"; });
+check("render: o editor tem um bloco de superficies por perfil",
+      blocosSup.length === 2, "obtive " + blocosSup.length);
+check("render: o bloco de superficies recebe as regras do perfil",
+      blocosSup.length > 0 && Object.keys(blocosSup[0].props.regras || {}).join(",") === "cron",
+      JSON.stringify(blocosSup.length && blocosSup[0].props.regras));
+check("render: o bloco de superficies recebe o catalogo do perfil",
+      blocosSup.length > 0 && (blocosSup[0].props.catalogo || []).length === 1, "");
 
 const seletoresModo = recolher(arvoreSecao, function (no) {
   return no.tag === "Seletor" && String(no.props && no.props.rotulo || "").indexOf("estratégia de") === 0;
@@ -727,6 +752,29 @@ check("render: a seccao esta dentro do editor, nao no painel principal",
         const posEditor = srcPainel.indexOf("mostrarEditor && h(");
         const posSecao = srcPainel.indexOf("h(SecaoClassificador");
         return posEditor !== -1 && posSecao !== -1 && posSecao > posEditor;
+      })());
+
+// O defeito que o dono repetiu tres vezes: configuracao no painel principal.
+// A prova faz-se sobre o corpo de Pagina — nenhum select, nenhum bloco de
+// configuracao. Se voltar a haver um, este check fica vermelho.
+check("render: o painel principal nao tem um unico controlo de configuracao",
+      (function () {
+        const iPagina = srcPainel.indexOf("function Pagina()");
+        const iFim = srcPainel.lastIndexOf("__HERMES_PLUGINS__.register");
+        if (iPagina === -1 || iFim === -1 || iFim <= iPagina) return false;
+        const corpo = srcPainel.slice(iPagina, iFim);
+        return corpo.indexOf("h(Seletor") === -1
+          && corpo.indexOf("h(Superficies") === -1
+          && corpo.indexOf("<select") === -1;
+      })());
+
+check("render: o editor tem os tres blocos com titulo proprio",
+      (function () {
+        const titulos = (srcPainel.match(/tituloBloco\("/g) || []).length;
+        return titulos === 3
+          && srcPainel.indexOf('tituloBloco("Complexidade"') !== -1
+          && srcPainel.indexOf('tituloBloco("Estratégia"') !== -1
+          && srcPainel.indexOf('tituloBloco("Superfícies"') !== -1;
       })());
 
 check("render: com JSON invalido a seccao avisa em vez de desaparecer",
