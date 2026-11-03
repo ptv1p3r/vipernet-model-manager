@@ -1239,8 +1239,8 @@ def testes_indicador_analise() -> None:
     check("indicador: transporte de decisoes chega ao indicador",
           c_dec["via"] == "decisoes" and c_dec["confianca_min"] == 0.7
           and set(c_dec) == CHAVES, str(c_dec))
-    check("indicador: transporte por omissao e o chat",
-          ind(cfg(), "pessoal")["via"] == "chat" and ind(cfg(), "pessoal")["confianca_min"] == 0.0,
+    check("indicador: transporte por omissao e auto",
+          ind(cfg(), "pessoal")["via"] == "auto" and ind(cfg(), "pessoal")["confianca_min"] == 0.0,
           str(ind(cfg(), "pessoal")))
 
     # 2. o perfil desliga o que o global liga

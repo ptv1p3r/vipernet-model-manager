@@ -270,6 +270,43 @@ def test_endpoint(tmp: Path) -> None:
         r = cliente.post(base + "/config", json={"config": {"perfis": {}}, "rev": rev2})
         verificar("POST sem perfis: 400", r.status_code == 400, str(r.status_code))
 
+        # As chaves de adaptacao a modelos arbitrarios chegam ao disco e voltam
+        # intactas. Se a validacao do painel as descartasse em silencio, o
+        # painel e a config ficavam com dois comportamentos e nenhum aviso —
+        # foi o que aconteceu com `via`/`confianca_min` na 3.14.1.
+        r = cliente.get(base + "/config")
+        rev3 = r.json()["rev"]
+        com_modelo = json.loads(json.dumps(r.json()["config"]))
+        chaves_adaptacao = {
+            "via": "auto",
+            "preset": "sistema-um",
+            "estado": "medidas",
+            "confianca_min": 0.0,
+            "temperatura": None,
+            "max_tokens_campo": "max_completion_tokens",
+            "caminho": "/api/v9/chat",
+            "caminho_decisoes": "/api/alpha/decisions",
+            "parametros_extra": {"verbosity": "low"},
+            "headers_extra": {"HTTP-Referer": "https://vipernet.local"},
+        }
+        com_modelo["analise"]["classificador"] = dict(
+            chaves_adaptacao, activo=True, provider="openrouter",
+            modelo="~typesafe/jev-latest")
+        r = cliente.post(base + "/config", json={"config": com_modelo, "rev": rev3})
+        verificar("POST com chaves de adaptacao: 200", r.status_code == 200,
+                  str(r.status_code) + " " + r.text[:200])
+        gravado = json.loads(tmp.read_text())["analise"]["classificador"]
+        for chave, esperado in chaves_adaptacao.items():
+            verificar("config gravada: %s sobreviveu" % chave,
+                      chave in gravado and gravado[chave] == esperado,
+                      "%r != %r" % (gravado.get(chave), esperado))
+        verificar("config gravada: temperatura null preservada",
+                  gravado.get("temperatura") is None, repr(gravado.get("temperatura")))
+        # E o estado do painel continua a ler esta config sem rebentar.
+        r = cliente.get(base + "/estado")
+        verificar("GET estado com chaves de adaptacao: 200", r.status_code == 200,
+                  str(r.status_code))
+
         # O registo de escritas existe e nao guarda valores do config
         log = tmp.parent / "escritas.log"
         verificar("escritas.log: criado", log.exists())

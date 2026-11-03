@@ -523,6 +523,39 @@
     return saida;
   }
 
+  //: Chaves cujo valor vazio TEM significado proprio. `temperatura: null` quer
+  //: dizer "nao enviar o campo" (modelos de raciocinio recusam-no), portanto
+  //: nao pode cair no mesmo balde do `esforco: ""`.
+  var VAZIO_COM_SENTIDO = ["temperatura"];
+
+  // Reconstroi o bloco `analise.classificador` a partir do que la esta, em vez
+  // de enumerar campos. A lista fixa de chaves foi o mesmo defeito tres vezes:
+  // primeiro perdia `timeout_s`/`max_tokens`/`janela_mensagens`, depois
+  // `via`/`estado`/`confianca_min`, agora `preset`/`temperatura`/
+  // `parametros_extra`. Uma lista de chaves nunca acompanha o classificador;
+  // copiar tudo e sobrepor o que muda acompanha sempre.
+  function baseDoBloco(actual) {
+    var fonte = actual || {};
+    var novo = {
+      activo: !!fonte.activo,
+      provider: fonte.provider || "",
+      modelo: fonte.modelo || "",
+    };
+    Object.keys(fonte).forEach(function (k) {
+      if (k === "activo" || k === "provider" || k === "modelo") return;
+      var v = fonte[k];
+      if (VAZIO_COM_SENTIDO.indexOf(k) >= 0) {
+        if (Object.prototype.hasOwnProperty.call(fonte, k)) novo[k] = v;
+        return;
+      }
+      // Um campo vazio deixado no JSON era validado como valor invalido:
+      // `esforco: ""` e `max_chars: ""` tem de sair, nao ficar.
+      if (v === undefined || v === "" || v === null) return;
+      novo[k] = v;
+    });
+    return novo;
+  }
+
   function SecaoClassificador(props) {
     const cfg = lerJSON(props.configJSON);
     if (!cfg) {
@@ -541,41 +574,23 @@
       const actual = blocoDe(cfg, perfil) || {};
       if (modo === "herdar") return aplicar(perfil, null);
       if (modo === "desligado") {
-        const desligado = {
-          activo: false,
-          provider: actual.provider || "",
-          modelo: actual.modelo || "",
-        };
-        if (actual.esforco) desligado.esforco = actual.esforco;
+        const desligado = baseDoBloco(actual);
+        desligado.activo = false;
         return aplicar(perfil, desligado);
       }
       const primeiro = pares[0] || { provider: "", modelo: "" };
-      const ligado = {
-        activo: true,
-        provider: actual.provider || primeiro.provider,
-        modelo: actual.modelo || primeiro.modelo,
-      };
-      if (actual.esforco) ligado.esforco = actual.esforco;
+      const ligado = baseDoBloco(actual);
+      ligado.activo = true;
+      ligado.provider = actual.provider || primeiro.provider;
+      ligado.modelo = actual.modelo || primeiro.modelo;
       aplicar(perfil, ligado);
     }
 
     function mudarCampo(perfil, campo, valor) {
       const actual = blocoDe(cfg, perfil) || CLASSIF_OFF;
-      const novo = {
-        activo: !!actual.activo,
-        provider: actual.provider || "",
-        modelo: actual.modelo || "",
-      };
-      // O esforco acompanha o bloco: nao se perde ao mudar provider ou modelo,
-      // e sai do JSON quando volta a "nao declarado" — um campo vazio deixado
-      // la era validado como valor invalido.
-      // Os campos que nao estao no formulario acompanham o bloco: mudar o
-      // provider apagava `timeout_s`/`max_tokens`/`janela_mensagens` que
-      // estivessem no JSON, e o bloco voltava aos valores de fabrica sem aviso.
-      ["esforco", "formato_json", "timeout_s", "max_tokens", "cache_ttl_s",
-       "janela_mensagens", "max_chars"].forEach(function (k) {
-        if (actual[k] !== undefined && actual[k] !== "") novo[k] = actual[k];
-      });
+      const novo = baseDoBloco(actual);
+      // O esforco sai do JSON quando volta a "nao declarado" — fica explicito
+      // porque o `baseDoBloco` copiaria um `esforco` declarado.
       if (campo === "esforco" && !valor) delete novo.esforco;
       else novo[campo] = valor;
       aplicar(perfil, novo);
@@ -996,6 +1011,7 @@
   if (typeof window !== "undefined" && window.__VMM_TEST__) {
     window.__VMM_TEST__.lerJSON = lerJSON;
     window.__VMM_TEST__.blocoDe = blocoDe;
+    window.__VMM_TEST__.baseDoBloco = baseDoBloco;
     window.__VMM_TEST__.comBloco = comBloco;
     window.__VMM_TEST__.paresModelo = paresModelo;
     window.__VMM_TEST__.rotuloAnalise = rotuloAnalise;

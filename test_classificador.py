@@ -48,7 +48,8 @@ class Servidor(BaseHTTPRequestHandler):
         tamanho = int(self.headers.get("Content-Length") or 0)
         corpo = json.loads(self.rfile.read(tamanho) or b"{}")
         PEDIDOS.append({"corpo": corpo, "auth": self.headers.get("Authorization"),
-                        "ua": self.headers.get("User-Agent"), "caminho": self.path})
+                        "ua": self.headers.get("User-Agent"), "caminho": self.path,
+                        "headers": {k.lower(): v for k, v in self.headers.items()}})
         atual = FILA.pop(0) if FILA else RESPOSTA
         if atual["atraso"]:
             time.sleep(float(atual["atraso"]))
@@ -92,6 +93,9 @@ class Base(unittest.TestCase):
         FILA.clear()
         RESPOSTA.update({"conteudo": "alta", "codigo": 200, "atraso": 0.0, "json": None})
         am.limpar_cache()
+        # A descoberta de transporte vive em memoria por processo: sem a limpar,
+        # um teste herdava o achado do anterior e deixava de provar a sonda.
+        am._via_detectada.clear()
 
     def definicao(self, **extra):
         d = dict(am.PADRAO)
@@ -823,10 +827,14 @@ class TestTransporteDecisoes(Base):
 
     def test_via_normalizada(self):
         for bruto, esperado in (("decisoes", "decisoes"), ("decisions", "decisoes"),
-                                ("Decisões", "decisoes"), ("chat", "chat"), ("", "chat")):
+                                ("Decisões", "decisoes"), ("chat", "chat"),
+                                ("auto", "auto"), ("", "auto")):
             d, erros = am.normalizar({"via": bruto})
             self.assertEqual(d["via"], esperado, bruto)
             self.assertEqual(erros, [], bruto)
+        # Sem `via` declarada, o transporte e `auto`: apontar o classificador a
+        # um modelo que o plugin nunca viu nao deve exigir saber o tipo dele.
+        self.assertEqual(am.normalizar({})[0]["via"], "auto")
         d, erros = am.normalizar({"via": "telepatia"})
         self.assertEqual(d["via"], "chat")
         self.assertTrue(any("via" in e for e in erros), erros)
@@ -1006,6 +1014,149 @@ class TestInstanciaPartilhada(unittest.TestCase):
         _limpo, erros = gestor.validar(bruto)
         self.assertTrue(any("via" in e.lower() or "telepatia" in e.lower() for e in erros),
                         f"esperava erro de via, veio {erros}")
+
+
+class TestAdaptacaoAModelos(Base):
+    """O plugin aceita qualquer modelo: preset, campos omitidos, caminhos e `auto`.
+
+    O que se prova aqui e o que o utilizador pediu: apontar o classificador a um
+    modelo que este plugin nunca viu — um LLM comum, um modelo de raciocinio ou
+    um modelo System One — sem escrever configuracao especifica do provider.
+    """
+
+    def test_preset_inferido_do_id(self):
+        self.assertEqual(am.preset_para("~typesafe/jev-latest"), "sistema-um")
+        self.assertEqual(am.preset_para("openrouter/~typesafe/jev-latest"), "sistema-um")
+        self.assertEqual(am.preset_para("o3-mini"), "raciocinio")
+        self.assertEqual(am.preset_para("gpt-5.2"), "raciocinio")
+        self.assertEqual(am.preset_para("deepseek/deepseek-flash"), "padrao")
+        self.assertEqual(am.preset_para(""), "padrao")
+
+    def test_preset_entra_por_baixo(self):
+        d, erros = am.normalizar({"modelo": "~typesafe/jev-latest"})
+        self.assertEqual(erros, [])
+        self.assertEqual(d["preset"], "sistema-um")
+        self.assertEqual(d["via"], "decisoes")
+        d, _ = am.normalizar({"modelo": "o3"})
+        self.assertEqual(d["preset"], "raciocinio")
+        self.assertIsNone(d["temperatura"])
+        self.assertEqual(d["max_tokens_campo"], "max_completion_tokens")
+
+    def test_o_declarado_ganha_ao_preset(self):
+        d, erros = am.normalizar({"modelo": "o3", "preset": "padrao", "temperatura": 0.3})
+        self.assertEqual(erros, [])
+        self.assertEqual(d["preset"], "padrao")
+        self.assertEqual(d["temperatura"], 0.3)
+        self.assertEqual(d["max_tokens_campo"], "max_tokens")
+        # Preset inferido + valor declarado: o declarado ganha.
+        d, _ = am.normalizar({"modelo": "o3", "temperatura": 0.4})
+        self.assertEqual(d["temperatura"], 0.4)
+
+    def test_preset_nenhum_desliga_a_inferencia(self):
+        d, _ = am.normalizar({"modelo": "~typesafe/jev-latest", "preset": "nenhum"})
+        self.assertEqual(d["preset"], "")
+        self.assertEqual(d["via"], "auto")
+
+    def test_temperatura_omitida(self):
+        for valor in ("omitir", "OMITIR", None, "-", ""):
+            d, erros = am.normalizar({"temperatura": valor})
+            self.assertIsNone(d["temperatura"], valor)
+            self.assertEqual(erros, [], valor)
+        self.assertEqual(am.normalizar({"temperatura": 0.7})[0]["temperatura"], 0.7)
+        self.assertEqual(am.normalizar({"temperatura": 9})[0]["temperatura"], 2.0)
+
+    def test_recusa_valores_invalidos(self):
+        for chave, valor in (("max_tokens_campo", "tokens"), ("caminho", "sem-barra"),
+                             ("caminho_decisoes", "sem-barra"),
+                             ("parametros_extra", "nao-e-objecto"),
+                             ("headers_extra", [1, 2]), ("preset", "inexistente")):
+            _, erros = am.normalizar({chave: valor})
+            self.assertTrue(any(chave in e for e in erros), f"{chave}={valor!r}: {erros}")
+
+    def test_corpo_sem_temperatura_e_com_max_completion_tokens(self):
+        d = self.definicao(temperatura=None, max_tokens_campo="max_completion_tokens")
+        corpo = am._corpo("openrouter", "gpt-5", "pedido", d)
+        self.assertNotIn("temperature", corpo)
+        self.assertNotIn("top_p", corpo)
+        self.assertIn("max_completion_tokens", corpo)
+        self.assertNotIn("max_tokens", corpo)
+        # E com temperatura declarada, os campos la estao.
+        corpo = am._corpo("openrouter", "llm-comum", "pedido", self.definicao())
+        self.assertEqual(corpo["temperature"], 0.0)
+        self.assertEqual(corpo["top_p"], 1)
+
+    def test_parametros_extra_chegam_ao_corpo(self):
+        d = self.definicao(parametros_extra={"verbosity": "low", "model": "outro",
+                                             "messages": [{"role": "user", "content": "x"}]})
+        corpo = am._corpo("openrouter", "x/y", "pedido", d)
+        self.assertEqual(corpo["verbosity"], "low")
+        # `model` e `messages` nao se trocam por configuracao: seria perder o
+        # rasto do que foi mesmo pedido.
+        self.assertEqual(corpo["model"], "x/y")
+        self.assertEqual(corpo["messages"][0]["role"], "system")
+
+    def test_headers_extra_chegam_ao_pedido(self):
+        d = self.definicao(headers_extra={"HTTP-Referer": "https://vipernet.local"})
+        am.classificar(self.mensagens("pedido com cabecalho proprio"), d, lambda p, m: self.rota())
+        self.assertEqual(PEDIDOS[-1]["headers"].get("http-referer"), "https://vipernet.local")
+        self.assertEqual(PEDIDOS[-1]["auth"], "Bearer chave-de-teste")
+
+    def test_caminho_override(self):
+        d = self.definicao(caminho="/api/v9/classificar")
+        am.classificar(self.mensagens("pedido com caminho proprio"), d, lambda p, m: self.rota())
+        self.assertTrue(PEDIDOS[-1]["caminho"].endswith("/api/v9/classificar"),
+                        PEDIDOS[-1]["caminho"])
+
+    def test_url_derivada_sem_caminho(self):
+        # Sem override, a derivacao de sempre mantem-se.
+        self.assertEqual(am._url("https://x/api/v1"), "https://x/api/v1/chat/completions")
+        self.assertEqual(am._url("https://x/api/v1", {"caminho": "/v2/chat"}),
+                         "https://x/v2/chat")
+        self.assertEqual(am._url_decisoes("https://x/api/v1", {"caminho_decisoes": "/d"}),
+                         "https://x/d")
+
+    def test_auto_muda_para_decisoes_e_memoriza(self):
+        d = self.definicao(via="auto", confianca_min=0.0)
+        FILA.extend([
+            # 1. o chat recusa porque o modelo e de decisoes
+            {"conteudo": "", "codigo": 400, "atraso": 0.0,
+             "json": {"error": {"message": "x is a decisions model and cannot be used with "
+                                           "the chat/completions endpoint. Use the "
+                                           "/api/alpha/decisions endpoint instead."}}},
+            # 2. o mesmo pedido no endpoint de decisoes
+            {"conteudo": "", "codigo": 200, "atraso": 0.0,
+             "json": {"answers": {"nivel": {"choice": "alta", "confidence": 1.0,
+                                            "probabilities": {"alta": 1.0}}},
+                      "usage": {"cost": 1e-05}, "model": "x/novo"}},
+        ])
+        r = am.classificar(self.mensagens("pedido que so um modelo de decisoes entende"),
+                           d, lambda p, m: self.rota(), perfil="auto-teste")
+        self.assertEqual(r["nivel"], "alta")
+        self.assertEqual(r["classificador"]["via"], "decisoes")
+        caminhos = [p["caminho"] for p in PEDIDOS]
+        self.assertTrue(caminhos[0].endswith("/chat/completions"), caminhos)
+        self.assertTrue(caminhos[1].endswith("/alpha/decisions"), caminhos)
+        # A descoberta ficou memorizada: a chamada seguinte vai directo ao
+        # endpoint certo, sem pagar a sonda outra vez.
+        FILA.append({"conteudo": "", "codigo": 200, "atraso": 0.0,
+                     "json": {"answers": {"nivel": {"choice": "alta", "confidence": 1.0,
+                                                    "probabilities": {"alta": 1.0}}},
+                              "usage": {"cost": 1e-05}, "model": "x/novo"}})
+        r2 = am.classificar(self.mensagens("outro pedido depois da descoberta"),
+                            d, lambda p, m: self.rota(), perfil="auto-teste")
+        self.assertEqual(r2["nivel"], "alta")
+        self.assertEqual(len(PEDIDOS), 3)
+        self.assertTrue(PEDIDOS[-1]["caminho"].endswith("/alpha/decisions"),
+                        PEDIDOS[-1]["caminho"])
+
+    def test_auto_com_modelo_de_chat_nao_muda(self):
+        d = self.definicao(via="auto")
+        r = am.classificar(self.mensagens("pedido normal num llm de chat"),
+                           d, lambda p, m: self.rota(), perfil="auto-chat")
+        self.assertEqual(r["nivel"], "alta")
+        self.assertEqual(r["classificador"]["via"], "chat")
+        self.assertEqual(len(PEDIDOS), 1)
+        self.assertTrue(PEDIDOS[0]["caminho"].endswith("/chat/completions"))
 
 
 if __name__ == "__main__":
