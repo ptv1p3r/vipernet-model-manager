@@ -41,7 +41,7 @@ perfil ao valor do dia e deixava de acompanhar mudancas do global).
 
 ```json
 "classificador": {
-  "activo": false, "provider": "deepseek", "modelo": "deepseek-flash",
+  "activo": true, "provider": "inception", "modelo": "mercury-3",
   "timeout_s": 12.0, "max_tokens": 320, "cache_ttl_s": 600,
   "janela_mensagens": 8, "max_chars": 4000
 }
@@ -76,10 +76,26 @@ Ligar/desligar, sem editar JSON:
 
 ```sh
 vmm classificador                            # estado efectivo por perfil
-vmm classificador on --provider deepseek --modelo deepseek-flash
+vmm classificador on --provider inception --modelo mercury-3
 vmm classificador off --perfil pessoal       # desliga so neste perfil
 vmm classificador on --perfil trabalho --provider openrouter --modelo x/y
 ```
+
+**O provider do classificador tem de existir no perfil servido** (medido
+2026-11-03). O classificador resolve-se com o `config.yaml` do **perfil**, não
+com o do processo: um `inception/mercury-3` que funciona no `default` falha no
+`pessoal` com `AuthError: Unknown provider 'inception'` enquanto o bloco
+`providers.inception` não estiver declarado lá — `hermes -p pessoal config set
+providers.inception.{name,base_url,key_env,api_mode,default_model}`, com
+`key_env: INCEPTION_API_KEY` e `api_mode: chat_completions`. Um erro destes é
+`sem_efeito` com `motivo` e suspensão de 1 h, não falha transitória: não abre o
+disjuntor nem conta para a taxa. A chave vem das fontes de segredos para o
+processo do gateway, não do `.env` do perfil.
+
+Estado actual: o global é `inception/mercury-3` e os três perfis herdam-no. Um
+perfil que queira outro modelo declara o seu próprio bloco — a partir daí fica
+`próprio do perfil` e deixa de acompanhar o global, que é o preço de não ter uma
+cópia a fingir de herança.
 
 No painel, a seccao **Analise da complexidade** (dentro do editor) tem uma linha
 por ambito — global e cada perfil — com tres estados por perfil: *herdar do
@@ -190,7 +206,7 @@ chip dizem o modo; o texto diz o resto:
 | o que se vê | significado |
 |---|---|
 | `modelo · inception/mercury-3` + `esforço baixo · herdado do global` | o perfil não declara bloco e usa o global |
-| `modelo · deepseek/deepseek-flash` + `próprio do perfil` | o perfil declara o seu próprio classificador |
+| `modelo · inception/mercury-3` + `próprio do perfil` | o perfil declara o seu próprio classificador |
 | `heurística` + `classificador desligado — decide a heurística` | existe bloco, mas `activo: false` |
 | `heurística` + `classificador sem efeito (…) — decide a heurística` | bloco declarado que não passa a validação |
 | `heurística` + `sem modelo definido` | ninguém declarou nada, em nenhum âmbito |
