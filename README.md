@@ -752,6 +752,8 @@ $P /opt/data/plugins/vipernet-model-manager/test_tarefas.py          # 16
 $P /opt/data/plugins/vipernet-model-manager/test_classificador.py    # 55
 $P /opt/data/plugins/vipernet-model-manager/test_triagem.py          # 51
 $P /opt/data/plugins/vipernet-model-manager/test_turno.py            # 23
+$P /opt/data/plugins/vipernet-model-manager/test_eval.py             # 32
+$P /opt/data/plugins/vipernet-model-manager/test_holdout.py          # 18
 $P /opt/data/plugins/vipernet-model-manager/eval/test_amostra.py     # 22
 $P /opt/data/plugins/vipernet-model-manager/eval/test_aprender.py    # 55
 $P /opt/data/plugins/vipernet-model-manager/dashboard/selftest.py    # 79 (exige fastapi)
@@ -774,8 +776,9 @@ O nível fixado por turno tem ainda duas provas próprias:
 
 
 190 verificações no selftest, 55 no classificador por modelo (servidor HTTP
-local a sério, sem mocks), 22 na amostragem/rotulagem, 55 no ciclo de
-aprendizagem (métricas, percentis, congelamento do gold, recusa de afinar,
-consistência entre registos), 79 no painel — incluindo a lógica pura do editor
-corrida em node —, 51 na triagem por necessidades, 23 no nível fixado por turno
+local a sério, sem mocks), 32 no banco de avaliação (métricas, percentis,
+congelamento do gold, recusa de afinar, consistência entre registos) e mais 79
+em quatro holdouts rotulados à mão, 79 no painel — incluindo a lógica pura do
+editor corrida em node —, 51 na triagem por necessidades, 22 na
+amostragem/rotulagem, 55 no ciclo de aprendizagem, 23 no nível fixado por turno
 e 16 de tarefas.
