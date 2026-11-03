@@ -163,6 +163,40 @@ def _app(tmp_config: Path) -> TestClient:
     return TestClient(app)
 
 
+def test_identidade() -> None:
+    """Versao, autor e repositorio no painel — uma casa, nao uma copia a mao.
+
+    A versao tem de vir do ``plugin.yaml`` (a mesma que o loader e o catalogo
+    leem). Uma copia escrita no JS divergiu no passado e o cartao mostrou
+    3.11.2 com o disco em 3.11.3.
+    """
+    meta = api._meta_plugin()
+    verificar("identidade: traz versao", bool(meta.get("versao")), str(meta))
+    verificar("identidade: traz autor", bool(meta.get("autor")), str(meta))
+    verificar("identidade: github do autor", meta.get("github") == "https://github.com/ptv1p3r", str(meta.get("github")))
+    verificar("identidade: autor e o nome completo",
+              meta.get("autor") == "Pedro Tiago de Jesus Estevanez Roldan", str(meta.get("autor")))
+
+    # A versao do plugin.yaml e a fonte: le-se o ficheiro e compara-se.
+    yaml_txt = (RAIZ / "plugin.yaml").read_text(encoding="utf-8")
+    versao_yaml = ""
+    for linha in yaml_txt.splitlines():
+        if linha.startswith("version:"):
+            versao_yaml = linha.split(":", 1)[1].strip().strip('"')
+            break
+    verificar("identidade: versao vem do plugin.yaml", meta.get("versao") == versao_yaml,
+              "%s != %s" % (meta.get("versao"), versao_yaml))
+
+    # manifest e plugin.yaml tem de dizer o mesmo numero, senao ha deriva.
+    manifest = json.loads((RAIZ / "dashboard" / "manifest.json").read_text(encoding="utf-8"))
+    verificar("identidade: manifest == plugin.yaml",
+              manifest.get("version") == versao_yaml,
+              "%s != %s" % (manifest.get("version"), versao_yaml))
+    verificar("identidade: sem deriva reportada",
+              meta.get("versao_manifest") == meta.get("versao"),
+              str(meta.get("versao_manifest")))
+
+
 def test_endpoint(tmp: Path) -> None:
     original_fc = gestor.ficheiro_config
     original_dir = gestor.directorio
@@ -207,6 +241,15 @@ def test_endpoint(tmp: Path) -> None:
         r = cliente.post(base + "/config", json={"config": novo, "rev": rev2})
         verificar("POST com o rev devolvido: 200", r.status_code == 200, str(r.status_code))
 
+        # O estado traz a identidade do plugin para o cabecalho do painel.
+        r = cliente.get(base + "/estado")
+        verificar("GET estado: 200", r.status_code == 200, str(r.status_code))
+        ident = r.json().get("plugin") or {}
+        verificar("GET estado: bloco plugin presente", bool(ident), str(list(ident)))
+        verificar("GET estado: plugin.versao", bool(ident.get("versao")), str(ident))
+        verificar("GET estado: plugin.autor", ident.get("autor") == "Pedro Tiago de Jesus Estevanez Roldan", str(ident.get("autor")))
+        verificar("GET estado: plugin.github", ident.get("github") == "https://github.com/ptv1p3r", str(ident.get("github")))
+
         # Cliente antigo, corpo cru: grava mas fica marcado sem_rev
         r = cliente.post(base + "/config", json=novo)
         verificar("POST corpo cru (legado): 200", r.status_code == 200, str(r.status_code))
@@ -238,6 +281,7 @@ def main() -> int:
     test_conflito()
     test_idade()
     test_decidir_rasto()
+    test_identidade()
     with tempfile.TemporaryDirectory() as td:
         origem = Path("/opt/data/plugin-data/vipernet-model-manager/config.json")
         tmp = Path(td) / "config.json"

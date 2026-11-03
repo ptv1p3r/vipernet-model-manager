@@ -31,6 +31,23 @@
   const NOME = "vipernet-model-manager";
   const BASE = "/api/plugins/" + NOME;
 
+  // Identidade do plugin para o cabecalho. Pura e testavel sem browser: o
+  // endpoint manda `plugin` com a versao do plugin.yaml, o autor e o
+  // repositorio publico; aqui so se decide o que mostrar e se ha deriva entre
+  // a versao do plugin e a do manifest do painel.
+  function metaPlugin(estado) {
+    var p = (estado && estado.plugin) || {};
+    var versao = p.versao || "";
+    var manifest = p.versao_manifest || (estado && estado.versao_painel) || "";
+    return {
+      versao: versao || "—",
+      autor: p.autor || "—",
+      github: p.github || "",
+      manifest: manifest || "—",
+      divergente: !!(versao && manifest && versao !== manifest),
+    };
+  }
+
   function pedir(caminho, opcoes) {
     var opts = Object.assign({}, opcoes || {});
     // O SDK.fetchJSON entrega o init tal e qual ao fetch(): um body objecto vira a
@@ -749,6 +766,8 @@
 
     const perfis = (estado && estado.perfis) || {};
     const nomes = Object.keys(perfis);
+    // Calculado uma vez: a identidade nao muda a meio de um render.
+    const meta = metaPlugin(estado);
 
     return h(
       "div",
@@ -765,6 +784,38 @@
             { className: "vmm-sub" },
             "Escolhe provider e modelo por complexidade do trabalho e por tipo de tarefa, dentro do catalogo de cada perfil. ",
             "O modelo que serviu cada turno fica registado em baixo."
+          ),
+          // Identidade do plugin. A versao vem do plugin.yaml (a mesma que o
+          // loader e o catalogo leem) e nao de uma copia escrita a mao aqui.
+          h(
+            "div",
+            { className: "vmm-meta" },
+            h("span", { className: "vmm-meta-versao" }, "v" + meta.versao),
+            h("span", { className: "vmm-meta-sep" }, "·"),
+            h("span", { className: "vmm-meta-autor" }, meta.autor),
+            meta.github
+              ? h("span", { className: "vmm-meta-sep" }, "·")
+              : null,
+            meta.github
+              ? h(
+                  "a",
+                  {
+                    className: "vmm-meta-link",
+                    href: meta.github,
+                    target: "_blank",
+                    rel: "noopener noreferrer",
+                    title: "Repositorio publico do autor",
+                  },
+                  meta.github.replace(/^https?:\/\/(www\.)?github\.com\//, "github.com/")
+                )
+              : null,
+            meta.divergente
+              ? h(
+                  "span",
+                  { className: "vmm-meta-deriva", title: "plugin.yaml e manifest.json divergem" },
+                  " · painel v" + meta.manifest
+                )
+              : null
           )
         ),
         h(
@@ -914,8 +965,10 @@
       ),
 
       h("div", { className: "vmm-pe vmm-mudo" },
-        "Catalogo e associacoes de tarefa vivem em plugin-data/vipernet-model-manager/config.json — este painel permite editar a configuração. Versao do painel: " +
-        ((estado && estado.versao_painel) || "—"))
+        "Catalogo e associacoes de tarefa vivem em plugin-data/vipernet-model-manager/config.json — este painel permite editar a configuração. Versao do plugin: " +
+        meta.versao + " · painel: " + meta.manifest +
+        " · autor: " + meta.autor +
+        (meta.github ? " · " + meta.github : ""))
     );
   }
 
@@ -930,5 +983,6 @@
     window.__VMM_TEST__.comBloco = comBloco;
     window.__VMM_TEST__.paresModelo = paresModelo;
     window.__VMM_TEST__.rotuloAnalise = rotuloAnalise;
+    window.__VMM_TEST__.metaPlugin = metaPlugin;
   }
 })();

@@ -263,6 +263,40 @@ check("rotuloAnalise: bloco invalido explica porque nao decide",
 const rVazio = T.rotuloAnalise(null);
 check("rotuloAnalise: sem dados nao rebenta", rVazio.modo === "heuristica" && rVazio.titulo === "heurística");
 
+// --- identidade do plugin no cabecalho -------------------------------------
+// A versao vem do plugin.yaml pelo endpoint, nao de uma copia escrita no JS:
+// uma copia divergiu e o painel mostrou 3.11.2 com o disco em 3.11.3.
+
+const mOk = T.metaPlugin({
+  plugin: {
+    versao: "3.13.8",
+    autor: "Pedro Tiago de Jesus Estevanez Roldan",
+    github: "https://github.com/ptv1p3r",
+    versao_manifest: "3.13.8",
+  },
+  versao_painel: "3.13.8",
+});
+check("metaPlugin: versao do plugin", mOk.versao === "3.13.8", mOk.versao);
+check("metaPlugin: autor completo", mOk.autor === "Pedro Tiago de Jesus Estevanez Roldan", mOk.autor);
+check("metaPlugin: github do autor", mOk.github === "https://github.com/ptv1p3r", mOk.github);
+check("metaPlugin: sem deriva", mOk.divergente === false);
+
+const mDeriva = T.metaPlugin({
+  plugin: { versao: "3.13.8", autor: "X", github: "https://github.com/ptv1p3r", versao_manifest: "3.13.2" },
+});
+check("metaPlugin: deriva detectada quando manifest difere", mDeriva.divergente === true);
+check("metaPlugin: deriva mostra o numero do manifest", mDeriva.manifest === "3.13.2", mDeriva.manifest);
+
+// Endpoint antigo (sem bloco plugin) nao pode deixar o cabecalho em branco.
+const mLegado = T.metaPlugin({ versao_painel: "3.12.0" });
+check("metaPlugin: sem bloco plugin usa a versao do painel", mLegado.manifest === "3.12.0", mLegado.manifest);
+check("metaPlugin: sem bloco plugin nao inventa versao de plugin", mLegado.versao === "—", mLegado.versao);
+check("metaPlugin: sem github nao mostra link", mLegado.github === "");
+check("metaPlugin: sem deriva quando so ha um numero", mLegado.divergente === false);
+
+const mNulo = T.metaPlugin(null);
+check("metaPlugin: sem estado nao rebenta", mNulo.versao === "—" && mNulo.autor === "—" && mNulo.divergente === false);
+
 console.log("");
 if (falhas) {
   console.log(falhas + " de " + total + " verificacoes FALHARAM");

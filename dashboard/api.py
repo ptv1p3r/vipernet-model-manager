@@ -49,6 +49,48 @@ def _versao_painel() -> str:
         return ""
 
 
+GITHUB_AUTOR = "https://github.com/ptv1p3r"
+
+
+def _meta_plugin() -> dict[str, str]:
+    """Identidade do plugin para o painel: versao, autor e repositorio.
+
+    A versao vive no ``plugin.yaml`` — o mesmo ficheiro que o loader le e que o
+    catalogo verifica. O painel nao repete o numero: se o manifest e o plugin.yaml
+    divergirem, o painel mostra os dois valores e a divergencia fica visivel em
+    vez de escolher um deles em silencio.
+
+    ``github`` e o repositorio publico do autor. O repositorio que o catalogo
+    aceita tem de ser publico, clonavel por https em GitHub ou GitLab [1]; o
+    Gitea interno continua a ser o espelho de trabalho, nao o endereco de
+    submissao.
+    """
+    versao = ""
+    autor = ""
+    try:
+        manifesto = Path(__file__).resolve().parent.parent / "plugin.yaml"
+        for linha in manifesto.read_text(encoding="utf-8").splitlines():
+            chave, _, valor = linha.partition(":")
+            chave = chave.strip()
+            if chave not in ("version", "author"):
+                continue
+            # Aceita `author: Nome` e `author: "Nome"`.
+            limpo = valor.strip().strip('"').strip("'")
+            if chave == "version":
+                versao = limpo
+            else:
+                autor = limpo
+    except Exception:  # noqa: BLE001 - sem plugin.yaml o painel ainda responde
+        pass
+    return {
+        "versao": versao,
+        "autor": autor,
+        "github": GITHUB_AUTOR,
+        # Divergencia entre os dois numeros e deriva, nao gosto: o painel diz.
+        "versao_manifest": _versao_painel(),
+    }
+
+
 LIMITE_LOG_MAX = 500
 LIMITE_LOG_OMISSAO = 50
 
@@ -529,6 +571,9 @@ def estado() -> dict[str, Any]:
     ledger = gestor.caminho_ledger()
     return {
         "versao_painel": _versao_painel(),
+        # Identidade: versao do plugin (do plugin.yaml), autor e repositorio
+        # publico. E o que o painel mostra no cabecalho.
+        "plugin": _meta_plugin(),
         "activo": bool(cfg.get("activo", True)),
         "registar": bool(cfg.get("registar", True)),
         "perfis": saida_perfis,
