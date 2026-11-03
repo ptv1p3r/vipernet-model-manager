@@ -563,11 +563,12 @@ function acharComponente(no, nome) {
 check("render: o cartao mostra a estrategia em vigor",
       temTexto(arvore, "rotação por sessão"), "");
 const noSuperficies = acharComponente(arvore, "Superficies");
-check("render: o cartao passa as regras ao bloco de superficies",
-      !!noSuperficies && Object.keys(noSuperficies.props.regras || {}).join(",") === "cron,cli",
-      JSON.stringify(noSuperficies && noSuperficies.props.regras));
-check("render: o cartao passa o catalogo ao bloco de superficies",
-      !!noSuperficies && (noSuperficies.props.catalogo || []).length === cat.length, "");
+check("render: o cartao de perfil ja nao tem o editor de superficies",
+      noSuperficies === null,
+      "o cartao nao deve ser painel de controlo — a configuracao vive no editor");
+check("render: o cartao nao tem select de estrategia (so leitura)",
+      acharComponente(arvore, "Seletor") === null,
+      "o cartao mostra o que esta a valer, nao deixa escolher");
 check("render: a regra global e dita como tal", temTexto(arvore, "global"), "");
 
 tentar("render: cartao sem catalogo, sem superficies e sem estrategia nao rebenta",
@@ -648,11 +649,13 @@ function recolher(no, predicado, out) {
   return out;
 }
 
-function renderSecao(config, opcoes) {
+function renderSecao(config, opcoes, estado) {
   return T.SecaoClassificador({
     configJSON: JSON.stringify(config),
     opcoes: opcoes || {},
+    estado: estado || {},
     onMudar: function () {},
+    onSuperficie: function () {},
   });
 }
 

@@ -432,6 +432,17 @@
   text-overflow: ellipsis;
 }
 
+/* Superficies dentro do editor: um bloco por perfil, separados por uma linha
+   discreta, para nao se confundirem os perfis uns com os outros. */
+.vmm-sup-perfil {
+  padding: 0.35rem 0;
+  border-top: 1px dashed var(--border);
+}
+
+.vmm-sup-perfil:first-of-type {
+  border-top: 0;
+}
+
 .vmm-classif .vmm-select,
 .vmm-classif .vmm-input {
   font-size: 0.8rem;

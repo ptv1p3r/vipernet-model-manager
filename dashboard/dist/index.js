@@ -483,33 +483,14 @@
           h("div", { className: "vmm-titulo-perfil" },
             h("strong", null, nome),
             h(Chip, { tone: p.activo ? "default" : "secondary" }, p.activo ? "activo" : "desligado"),
+            // So leitura. A escolha faz-se no editor de configuracao: este
+            // cartao responde a "porque este modelo", nao serve para decidir.
             h("span", { className: "vmm-estrategia" },
-              h(Seletor, {
-                rotulo: "estratégia de " + nome,
-                valor: (p.estrategia || {}).modo || "rodizio",
-                opcoes: ((props.opcoes || {}).modo) || [],
-                disabled: props.aGravar,
-                onChange: function (v) { props.onEstrategia(nome, { modo: v }); },
-              }),
-              h(Seletor, {
-                rotulo: "rotação de " + nome,
-                valor: (p.estrategia || {}).por || "sessao",
-                opcoes: ((props.opcoes || {}).por) || [],
-                // `por` so governa a rotacao: em `prioridade` a escolha nao tem
-                // efeito, e um select activo que nao faz nada e uma armadilha.
-                disabled: props.aGravar || (p.estrategia || {}).modo !== "rodizio",
-                title: "Só se aplica à rotação",
-                onChange: function (v) { props.onEstrategia(nome, { por: v }); },
-              }),
               h("span", { className: "vmm-mudo" }, rotuloEstrategia(p.estrategia)),
-              (p.estrategia || {}).origem === "proprio"
-                ? h(Button, {
-                    size: "sm", variant: "ghost", className: "vmm-herdar",
-                    disabled: props.aGravar,
-                    title: "Apagar a escolha deste perfil e voltar a herdar o global",
-                    onClick: function () { props.onEstrategia(nome, null, true); },
-                  }, "herdar do global")
-                : null
+              h("span", { className: "vmm-mudo" },
+                (p.estrategia || {}).origem === "proprio"
+                  ? " · próprio"
+                  : " · herdado do global")
             )
           ),
           h(Interruptor, {
@@ -566,18 +547,6 @@
               )
             )
           : h("div", { className: "vmm-mudo" }, "sem associacoes de tarefa — decide so a analise de complexidade"),
-
-        // Superficie de sessao (cron, api_server, cli...): e o criterio que
-        // ganha a tarefa e a analise, porque nao se adivinha — vem do core.
-        h(Superficies, {
-          perfil: nome,
-          regras: p.superficies || {},
-          catalogo: p.catalogo || [],
-          niveis: (props.mais || {}).niveis || [],
-          conhecidas: (props.mais || {}).superficies || [],
-          aGravar: props.aGravar,
-          onMudar: function (sup, alvo) { props.onSuperficie(nome, sup, alvo); },
-        }),
 
         h(
           "table",
@@ -996,12 +965,41 @@
       })
     );
 
+    // ---- bloco 3: superficies -------------------------------------------
+    // "Se a superficie da sessao for cron, o turno vai para este modelo." Fica
+    // aqui, e nao nos cartoes: e configuracao como as outras duas. Escreve
+    // pelo endpoint `/superficies` (cada regra e um delta com rev) e nao pelo
+    // JSON do textarea, para nao apagar o que outra sessao escreveu.
+    const perfisEstado = (props.estado || {}).perfis || {};
+    const opcoesEstado = (props.estado || {}).opcoes || {};
+    const blocoSuperficies = h("div", { className: "vmm-bloco", key: "superficies" },
+      tituloBloco("Superfícies",
+        "se a superfície da sessão for esta, o turno vai para este modelo (por perfil)."),
+      linhas.map(function (perfil) {
+        if (perfil === null) return null;
+        const p = perfisEstado[perfil] || {};
+        return h("div", { key: "sup-" + perfil, className: "vmm-sup-perfil" },
+          h("div", { className: "vmm-classif-nome" }, perfil),
+          h(Superficies, {
+            perfil: perfil,
+            regras: p.superficies || {},
+            catalogo: p.catalogo || [],
+            niveis: opcoesEstado.niveis || [],
+            conhecidas: opcoesEstado.superficies || [],
+            aGravar: !!props.aGravar,
+            onMudar: function (sup, alvo) { props.onSuperficie(perfil, sup, alvo); },
+          })
+        );
+      })
+    );
+
     return h("div", { className: "vmm-classif" },
       props.versao
         ? h("div", { className: "vmm-mudo vmm-versao-linha" }, "painel " + props.versao)
         : null,
       blocoComplexidade,
-      blocoEstrategia
+      blocoEstrategia,
+      blocoSuperficies
     );
   }
 
@@ -1258,48 +1256,9 @@
         )
       ),
 
-      // Estrategia global: o sitio onde se muda uma vez e todos os perfis
-      // herdam. Fica antes dos cartoes porque e a regra que os governa — e
-      // cada cartao diz se a sua e esta ou se e propria.
-      h(
-        Card,
-        { className: "vmm-card" },
-        h(
-          CardContent,
-          { className: "vmm-card-content" },
-          h(
-            "div",
-            { className: "vmm-linha vmm-cabecalho-perfil" },
-            h(
-              "div",
-              { className: "vmm-titulo-perfil" },
-              h("strong", null, "estratégia global"),
-              h(
-                "span",
-                { className: "vmm-estrategia" },
-                h(Seletor, {
-                  rotulo: "estratégia global",
-                  valor: (estado.estrategia_global || {}).modo || "rodizio",
-                  opcoes: (((estado.opcoes || {}).estrategia) || {}).modo || [],
-                  disabled: aGravar,
-                  onChange: function (v) { mudarEstrategia("global", null, { modo: v }); },
-                }),
-                h(Seletor, {
-                  rotulo: "rotação global",
-                  valor: (estado.estrategia_global || {}).por || "sessao",
-                  opcoes: (((estado.opcoes || {}).estrategia) || {}).por || [],
-                  disabled: aGravar || (estado.estrategia_global || {}).modo !== "rodizio",
-                  title: "Só se aplica à rotação",
-                  onChange: function (v) { mudarEstrategia("global", null, { por: v }); },
-                }),
-                h("span", { className: "vmm-mudo" },
-                  rotuloEstrategia(estado.estrategia_global)
-                  + " · os perfis sem escolha própria seguem esta")
-              )
-            )
-          )
-        )
-      ),
+      // A configuracao — complexidade, estrategia e superficies — vive toda
+      // dentro do editor de configuracao. Fora dele ficam so os cartoes de
+      // estado por perfil e o registo do que foi servido.
 
       erro ? h("div", { className: "vmm-erro" }, "erro: " + erro) : null,
 
@@ -1329,8 +1288,11 @@
           // textarea abaixo: uma so fonte de verdade.
           h(SecaoClassificador, {
             configJSON: configJSON,
+            estado: estado,
+            aGravar: aGravar,
             versao: (estado.plugin || {}).versao || estado.versao_painel || "",
             opcoes: ((estado.opcoes || {}).estrategia) || {},
+            onSuperficie: function (perfil, sup, alvo) { mudarSuperficie(perfil, sup, alvo); },
             onMudar: function (novo) {
               setConfigJSON(novo);
               setValidacaoOk(null);
@@ -1388,15 +1350,7 @@
             nome: n,
             dados: perfis[n],
             aGravar: aGravar,
-            opcoes: ((estado.opcoes || {}).estrategia) || {},
-            mais: estado.opcoes || {},
             onToggle: function (perfil, activo) { alternar("perfil", perfil, activo); },
-            onEstrategia: function (perfil, campos, herdar) {
-              mudarEstrategia("perfil", perfil, campos, herdar);
-            },
-            onSuperficie: function (perfil, sup, alvo) {
-              mudarSuperficie(perfil, sup, alvo);
-            },
           });
         })
       ),
