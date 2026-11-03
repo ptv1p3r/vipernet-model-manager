@@ -316,6 +316,12 @@ _MAX_TOKENS_MIN, _MAX_TOKENS_MAX = 2, 4096
 _MAX_TOKENS_ANTIGO = 12
 _FALHAS_PARA_SUSPENDER = 3
 _SUSPENSAO_S = 300.0
+#: Campos da definicao que mudam o pedido. A impressao serve para a suspensao
+#: por config errada caducar assim que a config e corrigida: sem isto, corrigir
+#: `via` as 21:40 e continuar na heuristica ate as 22:35 parece o plugin mudo.
+_CAMPOS_IMPRESSAO = ("provider", "modelo", "via", "preset", "caminho",
+                     "caminho_decisoes", "estado", "formato_json", "esforco",
+                     "confianca_min", "prompt_variante")
 #: Um provider que nao existe no perfil servido nao e uma falha transitoria: e
 #: config errada, e repetir nao a cura. Medido a 2026-11-03: o perfil `pessoal`
 #: herdava um classificador global que nomeava o provider `inception`, que so
@@ -430,6 +436,10 @@ _cache_erro: dict[str, tuple[float, dict[str, Any]]] = {}
 _TTL_ERRO_S = 60.0
 _falhas: dict[str, int] = {}
 _suspensos: dict[str, float] = {}
+#: Impressao da definicao no momento em que o alvo foi suspenso por config
+#: errada. Guardar isto (em vez de mudar a chave) mantem `estado()` legivel e
+#: deixa a suspensao caducar sozinha quando a config muda.
+_suspenso_impressao: dict[str, str] = {}
 #: Transporte descoberto por alvo (`perfil\x1fprovider\x1fmodelo`) quando
 #: `via: auto`. Vive so em memoria de proposito: e uma descoberta sobre o
 #: provider, nao configuracao do utilizador, e o custo de a repetir e uma
@@ -663,6 +673,31 @@ def _digest(perfil: str, definicao: dict[str, Any], ultima: str) -> str:
     h.update(b"\x1f")
     h.update(ultima.encode("utf-8", "replace"))
     return h.hexdigest()
+
+
+def _impressao(definicao: dict[str, Any]) -> str:
+    """Impressao dos campos que mudam o pedido — nao do texto a classificar."""
+    h = hashlib.sha256()
+    for campo in _CAMPOS_IMPRESSAO:
+        h.update(f"{campo}={definicao.get(campo)!r}\x1f".encode("utf-8", "replace"))
+    return h.hexdigest()[:16]
+
+
+def _suspenso(base: dict[str, Any], restante: float) -> dict[str, Any]:
+    """Alvo suspenso, dito em vez de calado.
+
+    Devolver `None` aqui (como era) fazia o cartao dizer so "heuristica": o
+    utilizador corrigia a config e nao via efeito nenhum durante uma hora. O
+    turno segue pela heuristica na mesma — mas o ledger passa a dizer porquê.
+    """
+    return {
+        "sem_efeito": "classificador_suspenso",
+        "motivo": (f"classificador_suspenso: o classificador falhou e esta suspenso "
+                   f"por mais {restante:.0f}s — os turnos seguem pela heuristica; "
+                   f"mudar a config volta a tentar de imediato"),
+        "classificador": {**base, "suspenso": True, "restante_s": round(restante, 1)},
+        "origem": "modelo_suspenso",
+    }
 
 
 # --------------------------------------------------------------------------- transporte
@@ -931,13 +966,15 @@ def _classificar_decisoes(*, alvo: str, base: dict[str, Any], definicao: dict[st
     except _RecusaHttp as exc:
         detalhe = f"HTTP {exc.codigo}: {exc.detalhe[:200]}"
         if _RE_INDISPONIVEL.search(detalhe):
-            return _indisponivel(alvo, base, detalhe, chave=chave, ttl_erro=ttl_erro)
+            return _indisponivel(alvo, base, detalhe, chave=chave, ttl_erro=ttl_erro,
+                                 definicao=definicao)
         return _falhou(alvo, base, f"HTTP {exc.codigo}", exc.detalhe[:200],
                        chave=chave, ttl_erro=ttl_erro)
     except Exception as exc:  # noqa: BLE001 - fail-open sempre
         detalhe = str(exc)[:200]
         if _RE_INDISPONIVEL.search(f"{type(exc).__name__}: {detalhe}"):
-            return _indisponivel(alvo, base, detalhe, chave=chave, ttl_erro=ttl_erro)
+            return _indisponivel(alvo, base, detalhe, chave=chave, ttl_erro=ttl_erro,
+                                 definicao=definicao)
         return _falhou(alvo, base, type(exc).__name__, detalhe,
                        chave=chave, ttl_erro=ttl_erro)
     payload = resposta["json"] if isinstance(resposta["json"], dict) else {}
@@ -1239,10 +1276,18 @@ def classificar(
     if not (provider and modelo):
         return None
     alvo = f"{perfil}\x1f{provider.lower()}\x1f{modelo}"
+    base = {"provider": provider, "modelo": modelo, "perfil": perfil}
     agora = time.monotonic()
+    # A suspensao vale para a definicao que falhou, nao para o alvo em abstracto:
+    # corrigir `via`, o preset ou o endpoint tem de voltar a tentar ja. Uma
+    # suspensao de 1 h que sobrevive a correccao transforma "ja corrigi" em
+    # "continua na heuristica" e o utilizador nao tem como o distinguir.
     with _lock:
-        if _suspensos.get(alvo, 0.0) > agora:
-            return None
+        fim = _suspensos.get(alvo, 0.0)
+        impressao_suspensa = _suspenso_impressao.get(alvo)
+    if fim > agora and (impressao_suspensa is None
+                        or impressao_suspensa == _impressao(definicao)):
+        return _suspenso(base, fim - agora)
     corpo_texto, ultima = texto(mensagens,
                                 janela=int(definicao["janela_mensagens"]),
                                 max_chars=int(definicao["max_chars"]))
@@ -1256,7 +1301,6 @@ def classificar(
         guardado_erro = _cache_erro.get(chave)
         if guardado_erro and guardado_erro[0] > agora:
             return {**guardado_erro[1], "cache": True, "cache_erro": True}
-    base = {"provider": provider, "modelo": modelo, "perfil": perfil}
     # O cache negativo segue o cache da definicao: com `cache_ttl_s: 0` o
     # utilizador pediu para nao guardar nada — nem sucessos nem falhas.
     ttl_erro = min(_TTL_ERRO_S, float(definicao["cache_ttl_s"]))
@@ -1335,7 +1379,8 @@ def classificar(
         # transporte errado): o `_RecusaHttp` nao passava pelo filtro e um 400
         # definitivo era contado como avaria transitoria.
         if _RE_INDISPONIVEL.search(detalhe):
-            return _indisponivel(alvo, base, detalhe, chave=chave, ttl_erro=ttl_erro)
+            return _indisponivel(alvo, base, detalhe, chave=chave, ttl_erro=ttl_erro,
+                                 definicao=definicao)
         return _falhou(alvo, base, f"HTTP {exc.codigo}", exc.detalhe[:200],
                        chave=chave, ttl_erro=ttl_erro)
     except Exception as exc:  # noqa: BLE001 - fail-open sempre
@@ -1344,7 +1389,8 @@ def classificar(
         # uma credencial que falta) nao melhora por ser retentado. Vai por um
         # caminho proprio, com suspensao de uma hora e sem `falhou` no cartao.
         if _RE_INDISPONIVEL.search(f"{type(exc).__name__}: {detalhe}"):
-            return _indisponivel(alvo, base, detalhe, chave=chave, ttl_erro=ttl_erro)
+            return _indisponivel(alvo, base, detalhe, chave=chave, ttl_erro=ttl_erro,
+                                 definicao=definicao)
         return _falhou(alvo, base, type(exc).__name__, detalhe, chave=chave, ttl_erro=ttl_erro)
     uso = resposta["json"].get("usage") if isinstance(resposta["json"], dict) else None
     uso = uso if isinstance(uso, dict) else {}
@@ -1533,16 +1579,24 @@ def _ler_lote(payload: dict[str, Any], n: int) -> list[str | None]:
 
 
 def _indisponivel(alvo: str, base: dict[str, Any], detalhe: str, *,
-                  chave: str = "", ttl_erro: float = _TTL_ERRO_S) -> dict[str, Any]:
+                  chave: str = "", ttl_erro: float = _TTL_ERRO_S,
+                  definicao: dict[str, Any] | None = None) -> dict[str, Any]:
     """Provider inexistente no perfil: `sem_efeito`, nao `falhou`.
 
     A distincao importa porque o cartao do perfil le `falhou` como aviso de
     avaria e `sem_efeito` como "nao decide, e porquê". Um `AuthError` por
     config errada apresentado como avaria ensina o utilizador a ignorar o
     aviso — e depois o aviso que interessa tambem e ignorado.
+
+    A suspensao guarda a impressao da definicao que falhou: mudar a config
+    levanta-a de imediato, sem esperar a hora.
     """
     with _lock:
         _suspensos[alvo] = time.monotonic() + _SUSPENSAO_INDISPONIVEL_S
+        if definicao is not None:
+            _suspenso_impressao[alvo] = _impressao(definicao)
+        else:
+            _suspenso_impressao.pop(alvo, None)
         _falhas.pop(alvo, None)
     motivos = {
         "provider_indisponivel": "o provider nao existe no perfil servido",
@@ -1585,6 +1639,9 @@ def _falhou(alvo: str, base: dict[str, Any], tipo: str, detalhe: str,
         _falhas[alvo] = n
         if esgotou or n >= _FALHAS_PARA_SUSPENDER:
             _suspensos[alvo] = time.monotonic() + _SUSPENSAO_S
+            # Avaria de transporte nao depende da config: a suspensao vale para
+            # qualquer definicao do alvo.
+            _suspenso_impressao.pop(alvo, None)
             _falhas[alvo] = 0
     # O erro fica no valor devolvido: quem chama registra-o no ledger.
     saida = {"erro": f"{tipo}: {detalhe}"[:300],
@@ -1604,6 +1661,7 @@ def limpar_cache() -> None:
         _cache_erro.clear()
         _falhas.clear()
         _suspensos.clear()
+        _suspenso_impressao.clear()
 
 
 def estado() -> dict[str, Any]:
