@@ -10,6 +10,7 @@ conteudo e rotulou tudo `None`).
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -1039,6 +1040,41 @@ class TestJuizVotos(unittest.TestCase):
         self.assertEqual(len(ordens), 3)
         self.assertTrue(any(o != ordens[0] for o in ordens[1:]),
                         "as passagens usaram a mesma ordem: a votacao nao decorrelaciona")
+
+    def test_calibrar_devolve_rasto_das_passagens(self):
+        """O rasto tem de permitir ver votos-contra-um-voto na mesma corrida."""
+        tipos = argparse.Namespace(threads=4, juiz_lote=0, juiz_votos=3,
+                                   juiz_acordo_min=2, semente=1)
+        gold = [{"id": "1", "rotulo": "leve", "texto": "a"},
+                {"id": "2", "rotulo": "alta", "texto": "b"}]
+
+        def falso(casos, *a, **k):
+            return [{"id": c["id"], "rotulo": c["rotulo"]} for c in casos]
+
+        with unittest.mock.patch.object(A, "_etiquetar", falso):
+            k, cal, rot = A._calibrar_juiz(gold, {}, None, tipos)
+        self.assertEqual(k["kappa"], 1.0)
+        self.assertEqual(cal["cobertura"], 1.0)
+        self.assertEqual(cal["sem_acordo"], 0)
+        self.assertEqual(len(cal["por_passagem"]), 3)
+        self.assertEqual(len(cal["fronteiras_por_passagem"]), 3)
+        self.assertIn("alta", cal["fronteiras"])
+
+    def test_calibrar_conta_cobertura_pelos_casos_que_decidiu(self):
+        tipos = argparse.Namespace(threads=4, juiz_lote=0, juiz_votos=3,
+                                   juiz_acordo_min=2, semente=1)
+        gold = [{"id": "1", "rotulo": "leve"}, {"id": "2", "rotulo": "media"}]
+        fila = [{"1": "leve", "2": "leve"}, {"1": "media", "2": "media"},
+                {"1": "alta", "2": "media"}]
+
+        def falso(casos, *a, **k):
+            mapa = fila.pop(0)
+            return [{"id": c["id"], "rotulo": mapa[c["id"]]} for c in casos]
+
+        with unittest.mock.patch.object(A, "_etiquetar", falso):
+            _, cal, _ = A._calibrar_juiz(gold, {}, None, tipos)
+        self.assertEqual(cal["cobertura"], 0.5)
+        self.assertEqual(cal["sem_acordo"], 1)
 
     def test_portao_fecha_por_cobertura(self):
         ok, razoes = A.portoes({"kappa": 0.9, "n": 100},

@@ -366,6 +366,47 @@ Duas coisas medidas, que quem mexer aqui tem de saber:
   0,754–0,808 do mercury. **Nenhum dos dois passa o portão**: o bloqueio real é o
   gold (40 rótulos humanos, 2 de `alta`), não a escolha do juiz.
 
+#### Acordo de lotes: tentado, medido, rejeitado (3.13.9)
+
+A hipótese era que o erro do juiz fosse **ruído** — casos isolados que uma
+votação cancelaria. O mecanismo está implementado e testado (`--juiz-votos N`,
+`--juiz-acordo-min`, `--so-calibrar`), mas a medição de 2026-11-03 diz que a
+hipótese é falsa.
+
+Três passagens sobre os mesmos 130 casos do gold, baralhadas entre passagens para
+a composição do lote não repetir o mesmo erro, agregadas por maioria 2-de-3:
+
+| | passagem 1 | passagem 2 | passagem 3 | maioria 2-de-3 |
+|---|---|---|---|---|
+| kappa global | 0,4659 | 0,5068 | 0,4659 | **0,4697** |
+| `alta` | 0,4878 | 0,5340 | 0,5144 | **0,5040** |
+| `baixa` | 0,4728 | 0,5409 | 0,4388 | **0,4693** |
+| precisão `alta` | 0,421 | 0,447 | 0,436 | **0,425** |
+
+A maioria ficou **abaixo da média das passagens** (0,504 contra 0,512 em `alta`)
+e a precisão de `alta` não se moveu (0,421–0,447 nas passagens, 0,425 na
+maioria). E os dois números que explicam tudo:
+
+- **Cobertura 98,5%** — só 2 dos 130 casos ficaram sem maioria. O juiz não hesita;
+  ele discorda do gold com convicção.
+- **Acordo interno 82% na fronteira `alta`** contra **precisão 0,425** contra o
+  gold. Consistência interna alta com validade externa baixa é a assinatura de
+  **viés sistemático**, não de ruído: os ~23 casos que ele promove a `alta` sem
+  o serem são os mesmos nas três passagens.
+
+Conclusão operacional: votar num único juiz **não** dá autoridade a esse juiz, e
+por isso `--juiz-votos` fica em **1** por omissão — o ciclo semanal não paga três
+vezes por uma medição que não melhorou. O portão passou a exigir **cobertura
+mínima** (`--cobertura-minima`, 0,85) exactamente para isto: sem esse chão, subir
+o kappa descartando os casos disputados comprava autoridade a troca de não
+decidir, e os casos disputados são os difíceis.
+
+O caminho que a medição aponta não é repetir o mesmo sinal: é **combinar sinais
+independentes** (juiz + score heurístico a concordarem em `alta`, avaliado por
+validação cruzada) ou **dar massa ao gold em `alta`** — 17 casos não distinguem
+0,43 de 0,60 com margem. Repetir o juiz três vezes não faz nem uma coisa nem
+outra.
+
 ### Subscrição vs API
 
 A mesma família de modelos tem duas rotas de acesso distintas, e o plugin não
