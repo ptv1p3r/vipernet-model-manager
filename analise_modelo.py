@@ -68,7 +68,49 @@ PADRAO: dict[str, Any] = {
     # pedido sem ele — nao depende de uma lista de providers que envelhece.
     # `on` obriga, `off` nunca pede.
     "formato_json": "auto",
+    # Transporte do pedido: `chat` (chat/completions, qualquer LLM) ou
+    # `decisoes` (modelos System One, que nao geram texto — devolvem escolha e
+    # confianca tipadas). Medido a 2026-11-03 no `~typesafe/jev-latest`: o id
+    # existe mas recusa chat/completions com "is a decisions model and cannot be
+    # used with the chat/completions endpoint", e aceita o mesmo pedido em
+    # `POST /api/alpha/decisions`. Com `decisoes`, `max_tokens`, `esforco` e
+    # `formato_json` nao se aplicam (o modelo nao gera tokens livres) — ficam na
+    # config sem efeito, para a troca de transporte nao apagar os valores.
+    "via": "chat",
+    # Piso de confianca para aceitar a decisao do modelo. Abaixo disto o turno
+    # nao e adivinhado: fica `sem_efeito` com o motivo e a heuristica decide,
+    # que e o comportamento de escalonamento prescrito para modelos System One.
+    # 0.0 aceita tudo (comportamento identico ao de um LLM classificador).
+    "confianca_min": 0.0,
 }
+
+
+#: Vocabulario do transporte. `decisoes` e o nome em portugues; aceitam-se as
+#: formas em ingles porque a documentacao do provider so usa essas.
+VIAS = {"chat": "chat", "decisoes": "decisoes", "decisions": "decisoes",
+        "decision": "decisoes", "decisão": "decisoes", "decisões": "decisoes"}
+
+#: Criterios do `choice` no transporte de decisoes. E a rubrica dos tres niveis
+#: na unica forma que o endpoint aceita: mapa opcao -> descricao (uma lista de
+#: `options` e recusada). As duas contra-ancoras que a rubrica do avaliador ja
+#: proibe entraram aqui por escrito, porque sao exactamente os dois vicios
+#: medidos nos juizes LLM: comprimento/artefacto colado como nivel e ambito
+#: aberto ("faz tudo") como alta.
+CRITERIOS_DECISAO: dict[str, str] = {
+    "leve": "conversa, confirmacao, pergunta directa de uma linha, extrair um valor, "
+            "sim/nao, pedir esclarecimento",
+    "media": "explicar um conceito, comparar opcoes, rever algo pequeno, alterar um "
+             "ficheiro ja identificado, correr um comando com contexto",
+    "alta": "desenhar ou decidir arquitetura, diagnosticar avaria com evidencia, "
+            "implementar ou refactorizar codigo, plano com janela e rollback, auditoria",
+}
+
+INSTRUCOES_DECISAO = (
+    "Nivel de complexidade do pedido: o modelo mais barato que o resolve com qualidade. "
+    "O comprimento do texto e a presenca de artefactos colados (logs, codigo, JSON) nao "
+    "mudam o nivel. Ambito aberto (\"faz tudo\", \"implementa o necessario\") nao e alta "
+    "sem um dos sinais de alta."
+)
 
 
 def _gestor():
@@ -276,6 +318,19 @@ def normalizar(bruto: Any, prefixo: str = "analise.classificador") -> tuple[dict
     else:
         erros.append(f"{prefixo}: formato_json deve ser auto, on ou off")
         saida["formato_json"] = "auto"
+    # Transporte. Um valor desconhecido nao pode cair em silencio no `chat`:
+    # quem escreveu `decisoes` e estaria a falar com o endpoint errado.
+    bruto_via = str(bruto.get("via") or "chat").strip().lower()
+    if bruto_via in VIAS:
+        saida["via"] = VIAS[bruto_via]
+    elif bruto_via == "":
+        saida["via"] = "chat"
+    else:
+        erros.append(f"{prefixo}: via deve ser " + ", ".join(sorted(set(VIAS.values())))
+                     + f" (recebido {bruto_via!r})")
+        saida["via"] = "chat"
+    saida["confianca_min"] = _num(bruto.get("confianca_min"), 0.0, 1.0,
+                                  float(PADRAO["confianca_min"]))
     return saida, erros
 
 
@@ -353,6 +408,29 @@ def _url(base_url: str) -> str:
     if base.endswith("/v1") or base.endswith("/beta"):
         return f"{base}/chat/completions"
     return f"{base}/v1/chat/completions"
+
+
+def _url_decisoes(base_url: str) -> str:
+    """Endpoint de decisoes a partir do `base_url` da rota.
+
+    Medido a 2026-11-03: o OpenRouter expoe as decisoes em
+    `https://openrouter.ai/api/alpha/decisions`, ou seja o mesmo prefixo do
+    chat sem o `/v1`. Derivar do `base_url` em vez de o fixar mantem a rota a
+    funcionar com um gateway compativel (proxy interno, AIHubMix) que publique
+    o mesmo caminho — e falha com mensagem clara quando a base nao serve.
+    """
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        raise ValueError("rota sem base_url")
+    if base.endswith("/alpha/decisions"):
+        return base
+    if base.endswith("/chat/completions"):
+        base = base[: -len("/chat/completions")]
+    for sufixo in ("/v1", "/beta"):
+        if base.endswith(sufixo):
+            base = base[: -len(sufixo)]
+            break
+    return f"{base}/alpha/decisions"
 
 
 #: Codigos de erro que podem vir de um campo que o provider nao conhece.
