@@ -42,17 +42,27 @@ perfil ao valor do dia e deixava de acompanhar mudancas do global).
 ```json
 "classificador": {
   "activo": false, "provider": "deepseek", "modelo": "deepseek-flash",
-  "timeout_s": 8.0, "max_tokens": 320, "cache_ttl_s": 600,
+  "timeout_s": 12.0, "max_tokens": 320, "cache_ttl_s": 600,
   "janela_mensagens": 8, "max_chars": 4000
 }
 ```
 
 **Fail-open por desenho**: erro de rede, `HTTP != 200`, resposta sem um dos tres
 niveis, ou `timeout_s` excedido devolvem `None` — decide a heuristica e o motivo
-fica em `classificador_erro` no ledger. Tres falhas seguidas abrem disjuntor e
-param de tentar (nao se paga uma chamada falhada em cada turno). A resposta e
-descarregada por `max_tokens` (320) e a mesma ultima mensagem nao e paga duas
-vezes dentro de `cache_ttl_s`.
+fica em `classificador_erro` no ledger. O disjuntor abre de duas maneiras
+diferentes, porque as falhas nao custam o mesmo: **um timeout suspende a
+primeira** (custa o `timeout_s` inteiro em latencia do turno, e a heuristica
+responde em 0 ms; esperar tres vezes para ouvir o que a primeira ja disse e pagar
+3x por nada — medido a 2026-11-03: quatro falhas em 45 s no perfil `pessoal` a
+8 s de timeout), e tres falhas de outro tipo (5xx, resposta ilegivel) suspendem
+como antes. A resposta e descarregada por `max_tokens` (320) e a mesma ultima
+mensagem nao e paga duas vezes dentro de `cache_ttl_s`.
+
+**Uma falha e uma falha, nao uma por pedido do turno**: o nivel fica pinado no
+turno, e o erro tambem. So o evento do primeiro pedido carrega
+`classificador_erro`; os seguintes levam `classificador_erro_herdado` e nao
+contam para a taxa. Sem isto, um turno de 14 pedidos (medido a 2026-11-03, perfil
+`default`) aparecia como 14 falhas no cartao e na contabilidade.
 
 **Orcamento de saida e modelos de raciocinio** (medido 2026-11-02): o
 `deepseek-flash` pensa antes de responder. Com `max_tokens: 12`, os 12 tokens de

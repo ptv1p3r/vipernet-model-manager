@@ -289,6 +289,56 @@ def testes() -> None:
               bool(e.get("inst")) and e["inst"] != antes[0].get("inst"),
               f"{e.get('inst')} vs {antes[0].get('inst') if antes else None}")
 
+    # ------------------------------------------------------------------ 8
+    print("\n== classificador falha no passo 1: uma falha, nao uma por passo ==")
+    # Medido a 2026-11-03 no ledger real (perfil `default`, 12:31): 14 eventos,
+    # UM turno, todos com o mesmo `classificador.falhou: TimeoutError` porque o
+    # pin copiava a falha do passo 1 para os 13 seguintes. O cartao lia isso como
+    # "falhou ha instantes" durante tres minutos e a taxa do classificador
+    # contava 14 falhas onde houve uma.
+    c8 = Cenario("falha-classificador")
+    cfg8 = _cfg()
+    cfg8["analise"]["classificador"] = {
+        "activo": True, "provider": "deepseek", "modelo": "deepseek-flash",
+        "esforco": "baixo", "max_tokens": 320, "cache_ttl_s": 600,
+    }
+    (c8.dir / "config.json").write_text(json.dumps(cfg8), encoding="utf-8")
+    c8.plugin._cfg["mtime"] = -1.0  # forca releitura da config
+    # O `Cenario` aquece o analisador (`_recarregar_analise_se_mudou`) mas nao o
+    # classificador: sem este aquecimento, o primeiro pedido do turno reexecuta
+    # `analise_modelo.py` e leva o patch consigo (medido: `classificar=0`).
+    c8.plugin._recarregar_analise_modelo_se_mudou()
+    chamadas = {"n": 0}
+
+    def classificar_mau(*_a, **_kw):
+        chamadas["n"] += 1
+        return {"erro": "TimeoutError: The read operation timed out",
+                "classificador": {"provider": "deepseek", "modelo": "deepseek-flash",
+                                  "perfil": "pessoal", "falhou": "TimeoutError"},
+                "origem": "modelo_falhou"}
+
+    c8.plugin._analise_modelo_mod.classificar = classificar_mau
+    assert c8.plugin._analise_modelo_mod.classificar is classificar_mau
+    for i in range(6):
+        c8.passo("corrige isto", i, turn_id="sessao:sessao:f8e7d6c5", api=i)
+    ev8 = c8.decididos()
+    com_erro = [e for e in ev8 if e.get("classificador_erro")]
+    com_falha = [e for e in ev8 if (e.get("classificador") or {}).get("falhou")]
+    check("o classificador corre uma vez num turno de 6 pedidos", chamadas["n"] == 1,
+          f"classificar={chamadas['n']}")
+    check("seis eventos no ledger", len(ev8) == 6, f"{len(ev8)}")
+    check("a falha aparece num so evento", len(com_erro) == 1, f"{len(com_erro)}")
+    check("`classificador.falhou` tambem so num", len(com_falha) == 1, f"{len(com_falha)}")
+    check("o primeiro evento e o que a carrega",
+          bool(ev8 and ev8[0].get("classificador_erro")),
+          str([bool(e.get("classificador_erro")) for e in ev8]))
+    check("os passos seguintes declaram-na como herdada",
+          all(e.get("classificador_erro_herdado") for e in ev8[1:]),
+          str([bool(e.get("classificador_erro_herdado")) for e in ev8]))
+    niveis8 = {e.get("nivel") for e in ev8}
+    check("a falha nao desestabiliza o nivel: heuristica pinada nos seis",
+          len(niveis8) == 1 and ev8[0].get("pin") == "novo", str(niveis8))
+
 
 def main() -> int:
     try:

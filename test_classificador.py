@@ -638,6 +638,47 @@ class TestLote(Base):
         self.assertNotIn("sem_efeito", r)
         self.assertIn("pessoal\x1finception\x1fmercury-3", am.estado()["falhas"])
 
+    def test_timeout_suspende_a_primeira(self):
+        """Um timeout suspende ao primeiro, nao ao terceiro.
+
+        O timeout e a falha mais cara: custa o `timeout_s` inteiro em latencia do
+        turno. Medido a 2026-11-03 com o timeout em 8 s, o perfil `pessoal` levou
+        quatro falhas em 45 s porque o disjuntor so abria a terceira — tres
+        esperas para ouvir o que a primeira ja tinha dito. A heuristica responde
+        em 0 ms, logo uma espera basta.
+        """
+        RESPOSTA["atraso"] = 2.5
+        self.addCleanup(RESPOSTA.__setitem__, "atraso", 0.0)
+        alvo = "pessoal\x1fdeepseek\x1fdeepseek-flash"
+        r = am.classificar(self.mensagens(),
+                           self.definicao(provider="deepseek", modelo="deepseek-flash",
+                                          timeout_s=1.0),
+                           lambda p, m: self.rota(), perfil="pessoal")
+        self.assertIsNone(r.get("nivel"))
+        self.assertIn("erro", r)
+        suspensos = am.estado()["alvos_suspensos"]
+        self.assertIn(alvo, suspensos, f"esperava {alvo} suspenso: {suspensos}")
+        self.assertGreater(suspensos[alvo], 200.0, suspensos)
+        # E a chamada seguinte nao paga nada: nem rede, nem espera.
+        inicio = time.monotonic()
+        r2 = am.classificar([{"role": "user", "content": "outro pedido"}],
+                            self.definicao(provider="deepseek", modelo="deepseek-flash",
+                                           timeout_s=1.0),
+                            lambda p, m: self.rota(), perfil="pessoal")
+        self.assertLess(time.monotonic() - inicio, 0.2, "o suspenso tem de ser imediato")
+        self.assertIsNone(r2)
+
+    def test_timeout_padrao_tem_margem_sobre_o_medido(self):
+        """O default tem de cobrir o p95 medido sem inflacionar a espera do turno.
+
+        Medido a 2026-11-03 no deepseek-flash: p50 1,5-2,9 s, 5,3 s sob contencao.
+        Abaixo de 10 s volta a falhar em pico; acima de 15 s e espera paga pelo
+        utilizador por uma decisao opcional (o classificador corre antes do
+        pedido do turno).
+        """
+        self.assertGreaterEqual(am.PADRAO["timeout_s"], 10.0, am.PADRAO["timeout_s"])
+        self.assertLessEqual(am.PADRAO["timeout_s"], 15.0, am.PADRAO["timeout_s"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

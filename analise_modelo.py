@@ -42,7 +42,15 @@ PADRAO: dict[str, Any] = {
     "activo": False,
     "provider": "",
     "modelo": "",
-    "timeout_s": 8.0,
+    # 8 s era margem de 1,5x sobre a latencia medida e falhava em pico. Medido a
+    # 2026-11-03 no deepseek-flash, mesmo prompt, mesmo `esforco`: p50 1,5-2,9 s
+    # e 5,3 s sob contencao (o classificador compete com o pedido grande do
+    # proprio turno no mesmo provider). 12 s da ~2,3x o p95 observado. Subir
+    # mais nao e gratis: o classificador corre ANTES do pedido do turno, logo
+    # este e o tempo que o utilizador espera por uma decisao opcional. Um
+    # timeout suspende de imediato (ver `_falhou`), o que limita o dano a uma
+    # espera de 12 s por cada 5 minutos.
+    "timeout_s": 12.0,
     # 12 tokens chegavam a um modelo que responde directamente e nao chegavam a
     # um de raciocinio: medido no deepseek-flash, os 12 tokens de saida eram
     # todos `reasoning_tokens` e o `content` vinha vazio. 320 deixa pensar e
@@ -884,9 +892,16 @@ def _indisponivel(alvo: str, base: dict[str, Any], detalhe: str, *,
 def _falhou(alvo: str, base: dict[str, Any], tipo: str, detalhe: str,
             *, chave: str = "", ttl_erro: float = _TTL_ERRO_S) -> dict[str, Any]:
     with _lock:
+        # Um timeout e a falha mais cara: custa o `timeout_s` inteiro em latencia
+        # do turno. Medido a 2026-11-03, 8 s de espera por tentativa davam quatro
+        # falhas em 45 s no perfil `pessoal` antes de o contador de tres chegar
+        # ao limite. Esperar tres vezes para concluir o que a primeira ja diz e
+        # pagar 24 s por nada: a heuristica responde em 0 ms e e o default
+        # declarado. Logo um timeout suspende a primeira.
+        esgotou = bool(re.search(r"timed?\s*out|timeout", tipo or "", re.I))
         n = _falhas.get(alvo, 0) + 1
         _falhas[alvo] = n
-        if n >= _FALHAS_PARA_SUSPENDER:
+        if esgotou or n >= _FALHAS_PARA_SUSPENDER:
             _suspensos[alvo] = time.monotonic() + _SUSPENSAO_S
             _falhas[alvo] = 0
     # O erro fica no valor devolvido: quem chama registra-o no ledger.
