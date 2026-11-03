@@ -39,6 +39,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -178,6 +179,22 @@ _ultima_decisao: dict[str, dict[str, Any]] = {}
 # texto — nunca o texto, para o ledger continuar sem conversa.
 _turno: dict[str, dict[str, Any]] = {}
 _TURNO_MAX = 500
+
+#: Identidade desta instancia do modulo. Uma recarga de plugins faz
+#: `sys.modules.pop` e reimporta, logo `_turno` nasce vazio a meio do que pode
+#: ser o mesmo turno. Sem marca, o evento desse pedido fica `pin: novo` e a
+#: prova aritmetica (`eventos - turnos == reutilizados`) falha por um em cada
+#: recarga — medido a 2026-11-03, passo 37 do turno `…5797c44f`.
+_INSTANCIA = uuid.uuid4().hex[:6]
+_inst_decidiu = False
+
+
+def _primeira_decisao_da_instancia() -> bool:
+    """Marca e devolve se esta e a primeira decisao desta instancia."""
+    global _inst_decidiu
+    antes = _inst_decidiu
+    _inst_decidiu = True
+    return not antes
 # Resultado do turno anterior, por sessao: alimenta o nivel do turno seguinte
 # (A). Guarda so o nivel efectivo, o finish_reason e os tokens de saida.
 _resultado: dict[str, dict[str, Any]] = {}
@@ -793,7 +810,7 @@ def middleware_llm_request(
             tarefa = str(pin.get("tarefa") or "")
             associada = pin.get("associada") or None
             base = {"perfil": perfil, "sessao": session_id, "nivel": nivel,
-                    "motor": _VERSAO_MOTOR,
+                    "motor": _VERSAO_MOTOR, "inst": _INSTANCIA,
                     "origem": pin.get("origem") or "",
                     "tarefa": tarefa, "score": None, "sinais": None,
                     "turno": identificador_turno, "passo": passo,
@@ -834,12 +851,20 @@ def middleware_llm_request(
                                    "score": None}
             nivel = decisao["nivel"] or ("leve" if associada else "")
             base = {"perfil": perfil, "sessao": session_id, "nivel": nivel,
-                    "motor": _VERSAO_MOTOR,
+                    "motor": _VERSAO_MOTOR, "inst": _INSTANCIA,
                     "origem": "tarefa" if associada else decisao["origem"],
                     "tarefa": tarefa, "score": decisao.get("score"),
                     "sinais": decisao.get("sinais"),
                     "turno": identificador_turno, "passo": passo,
                     "pin": "novo", "fonte_turno": fonte_turno}
+            primeira_da_instancia = _primeira_decisao_da_instancia()
+            if fixar_turno and passo > 1 and primeira_da_instancia:
+                # Nao e oscilacao do classificador: o store de pins vive na
+                # memoria do modulo e uma recarga apaga-o a meio do turno. A
+                # marca separa "perdi o pin" de "decidi outra vez", senao a
+                # prova aritmetica do pin acusa um turno instavel que nao
+                # existe. O nivel mantem-se o que a decisao der agora.
+                base["excecao"] = "recarga"
             if classificador:
                 base["classificador"] = classificador
             if classificador_erro:
