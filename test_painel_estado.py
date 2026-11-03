@@ -20,7 +20,7 @@ import importlib.util
 import json
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent
@@ -36,6 +36,17 @@ _spec.loader.exec_module(api)
 
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+
+def _ts(minutos_atras: float) -> str:
+    """Timestamp relativo ao agora: as fixtures nao podem envelhecer.
+
+    Estavam presas ao relogio de 2026-11-03 (10:00, 12:00, 11:29): a suite
+    ficava verde de manha e vermelha ao inicio da tarde, porque a regra dos
+    2 h declarava expirado o motivo que o teste dava como actual. Uma fixture
+    com data fixa mede a hora a que corre, nao a funcao.
+    """
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutos_atras)).isoformat()
+
 
 OK = 0
 FALHAS: list[str] = []
@@ -70,7 +81,7 @@ def test_conflito() -> None:
 def test_idade() -> None:
     verificar("idade: ts vazio -> None", api._idade_s("") is None)
     verificar("idade: ts ilegivel -> None", api._idade_s("nem-isto-e-data") is None)
-    idade = api._idade_s("2026-11-03T10:00:00+00:00")
+    idade = api._idade_s(_ts(60))
     verificar("idade: ts no passado -> positivo", idade is not None and idade > 0, str(idade))
     futuro = api._idade_s("2099-01-01T00:00:00+00:00")
     verificar("idade: nunca negativa", futuro == 0.0, str(futuro))
@@ -80,7 +91,7 @@ def test_decidir_rasto() -> None:
     deepseek = {"modo": "modelo", "provider": "deepseek", "modelo": "deepseek-flash", "esforco": "baixo"}
     inception = {"modo": "modelo", "provider": "inception", "modelo": "mercury-3", "esforco": "baixo"}
     leitura = {"provider": "deepseek", "modelo": "deepseek-flash", "lido": "alta", "ms": 1355,
-               "ts": "2026-11-03T11:23:22+00:00", "falhou": ""}
+               "ts": _ts(30), "falhou": ""}
 
     # (a) o caso do incidente: leitura de deepseek com config inception
     #     (motivo recente, para isolar o critério «outro classificador» da idade)
@@ -102,13 +113,13 @@ def test_decidir_rasto() -> None:
 
     # (c) config corrigida depois do erro: o erro antigo nao fica a assombrar
     valido, motivo, hist = api._decidir_rasto(
-        deepseek, leitura, "provider_indisponivel: antigo", "2026-11-03T10:00:00+00:00")
+        deepseek, leitura, "provider_indisponivel: antigo", _ts(90))
     verificar("corrigido: leitura posterior ao erro conta como estado", valido is True)
     verificar("corrigido: o motivo antigo desaparece", motivo == "")
 
     # (d) leitura anterior ao erro actual: nao serve de evidencia
     valido, motivo, hist = api._decidir_rasto(
-        deepseek, leitura, "provider_indisponivel: actual", "2026-11-03T12:00:00+00:00")
+        deepseek, leitura, "provider_indisponivel: actual", _ts(5))
     verificar("anterior ao erro: nao e estado", valido is False)
     verificar("anterior ao erro: motivo visivel", motivo.startswith("provider_indisponivel"))
     verificar("anterior ao erro: historico diz por que",
@@ -129,7 +140,7 @@ def test_decidir_rasto() -> None:
     #     (o caso real: provider declarado as 12:45, motivo das 11:29 no cartao)
     valido, motivo, hist = api._decidir_rasto(
         inception, None, "provider_indisponivel: Unknown provider 'inception'",
-        "2026-11-03T11:29:32+00:00", "2026-11-03T13:26:05+00:00")
+        _ts(60), _ts(10))
     verificar("motivo anterior a config: nao e estado", valido is False)
     verificar("motivo anterior a config: sai do detalhe corrente", motivo == "")
     verificar("motivo anterior a config: vai para historico datado",
@@ -140,7 +151,7 @@ def test_decidir_rasto() -> None:
     # (h) motivo sem config nova mas velho: passou tempo sem um turno que o confirme
     valido, motivo, hist = api._decidir_rasto(
         inception, None, "provider_indisponivel: Unknown provider 'inception'",
-        "2026-11-03T08:00:00+00:00", "2026-11-03T08:00:00+00:00")
+        _ts(180), _ts(180))
     verificar("motivo expirado: nao e estado", valido is False)
     verificar("motivo expirado: sai do detalhe corrente", motivo == "")
     verificar("motivo expirado: fica no historico",
@@ -149,7 +160,7 @@ def test_decidir_rasto() -> None:
     # (i) motivo recente e posterior a config: continua a ser estado, como deve
     valido, motivo, hist = api._decidir_rasto(
         inception, None, "provider_indisponivel: Unknown provider 'inception'",
-        datetime.now(timezone.utc).isoformat(), "2026-11-03T08:00:00+00:00")
+        datetime.now(timezone.utc).isoformat(), _ts(30))
     verificar("motivo recente: continua visivel como estado",
               valido is False and motivo.startswith("provider_indisponivel"))
 
