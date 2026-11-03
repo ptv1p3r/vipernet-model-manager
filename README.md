@@ -194,8 +194,15 @@ leitura.
 O host descobre painéis por `<plugins root>/<nome>/dashboard/manifest.json`; a cache
 de descoberta do processo do dashboard **não** se invalida sozinha quando aparece um
 painel novo — depois de instalar, reiniciar o contentor do dashboard (ou forçar
-`/api/dashboard/plugins/rescan`). Alterações ao `api.py` também só entram no
-arranque: o router é montado uma vez. A config do agente é lida a quente (TTL 5 s).
+`/api/dashboard/plugins/rescan`). Os ficheiros de `dist/` são servidos do disco a
+cada pedido: mudam com um refresh do browser, sem reiniciar nada (medido: sha256 do
+asset servido igual ao do ficheiro local). O `api.py` é outra história: entra quando
+o backend do painel carrega o módulo — no arranque do contentor e na recarga do
+plugin (`reload_gateway_plugins`, por perfil num gateway multiplexado). Não se
+distingue qual dos dois valeu por `curl`: `/api/plugins/<nome>/*` responde `401` do
+gate de sessão a pedidos de fora, com ou sem basic-auth, pelo que a verificação do
+backend se faz pelo caminho autenticado (o painel no browser) ou em processo, com o
+mesmo ficheiro. A config do agente é lida a quente (TTL 5 s).
 
 ### Identidade no cabeçalho (3.13.8)
 
