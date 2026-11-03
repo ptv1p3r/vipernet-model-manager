@@ -856,7 +856,8 @@
         h("span", { className: "vmm-mudo" },
           "  por linha: o classificador decide o nível (sem modelo decide a heurística) "
           + "e a estratégia decide como se escolhe o modelo dentro do nível — "
-          + "a associação de tarefa continua a ganhar às duas.")
+          + "a associação de tarefa continua a ganhar às duas."
+          + (props.versao ? " · painel " + props.versao : ""))
       ),
       linhas.map(function (perfil) {
         const bloco = blocoDe(cfg, perfil);
@@ -1001,7 +1002,7 @@
         .then(function () { setACarregar(false); });
     }, [limite]);
 
-    useEffect(function () { carregar(); }, [carregar]);
+    useEffect(function () { carregar(); carregarConfig(); }, [carregar]);
 
     function alternar(ambito, perfil, activo) {
       setAGravar(true);
@@ -1134,7 +1135,9 @@
           .then(function (r) {
             setConfigRev((r && r.rev) ? String(r.rev) : "");
             setMostrarEditor(false);
-            setConfigJSON("");
+            // Recarrega do servidor em vez de esvaziar: a seccao de
+            // classificador/estrategia continua a ler o texto.
+            carregarConfig();
             setErrosValidacao([]);
             setValidacaoOk("Configuração gravada com sucesso — o gestor já a lê");
             carregar();
@@ -1158,7 +1161,7 @@
 
     function fecharEditor() {
       setMostrarEditor(false);
-      setConfigJSON("");
+      // O texto NAO se apaga: a seccao de classificador/estrategia le-o sempre.
       setErrosValidacao([]);
       setValidacaoOk(null);
     }
@@ -1271,6 +1274,50 @@
         "✓ " + validacaoOk
       ) : null,
 
+      // A configuracao do classificador e da estrategia fica SEMPRE visivel:
+      // estava so dentro do editor e quem abria o painel nao a encontrava.
+      h(
+        Card,
+        { className: "vmm-card-classif" },
+        h(
+          CardContent,
+          { className: "vmm-card-content" },
+          h(SecaoClassificador, {
+            configJSON: configJSON,
+            // Carimbo de versao: se nao aparecer, o browser tem JS velho.
+            versao: (estado.plugin || {}).versao || estado.versao_painel || "",
+            // As opcoes vem do `/estado`, a mesma lista que a validacao aceita.
+            opcoes: ((estado.opcoes || {}).estrategia) || {},
+            onMudar: function (novo) {
+              setConfigJSON(novo);
+              // o texto mudou: o "validado" anterior deixa de ser verdade
+              setValidacaoOk(null);
+              setErrosValidacao([]);
+            },
+          }),
+          h(
+            "div",
+            { className: "vmm-editor-accoes" },
+            h(Button, {
+              size: "sm",
+              variant: validacaoOk ? "default" : "outline",
+              onClick: validarConfig,
+              disabled: aValidar,
+              className: validacaoOk ? "vmm-btn-ok" : undefined,
+              title: "Validar a configuração contra o schema, sem gravar",
+            }, aValidar ? "A validar…" : (validacaoOk ? "✓ Validado" : "Validar")),
+            h(Button, {
+              size: "sm",
+              variant: "default",
+              onClick: salvarConfig,
+              disabled: aGravar || !configJSON,
+            }, aGravar ? "A gravar…" : "Salvar"),
+            h("span", { className: "vmm-mudo" },
+              " grava só a configuração do gestor")
+          )
+        )
+      ),
+
       mostrarEditor && h(
         Card,
         { className: "vmm-card-editor" },
@@ -1286,18 +1333,6 @@
           h(
             "div",
             { className: "vmm-editor-corpo" },
-            h(SecaoClassificador, {
-              configJSON: configJSON,
-              // As opcoes de estrategia vem do `/estado`, a mesma lista que a
-              // validacao aceita. Sem elas o `select` nao teria o que mostrar.
-              opcoes: ((estado.opcoes || {}).estrategia) || {},
-              onMudar: function (novo) {
-                setConfigJSON(novo);
-                // o texto mudou: o "validado" anterior deixa de ser verdade
-                setValidacaoOk(null);
-                setErrosValidacao([]);
-              },
-            }),
             h("textarea", {
               value: configJSON,
               onChange: function (e) {
