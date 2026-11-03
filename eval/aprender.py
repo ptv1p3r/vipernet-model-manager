@@ -534,6 +534,39 @@ def kappa_fronteiras(a: list[dict], b: list[dict]) -> dict[str, Any]:
     return {"alta": alta, "baixa": baixa}
 
 
+def fronteiras_estaveis(fronteiras: dict[str, Any],
+                        historico: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Pior valor de cada corte entre esta corrida e a anterior.
+
+    Medido a 2026-11-02: a mesma fronteira `alta`, sobre os mesmos 90 casos do
+    gold e com o mesmo prompt, deu 0,734 numa medicao isolada e 0,5385 dentro do
+    ciclo. Um juiz que oscila assim nao tem autoridade por uma corrida boa — e
+    exigi-lo custa zero, porque a corrida anterior ja esta no historico. Sem
+    historico utilizavel, vale a corrida actual.
+    """
+    anterior = None
+    for registo in reversed(historico or []):
+        f = registo.get("fronteiras")
+        if isinstance(f, dict) and f:
+            anterior = f
+            break
+    if not anterior:
+        return fronteiras, {"comparado": False, "motivo": "sem corrida anterior com fronteiras"}
+    pior: dict[str, Any] = {}
+    for nome, valor in fronteiras.items():
+        antes = anterior.get(nome) if isinstance(anterior, dict) else None
+        if not isinstance(antes, dict):
+            pior[nome] = valor
+            continue
+        pior[nome] = dict(valor)
+        pior[nome]["kappa"] = min(float(valor.get("kappa", 0.0)),
+                                  float(antes.get("kappa", 0.0)))
+        pior[nome]["kappa_corrida_anterior"] = antes.get("kappa")
+    return pior, {"comparado": True,
+                  "anterior": {k: v.get("kappa") for k, v in anterior.items()
+                               if isinstance(v, dict)}}
+
+
 def portoes(k: dict[str, Any], antes: dict[str, Any], depois: dict[str, Any],
             kappa_minimo: float, ganho_minimo: float,
             fronteiras: dict[str, Any] | None = None,
@@ -776,6 +809,21 @@ def _relatorio(dados: dict[str, Any]) -> str:
     L.append(f"- portoes: {'PASS' if dados['passou'] else 'FALHOU'}")
     for r in dados["razoes"]:
         L.append(f"  - {r}")
+    fr = dados.get("fronteiras") or {}
+    if fr:
+        L.append("\n## Autoridade do juiz por corte\n")
+        L.append("| corte | kappa | operacional | n | kappa na corrida anterior |")
+        L.append("|---|---|---|---|---|")
+        op = dados.get("fronteiras_operacionais") or {}
+        for nome in ("alta", "baixa"):
+            v = fr.get(nome) or {}
+            L.append(f"| {nome} | {v.get('kappa')} | {'sim' if op.get(nome) else 'nao'} "
+                     f"| {v.get('n')} | {v.get('kappa_corrida_anterior', '—')} |")
+        comp = dados.get("comparacao_corridas") or {}
+        if comp.get("comparado"):
+            L.append(f"\nVale o **pior** das duas ultimas corridas. Anterior: {comp.get('anterior')}")
+        else:
+            L.append(f"\nSem corrida anterior comparavel ({comp.get('motivo')}).")
     if dados.get("pesos"):
         L.append("\n## Pesos\n")
         L.append("| sinal | antes | depois |")
@@ -937,8 +985,24 @@ def main() -> int:
             operacionais = fronteiras_operacionais(cfg_viva)
         except Exception:  # noqa: BLE001 — sem config legivel, exige-se tudo
             operacionais = {"alta": True, "baixa": True}
+        # O juiz oscila entre corridas: vale o pior valor das duas ultimas, e
+        # usar o historico ja escrito nao custa chamadas nenhumas.
+        anteriores: list[dict[str, Any]] = []
+        if HISTORICO.exists():
+            for linha in HISTORICO.read_text(encoding="utf-8").splitlines():
+                linha = linha.strip()
+                if not linha:
+                    continue
+                try:
+                    anteriores.append(json.loads(linha))
+                except json.JSONDecodeError:
+                    continue
+        estaveis, comparacao = fronteiras_estaveis(fronteiras, anteriores)
         resultado["fronteiras"] = fronteiras
+        resultado["fronteiras_estaveis"] = estaveis
         resultado["fronteiras_operacionais"] = operacionais
+        resultado["comparacao_corridas"] = comparacao
+        fronteiras = estaveis
     passou, razoes = portoes(k, antes_val, depois_val,
                              args.kappa_minimo, args.ganho_minimo,
                              fronteiras, operacionais)
@@ -981,6 +1045,8 @@ def main() -> int:
             "kappa": k, "antes": resultado["antes"]["macro_f1"],
             "depois": resultado["depois"]["macro_f1"], "casos": len(casos),
             "passou": bool(passou), "razoes": razoes,
+            "fronteiras": resultado.get("fronteiras_estaveis"),
+            "fronteiras_operacionais": resultado.get("fronteiras_operacionais"),
             "variante": variante_vencedora}
 
     estado = "promovido" if (args.promover and passou) else "relatorio"
@@ -996,6 +1062,9 @@ def main() -> int:
              "colheita": colheita, "kappa": k, "passou": passou, "razoes": razoes,
              "pesos": pesos_novos, "mudancas": resultado["mudancas"],
              "antes": resultado["antes"], "depois": resultado["depois"],
+             "fronteiras": meta["fronteiras"],
+             "fronteiras_operacionais": meta["fronteiras_operacionais"],
+             "comparacao_corridas": resultado.get("comparacao_corridas"),
              "abc": abc, "falhas": falhas, "aplicado": aplicado, "estado": estado}
     nome = dt.datetime.now().strftime("%Y%m%dT%H%M%S")
     (RELATORIOS / f"ciclo-{nome}.md").write_text(_relatorio(dados), encoding="utf-8")

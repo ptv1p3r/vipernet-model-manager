@@ -549,5 +549,32 @@ class TestFronteirasOperacionais(unittest.TestCase):
         self.assertTrue(op["baixa"])
 
 
+class TestFronteirasEstaveis(unittest.TestCase):
+    """Um juiz que oscila nao ganha autoridade por uma corrida boa."""
+
+    def test_sem_historico_usa_a_corrida_actual(self):
+        f = {"alta": {"n": 30, "kappa": 0.80}, "baixa": {"n": 30, "kappa": 0.70}}
+        saida, comp = A.fronteiras_estaveis(f, [])
+        self.assertEqual(saida["alta"]["kappa"], 0.80)
+        self.assertFalse(comp["comparado"])
+
+    def test_pior_valor_entre_as_duas_corridas(self):
+        f = {"alta": {"n": 30, "kappa": 0.80}, "baixa": {"n": 30, "kappa": 0.70}}
+        hist = [{"estado": "relatorio", "fronteiras": {"alta": {"n": 30, "kappa": 0.54},
+                                                       "baixa": {"n": 30, "kappa": 0.90}}}]
+        saida, comp = A.fronteiras_estaveis(f, hist)
+        self.assertEqual(saida["alta"]["kappa"], 0.54)
+        self.assertEqual(saida["baixa"]["kappa"], 0.70)
+        self.assertTrue(comp["comparado"])
+        self.assertEqual(saida["alta"]["kappa_corrida_anterior"], 0.54)
+
+    def test_ignora_registos_sem_fronteiras(self):
+        f = {"alta": {"n": 30, "kappa": 0.80}}
+        hist = [{"estado": "promovido"}, {"estado": "relatorio", "fronteiras": {"alta": {"n": 30, "kappa": 0.62}}}]
+        saida, comp = A.fronteiras_estaveis(f, hist)
+        self.assertEqual(saida["alta"]["kappa"], 0.62)
+        self.assertTrue(comp["comparado"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
