@@ -1259,6 +1259,12 @@ def pos_resposta(
             "finish_reason": finish_reason,
             "api_mode": api_mode or "",
             "acesso": acesso or "desconhecido",
+            # O motor e a instancia vao tambem na linha da resposta: quem le o
+            # registo procura "que modelo respondeu e com que codigo", e ter de
+            # juntar com o evento de decisao pelo `turno` para saber a versao
+            # fazia a linha parecer de outro plugin.
+            "motor": _VERSAO_MOTOR,
+            "inst": _INSTANCIA,
         }
         if api_request_id is not None:
             entrada["request_id"] = api_request_id
