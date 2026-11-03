@@ -919,9 +919,12 @@
       linhas.map(function (perfil) {
         const est = estrategiaDe(cfg, perfil);
         const estGlobal = estrategiaDe(cfg, null);
+        // Sem o prefixo "estratégia: " — a linha ja diz de que perfil e a
+        // estrategia, e o prefixo empurrava o texto para fora do select
+        // ("estratégia: herdar do global (rotaç…").
         const rotuloModo = {
-          rodizio: "estratégia: rotação",
-          prioridade: "estratégia: prioridade (primeira da lista)",
+          rodizio: "rotação",
+          prioridade: "prioridade (primeira da lista)",
         };
         // forma curta, para o rotulo "herdar do global (rotação)".
         const curtoModo = { rodizio: "rotação", prioridade: "prioridade" };
@@ -929,8 +932,8 @@
           return { valor: o.valor, rotulo: rotuloModo[o.valor] || o.rotulo || o.valor };
         });
         const primeira = perfil === null
-          ? [{ valor: "", rotulo: "estratégia: não declarada" }]
-          : [{ valor: "", rotulo: "estratégia: herdar do global"
+          ? [{ valor: "", rotulo: "não declarada" }]
+          : [{ valor: "", rotulo: "herdar do global"
                 + (estGlobal && estGlobal.modo ? " (" + (curtoModo[estGlobal.modo] || estGlobal.modo) + ")" : "") }];
         const porModo = (est && est.modo) || (perfil === null ? "" : (estGlobal && estGlobal.modo) || "");
         return h("div", { key: perfil === null ? "@global" : perfil, className: "vmm-classif-linha vmm-linha-estrategia" },
