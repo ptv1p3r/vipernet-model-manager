@@ -301,11 +301,14 @@ class TestFailOpen(Base):
         self.assertIn("erro", r)
 
     def test_credencial_que_falha(self):
+        """Credencial ausente e config, nao avaria: `sem_efeito`, nao `erro`."""
         def falha(_p, _m):
             raise RuntimeError("provider sem credencial no perfil")
         r = am.classificar(self.mensagens(), self.definicao(), falha)
         self.assertIsNone(r.get("nivel"))
-        self.assertIn("sem credencial", r["erro"])
+        self.assertEqual(r["sem_efeito"], "credencial_ausente")
+        self.assertIn("credencial", r["motivo"])
+        self.assertNotIn("erro", r)
 
     def test_disjuntor_suspende_apos_tres(self):
         def falha(_p, _m):
@@ -588,6 +591,52 @@ class TestLote(Base):
         r = am.classificar_lote(["a"], None, lambda p, m: self.rota())
         self.assertEqual(r["niveis"], [None])
         self.assertEqual(PEDIDOS, [])
+
+    # -- config errada nao e avaria ----------------------------------------
+    def test_provider_inexistente_e_sem_efeito_e_nao_falhou(self):
+        """`AuthError` do core -> `sem_efeito`, suspensao longa, zero `falhou`.
+
+        Medido a 2026-11-03: o perfil `pessoal` herdava um classificador global
+        com o provider `inception`, que so existe em `default` e `trabalho`.
+        Cada pedido escrevia um `AuthError` no cartao (62 eventos em 82 s) e o
+        utilizador via um ⚠ de avaria onde havia config errada.
+        """
+        def resolver_mau(provider, modelo):
+            raise RuntimeError("AuthError: Unknown provider 'inception'. Check 'hermes model'")
+        am.limpar_cache()
+        d = dict(self.definicao(provider="inception", modelo="mercury-3"))
+        r = am.classificar([{"role": "user", "content": "ola"}], d, resolver_mau, perfil="pessoal")
+        self.assertIsNotNone(r)
+        self.assertEqual(r["sem_efeito"], "provider_indisponivel")
+        self.assertNotIn("erro", r)
+        self.assertFalse((r.get("classificador") or {}).get("falhou"))
+        susp = am.estado()["alvos_suspensos"]
+        alvo = "pessoal\x1finception\x1fmercury-3"
+        self.assertIn(alvo, susp)
+        self.assertGreater(susp[alvo], 3500.0)   # ~1 h, nao os 300 s de avaria
+        self.assertEqual(am.estado()["falhas"], {})
+
+    def test_credencial_ausente_tambem_e_sem_efeito(self):
+        def resolver_mau(provider, modelo):
+            raise RuntimeError("no credential for provider 'x'")
+        am.limpar_cache()
+        r = am.classificar([{"role": "user", "content": "ola"}],
+                           dict(self.definicao(provider="inception", modelo="mercury-3")),
+                           resolver_mau, perfil="trabalho")
+        self.assertEqual(r["sem_efeito"], "credencial_ausente")
+        self.assertNotIn("erro", r)
+
+    def test_avaria_transitoria_continua_a_ser_falha(self):
+        """Um 5xx nao e config: continua a contar para a suspensao de 300 s."""
+        def resolver_mau(provider, modelo):
+            raise RuntimeError("connection reset by peer")
+        am.limpar_cache()
+        r = am.classificar([{"role": "user", "content": "ola"}],
+                           dict(self.definicao(provider="inception", modelo="mercury-3")),
+                           resolver_mau, perfil="pessoal")
+        self.assertTrue(r.get("erro"))
+        self.assertNotIn("sem_efeito", r)
+        self.assertIn("pessoal\x1finception\x1fmercury-3", am.estado()["falhas"])
 
 
 if __name__ == "__main__":

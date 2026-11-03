@@ -213,6 +213,7 @@ def _resumo_por_perfil(
                         "respostas": 0,
                         "classificador": None,
                         "classificador_erro": "",
+                        "classificador_motivo": "",
                         "classif_leituras": 0,
                         "classif_falhas": 0,
                         "classif_ultima_falha": "",
@@ -235,6 +236,8 @@ def _resumo_por_perfil(
                     }
                 if not reg["classificador_erro"] and ev.get("classificador_erro"):
                     reg["classificador_erro"] = str(ev["classificador_erro"])
+                if not reg["classificador_motivo"] and ev.get("classificador_motivo"):
+                    reg["classificador_motivo"] = str(ev["classificador_motivo"])
                 # Taxa do classificador: um erro isolado nao e o mesmo que um
                 # modelo a falhar metade das vezes, e o mesmo `ts` aparece em
                 # varios eventos do turno (troca, sem_troca, resposta) — conta-se
@@ -324,6 +327,10 @@ def estado() -> dict[str, Any]:
                 # ao lado de um rasto bom faz o cartao mentir.
                 "erro": (resumo.get("classificador_erro") or "")
                         if (resumo.get("classificador") or {}).get("falhou") else "",
+                # Config errada nao e aviso de avaria: o provider nao existe no
+                # perfil e o classificador nao decide ate a config mudar. O
+                # cartao mostra-o como facto, nao como ⚠.
+                "motivo": resumo.get("classificador_motivo") or "",
                 "taxa": {
                     "leituras": resumo.get("classif_leituras", 0),
                     "falhas": resumo.get("classif_falhas", 0),

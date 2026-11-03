@@ -836,6 +836,7 @@ def middleware_llm_request(
             # rota declarada. Falha -> heuristica, com rasto no ledger.
             classificador: dict[str, Any] | None = None
             classificador_erro = ""
+            classificador_motivo = ""
             if not associada and decisao.get("origem") != "marcador":
                 definicao = _analise_modelo_mod.efectiva(analise)
                 if definicao is not None:
@@ -846,6 +847,12 @@ def middleware_llm_request(
                     classificador = tudo.get("classificador")
                     if tudo.get("erro"):
                         classificador_erro = str(tudo["erro"])
+                    elif tudo.get("sem_efeito"):
+                        # Config errada (provider inexistente no perfil, ou
+                        # credencial ausente). Nao e avaria: o cartao diz
+                        # "sem efeito" com o motivo, e o turno segue pela
+                        # heuristica sem alarme.
+                        classificador_motivo = str(tudo.get("motivo") or tudo["sem_efeito"])
                     elif tudo.get("nivel"):
                         decisao = {**decisao, "nivel": tudo["nivel"], "origem": "modelo",
                                    "score": None}
@@ -869,6 +876,8 @@ def middleware_llm_request(
                 base["classificador"] = classificador
             if classificador_erro:
                 base["classificador_erro"] = classificador_erro
+            if classificador_motivo:
+                base["classificador_motivo"] = classificador_motivo
             if not nivel:
                 _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
                                  origem=base["origem"], acesso="", entrada="")

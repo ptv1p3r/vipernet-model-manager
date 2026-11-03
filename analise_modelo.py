@@ -92,6 +92,21 @@ _MAX_TOKENS_MIN, _MAX_TOKENS_MAX = 2, 4096
 _MAX_TOKENS_ANTIGO = 12
 _FALHAS_PARA_SUSPENDER = 3
 _SUSPENSAO_S = 300.0
+#: Um provider que nao existe no perfil servido nao e uma falha transitoria: e
+#: config errada, e repetir nao a cura. Medido a 2026-11-03: o perfil `pessoal`
+#: herdava um classificador global que nomeava o provider `inception`, que so
+#: esta declarado em `default` e `trabalho`; cada pedido gastava tres tentativas
+#: e escrevia um `AuthError` no cartao, 62 eventos em 82 s. Suspender por uma
+#: hora (e nao 300 s) faz o erro aparecer uma vez e calar-se ate alguem corrigir
+#: a config — que e a accao que o resolve.
+_SUSPENSAO_INDISPONIVEL_S = 3600.0
+#: Como se reconhece um provider indisponivel na excepcao que o core levanta.
+#: O core embrulha o `AuthError` num `RuntimeError`, logo o tipo nao serve:
+#: decide-se pela mensagem, que e o unico sinal que atravessa a camada.
+_RE_INDISPONIVEL = re.compile(
+    r"unknown provider|no such provider|provider .{0,40}not (?:found|configured|available)"
+    r"|AuthError|no credential|sem credencial", re.I)
+
 #: Piso de `max_tokens` quando o classificador declara esforco: o raciocinio sai
 #: do mesmo orcamento e 320 tokens podem ser todos gastos a pensar. 1200 tambem
 #: nao chegava: medido a 2026-11-03, `deepseek-v4-pro` gastou os 1200 a pensar e
@@ -672,7 +687,13 @@ def classificar(
         return _falhou(alvo, base, f"HTTP {exc.codigo}", exc.detalhe[:200],
                        chave=chave, ttl_erro=ttl_erro)
     except Exception as exc:  # noqa: BLE001 - fail-open sempre
-        return _falhou(alvo, base, type(exc).__name__, str(exc)[:200], chave=chave, ttl_erro=ttl_erro)
+        detalhe = str(exc)[:200]
+        # Config errada nao e avaria: um provider que nao existe no perfil (ou
+        # uma credencial que falta) nao melhora por ser retentado. Vai por um
+        # caminho proprio, com suspensao de uma hora e sem `falhou` no cartao.
+        if _RE_INDISPONIVEL.search(f"{type(exc).__name__}: {detalhe}"):
+            return _indisponivel(alvo, base, detalhe, chave=chave, ttl_erro=ttl_erro)
+        return _falhou(alvo, base, type(exc).__name__, detalhe, chave=chave, ttl_erro=ttl_erro)
     uso = resposta["json"].get("usage") if isinstance(resposta["json"], dict) else None
     uso = uso if isinstance(uso, dict) else {}
     saida = {
@@ -824,6 +845,39 @@ def _ler_lote(payload: dict[str, Any], n: int) -> list[str | None]:
             canonico = _canonico(str(valor or ""))
             if canonico in NIVEIS:
                 saida[indice] = canonico
+    return saida
+
+
+def _indisponivel(alvo: str, base: dict[str, Any], detalhe: str, *,
+                  chave: str = "", ttl_erro: float = _TTL_ERRO_S) -> dict[str, Any]:
+    """Provider inexistente no perfil: `sem_efeito`, nao `falhou`.
+
+    A distincao importa porque o cartao do perfil le `falhou` como aviso de
+    avaria e `sem_efeito` como "nao decide, e porquê". Um `AuthError` por
+    config errada apresentado como avaria ensina o utilizador a ignorar o
+    aviso — e depois o aviso que interessa tambem e ignorado.
+    """
+    with _lock:
+        _suspensos[alvo] = time.monotonic() + _SUSPENSAO_INDISPONIVEL_S
+        _falhas.pop(alvo, None)
+    motivos = {
+        "provider_indisponivel": "o provider nao existe no perfil servido",
+    }
+    chave_motivo = "provider_indisponivel" if re.search(
+        r"unknown provider|no such provider", detalhe, re.I) else "credencial_ausente"
+    saida = {
+        "sem_efeito": chave_motivo,
+        "motivo": f"{chave_motivo}: {motivos.get(chave_motivo, 'sem credencial utilizavel no perfil')}"
+                  f" — {detalhe}"[:300],
+        "classificador": {**base, "indisponivel": True, "motivo": chave_motivo,
+                          "detalhe": detalhe[:200]},
+        "origem": "modelo_indisponivel",
+    }
+    if chave and ttl_erro > 0:
+        with _lock:
+            _cache_erro[chave] = (time.monotonic() + ttl_erro, saida)
+            if len(_cache_erro) > 500:
+                _cache_erro.clear()
     return saida
 
 

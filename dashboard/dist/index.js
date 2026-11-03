@@ -153,6 +153,10 @@
     // assombrar um classificador que voltou a acertar (foi medido: 149 leituras
     // boas e 16 falhas no mesmo modelo, intermitente).
     const alertaBruto = c.modo === "modelo" && rasto.falhou ? (a.erro || "falhou") : "";
+    // Provider inexistente no perfil (ou credencial ausente) nao e avaria: o
+    // classificador esta declarado mas nao consegue decidir. Mostra-se como
+    // facto no detalhe, sem o ⚠ reservado a falhas intermitentes.
+    const motivoConfig = c.modo === "modelo" && !alertaBruto ? String(a.motivo || "") : "";
 
     if (c.modo === "modelo") {
       const onde = c.origem === "proprio" ? "próprio do perfil" : "herdado do global";
@@ -162,6 +166,7 @@
       // nao vale um chip. `texto` e uma escolha, e essa ve-se.
       if (c.formato_json && c.formato_json !== "auto") extra.push("formato " + c.formato_json);
       extra.push(onde);
+      if (motivoConfig) extra.push("sem efeito — " + motivoConfig);
       if (rasto.lido) {
         extra.push("leu " + rasto.lido + (rasto.ms ? " em " + Math.round(rasto.ms) + " ms" : ""));
       }
