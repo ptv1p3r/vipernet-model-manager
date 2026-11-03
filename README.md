@@ -740,6 +740,77 @@ nenhum texto da conversa é guardado. Regressão: `python3 test_tarefas.py`.
 Os identificadores de modelo do exemplo são os da config existente: estes
 testes offline não provam disponibilidade nem resposta real do provider.
 
+## Superfícies de sessão (3.16.0)
+
+A superfície é o **contexto** que o core já entrega ao middleware
+(`platform`): `cron`, `api_server`, `cli`, `whatsapp`, `telegram`, `discord`,
+`subagent`, `tui`, `desktop`, `oneshot`. Não se adivinha por palavras — e é por
+isso que é o critério mais fiável dos três.
+
+Medição que justifica não usar `tarefa` para isto: a palavra "cron" aparece em
+**33 371 de 435 155 mensagens (7,7%)** do histórico, logo uma regra por `termos`
+dispararia em "cronologia" e "crontab". E **59% (273 de 464)** das execuções
+`cron` caíam em `alta` sem ninguém a olhar.
+
+**Prioridade:** marcador explícito na mensagem (`complexidade: alta`) >
+superfície > associação de tarefa > análise de complexidade. A superfície é
+determinística; a tarefa é adivinhada; a análise é estimada.
+
+```json
+{
+  "analise": {
+    "superficies": {
+      "cron":       { "entrada": "deepseek-flash" },
+      "api_server": { "nivel": "media" },
+      "cli":        { "provider": "deepseek", "modelo": "deepseek-flash" }
+    }
+  }
+}
+```
+
+Só **três** formas de regra são aceites na gravação:
+
+| Forma | Efeito |
+|---|---|
+| `{"entrada": "<id do catálogo>"}` | preferida: `acesso`, `esforco` e limites vêm do catálogo — um só sítio de verdade |
+| `{"provider": "...", "modelo": "..."}` | atalho; exige que o par exista no catálogo do perfil |
+| `{"nivel": "leve\|media\|alta"}` | fixa o nível e deixa o catálogo escolher a entrada |
+
+Qualquer outra forma é **recusada no save**, com o nome da superfície e do id.
+Uma regra que aponte para uma entrada que o perfil não tem também é recusada:
+resolveria para nada e o turno cairia na análise em silêncio.
+
+`superficies` vive em `analise` (global, herdado por todos os perfis) ou em
+`perfis.<perfil>.analise.superficies` (sobrepõe). Um perfil anula uma regra
+herdada com `{"activo": false}` sem a apagar do global. Só se grava a cópia do
+perfil quando difere do global.
+
+Uma regra com `entrada` fixada é uma **ordem**, não uma preferência: só cede a
+capacidade (`excecao: capacidade`) ou a uma rota que falhou há menos de 120 s
+(`excecao: rota`). Ambos ficam no ledger como `excecao_motivo:
+superficie:<nome>:<motivo>` — sem isso parecia que a regra nunca disparava.
+
+```sh
+vmm superficie list                 # todos os perfis, com a origem de cada regra
+vmm superficie list default
+vmm superficie add default cron entrada:deepseek-flash
+vmm superficie add pessoal cli nivel:leve
+vmm superficie rm default cron
+```
+
+`vmm superficie add` aceita `entrada:<id>`, `nivel:<leve|media|alta>` ou
+`provider/modelo`. O painel mostra as regras no cartão do perfil com a marca
+`· global` quando são herdadas.
+
+**Registo:** cada evento de troca leva `superficie`, `superficie_fonte`
+(`kwarg` ou `agente`) e — quando a regra dispara — `origem: "superficie"`.
+O campo `plataforma_kw` guarda o que o core entregou, para distinguir «não há
+regra» de «o kwarg não chegou». Diagnóstico opt-in com `VMM_DEBUG_SUP=1`
+escreve `debug-sup.jsonl` no directório do plugin.
+
+Regressão: `python3 test_superficies.py` (30 verificações, quatro grupos:
+validador, gravação, herança e prioridade).
+
 ## CLI `vmm`
 
 ```
