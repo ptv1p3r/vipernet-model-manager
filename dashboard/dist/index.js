@@ -801,15 +801,38 @@
     return novo;
   }
 
+  // ---- blocos: complexidade e estrategia --------------------------------
+  // Sao duas decisoes diferentes e passam a ter dois blocos diferentes: o
+  // classificador decide o NIVEL do turno; a estrategia decide COMO se escolhe
+  // o modelo dentro desse nivel. Numa so linha liam-se como uma coisa so, e
+  // quem vinha configurar uma encontrava a outra a mistura.
+  // As duas escrevem no mesmo `configJSON`, que continua a ser a unica fonte
+  // de verdade: o "Salvar" do editor e o unico que grava.
+  function linhasDe(cfg) {
+    return [null].concat(Object.keys(cfg.perfis || {}).sort());
+  }
+
+  function tituloBloco(titulo, descricao) {
+    return h("div", { className: "vmm-bloco-titulo" },
+      h("strong", null, titulo),
+      descricao ? h("span", { className: "vmm-mudo" }, " " + descricao) : null);
+  }
+
+  function origemDaEstrategia(cfg, perfil) {
+    if (perfil === null) return null;
+    return estrategiaDe(cfg, perfil) ? " · próprio" : " · herdado do global";
+  }
+
   function SecaoClassificador(props) {
     const cfg = lerJSON(props.configJSON);
     if (!cfg) {
       return h("div", { className: "vmm-classif" },
-        h("div", { className: "vmm-mudo" }, "Classificador por modelo: corrija o JSON para poder editar aqui."));
+        h("div", { className: "vmm-mudo" },
+          "Complexidade e estratégia: corrija o JSON para poder editar aqui."));
     }
     const pares = paresModelo(cfg);
     const globalBloco = blocoDe(cfg, null);
-    const linhas = [null].concat(Object.keys(cfg.perfis || {}).sort());
+    const linhas = linhasDe(cfg);
     // Listas fechadas de estrategia vindas do backend: a mesma lista que o
     // `gestor` aceita, nunca uma copia escrita aqui.
     const opcoesEst = props.opcoes || {};
@@ -850,15 +873,10 @@
       aplicar(perfil, novo);
     }
 
-    return h("div", { className: "vmm-classif" },
-      h("div", { className: "vmm-classif-titulo" },
-        h("strong", null, "Complexidade e estratégia"),
-        h("span", { className: "vmm-mudo" },
-          "  por linha: o classificador decide o nível (sem modelo decide a heurística) "
-          + "e a estratégia decide como se escolhe o modelo dentro do nível — "
-          + "a associação de tarefa continua a ganhar às duas."
-          + (props.versao ? " · painel " + props.versao : ""))
-      ),
+    // ---- bloco 1: complexidade ------------------------------------------
+    const blocoComplexidade = h("div", { className: "vmm-bloco", key: "complexidade" },
+      tituloBloco("Complexidade",
+        "quem decide o nível de cada turno: um modelo classificador ou a heurística."),
       linhas.map(function (perfil) {
         const bloco = blocoDe(cfg, perfil);
         const modo = !bloco ? "herdar" : (bloco.activo ? "ligado" : "desligado");
@@ -913,50 +931,7 @@
             [["auto", "formato: JSON automático"], ["on", "formato: JSON obrigatório"],
              ["off", "formato: texto"]]
               .map(function (o) { return h("option", { key: o[0], value: o[0] }, o[1]); })
-          ) : null,
-          // ---- estrategia (na mesma linha: e a mesma decisao de rota) ----
-          (function () {
-            const est = estrategiaDe(cfg, perfil);
-            const estGlobal = estrategiaDe(cfg, null);
-            const rotuloModo = {
-              rodizio: "estratégia: rotação",
-              prioridade: "estratégia: prioridade (primeira da lista)",
-            };
-            // forma curta, para o rotulo "herdar do global (rotação)".
-            const curtoModo = { rodizio: "rotação", prioridade: "prioridade" };
-            const opcoesModo = modosEst.map(function (o) {
-              return { valor: o.valor, rotulo: rotuloModo[o.valor] || o.rotulo || o.valor };
-            });
-            const primeira = perfil === null
-              ? [{ valor: "", rotulo: "estratégia: não declarada" }]
-              : [{ valor: "", rotulo: "estratégia: herdar do global"
-                    + (estGlobal && estGlobal.modo ? " (" + (curtoModo[estGlobal.modo] || estGlobal.modo) + ")" : "") }];
-            const porModo = (est && est.modo) || (perfil === null ? "" : (estGlobal && estGlobal.modo) || "");
-            return [
-              h(Seletor, {
-                key: "est-modo",
-                rotulo: "estratégia de " + (perfil === null ? "todos os perfis" : perfil),
-                valor: est ? est.modo || "" : "",
-                opcoes: primeira.concat(opcoesModo),
-                onChange: function (v) {
-                  aplicarEstrategia(perfil, v ? { modo: v } : null, !v);
-                },
-              }),
-              h(Seletor, {
-                key: "est-por",
-                rotulo: "rotação de " + (perfil === null ? "todos os perfis" : perfil),
-                valor: est ? est.por || "" : "",
-                opcoes: [{ valor: "", rotulo: "rotação: por omissão (sessão)" }].concat(
-                  porEst.map(function (o) { return { valor: o.valor, rotulo: "rotação: " + (o.rotulo || o.valor) }; })
-                ),
-                // `por` so governa a rotacao: em `prioridade` um select activo
-                // que nao faz nada e uma armadilha.
-                disabled: porModo === "prioridade",
-                title: "Só se aplica à rotação",
-                onChange: function (v) { aplicarEstrategia(perfil, v ? { por: v } : null, false); },
-              }),
-            ];
-          })()
+          ) : null
         );
       }),
       h("datalist", { id: "vmm-modelos" },
@@ -966,6 +941,67 @@
           return h("option", { key: "m" + p.provider + p.modelo, value: p.modelo,
                                label: p.provider });
         }))
+    );
+
+    // ---- bloco 2: estrategia --------------------------------------------
+    const blocoEstrategia = h("div", { className: "vmm-bloco", key: "estrategia" },
+      tituloBloco("Estratégia",
+        "com o nível decidido, como se escolhe o modelo dentro dele."),
+      linhas.map(function (perfil) {
+        const est = estrategiaDe(cfg, perfil);
+        const estGlobal = estrategiaDe(cfg, null);
+        const rotuloModo = {
+          rodizio: "estratégia: rotação",
+          prioridade: "estratégia: prioridade (primeira da lista)",
+        };
+        // forma curta, para o rotulo "herdar do global (rotação)".
+        const curtoModo = { rodizio: "rotação", prioridade: "prioridade" };
+        const opcoesModo = modosEst.map(function (o) {
+          return { valor: o.valor, rotulo: rotuloModo[o.valor] || o.rotulo || o.valor };
+        });
+        const primeira = perfil === null
+          ? [{ valor: "", rotulo: "estratégia: não declarada" }]
+          : [{ valor: "", rotulo: "estratégia: herdar do global"
+                + (estGlobal && estGlobal.modo ? " (" + (curtoModo[estGlobal.modo] || estGlobal.modo) + ")" : "") }];
+        const porModo = (est && est.modo) || (perfil === null ? "" : (estGlobal && estGlobal.modo) || "");
+        return h("div", { key: perfil === null ? "@global" : perfil, className: "vmm-classif-linha vmm-linha-estrategia" },
+          h("span", { className: "vmm-classif-nome" },
+            (perfil === null ? "global" : perfil),
+            h("span", { className: "vmm-mudo" },
+              perfil === null ? " · todos os perfis" : origemDaEstrategia(cfg, perfil))
+          ),
+          h(Seletor, {
+            key: "est-modo",
+            rotulo: "estratégia de " + (perfil === null ? "todos os perfis" : perfil),
+            valor: est ? est.modo || "" : "",
+            opcoes: primeira.concat(opcoesModo),
+            onChange: function (v) {
+              aplicarEstrategia(perfil, v ? { modo: v } : null, !v);
+            },
+          }),
+          h(Seletor, {
+            key: "est-por",
+            rotulo: "rotação de " + (perfil === null ? "todos os perfis" : perfil),
+            valor: est ? est.por || "" : "",
+            opcoes: [{ valor: "", rotulo: "rotação: por omissão (sessão)" }].concat(
+              porEst.map(function (o) { return { valor: o.valor, rotulo: "rotação: " + (o.rotulo || o.valor) }; })
+            ),
+            // `por` so governa a rotacao: em `prioridade` um select activo
+            // que nao faz nada e uma armadilha.
+            disabled: porModo === "prioridade",
+            title: "Só se aplica à rotação",
+            onChange: function (v) { aplicarEstrategia(perfil, v ? { por: v } : null, false); },
+          })
+        );
+      })
+    );
+
+    return h("div", { className: "vmm-classif" },
+      props.versao
+        ? h("div", { className: "vmm-mudo vmm-versao-linha" }, "painel " + props.versao)
+        : null,
+      blocoComplexidade,
+      blocoEstrategia
     );
   }
 
@@ -1274,50 +1310,6 @@
         "✓ " + validacaoOk
       ) : null,
 
-      // A configuracao do classificador e da estrategia fica SEMPRE visivel:
-      // estava so dentro do editor e quem abria o painel nao a encontrava.
-      h(
-        Card,
-        { className: "vmm-card-classif" },
-        h(
-          CardContent,
-          { className: "vmm-card-content" },
-          h(SecaoClassificador, {
-            configJSON: configJSON,
-            // Carimbo de versao: se nao aparecer, o browser tem JS velho.
-            versao: (estado.plugin || {}).versao || estado.versao_painel || "",
-            // As opcoes vem do `/estado`, a mesma lista que a validacao aceita.
-            opcoes: ((estado.opcoes || {}).estrategia) || {},
-            onMudar: function (novo) {
-              setConfigJSON(novo);
-              // o texto mudou: o "validado" anterior deixa de ser verdade
-              setValidacaoOk(null);
-              setErrosValidacao([]);
-            },
-          }),
-          h(
-            "div",
-            { className: "vmm-editor-accoes" },
-            h(Button, {
-              size: "sm",
-              variant: validacaoOk ? "default" : "outline",
-              onClick: validarConfig,
-              disabled: aValidar,
-              className: validacaoOk ? "vmm-btn-ok" : undefined,
-              title: "Validar a configuração contra o schema, sem gravar",
-            }, aValidar ? "A validar…" : (validacaoOk ? "✓ Validado" : "Validar")),
-            h(Button, {
-              size: "sm",
-              variant: "default",
-              onClick: salvarConfig,
-              disabled: aGravar || !configJSON,
-            }, aGravar ? "A gravar…" : "Salvar"),
-            h("span", { className: "vmm-mudo" },
-              " grava só a configuração do gestor")
-          )
-        )
-      ),
-
       mostrarEditor && h(
         Card,
         { className: "vmm-card-editor" },
@@ -1330,10 +1322,11 @@
             h("h3", { className: "vmm-editor-titulo" }, "Editor de Configuração"),
             h(Button, { size: "sm", variant: "ghost", onClick: fecharEditor }, "Fechar")
           ),
-          // As opcoes estruturadas do classificador e da estrategia vivem TAMBEM
-          // aqui dentro: e a este botao que o dono vai quando quer configura-las,
-          // e encontrar so JSON cru le-se como "nao ha opcoes". Leem e escrevem
-          // o mesmo `configJSON` que o textarea abaixo — uma so fonte de verdade.
+          // Dois blocos distintos, ambos dentro do editor: Complexidade (quem
+          // decide o nivel) e Estrategia (como se escolhe o modelo dentro do
+          // nivel). Fora do editor nao ha cartao nenhum — a configuracao vive
+          // aqui, e so aqui. Leem e escrevem o mesmo `configJSON` que o
+          // textarea abaixo: uma so fonte de verdade.
           h(SecaoClassificador, {
             configJSON: configJSON,
             versao: (estado.plugin || {}).versao || estado.versao_painel || "",
