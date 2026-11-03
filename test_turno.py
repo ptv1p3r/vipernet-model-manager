@@ -255,6 +255,41 @@ def testes() -> None:
           str([e.get("pin") for e in c6.decididos()]))
 
 
+    # ------------------------------------------------------------------ 7
+    print("\n== recarga a meio do turno: `excecao: recarga`, nao oscilacao ==")
+    c7 = Cenario("recarga")
+    tid = "sessao:sessao:7c7c7c7c"
+    for i in range(3):
+        c7.passo("corrige isto", i, turn_id=tid, api=i)
+    antes = [e for e in c7.decididos() if e.get("pin") == "novo"]
+    check("3 pedidos antes da recarga -> 1 pin novo", len(antes) == 1,
+          str([(e.get("passo"), e.get("pin")) for e in c7.decididos()]))
+
+    # Recarga: `sys.modules.pop` + reimport do mesmo ficheiro, com o mesmo
+    # VMM_DIR. E o que `plugins reload` faz ao plugin vivo.
+    novo = _mod("vmm_turno_recarga_2", AQUI / "__init__.py")
+    novo.resolver_rota = c7.plugin.resolver_rota
+    novo.gestor.perfil_atual = c7.plugin.gestor.perfil_atual
+    novo._config()
+    novo._recarregar_analise_se_mudou()
+    novo.middleware_llm_request(
+        request=c7.pedido_turno("corrige isto", 3), session_id="s1",
+        model="deepseek-flash", provider="deepseek",
+        turn_id=tid, api_call_count=3)
+    pos = [e for e in c7.eventos() if e.get("passo") == 3]
+    check("o pedido depois da recarga existe no ledger", len(pos) == 1,
+          str([(e.get("passo"), e.get("inst")) for e in c7.eventos()]))
+    if pos:
+        e = pos[0]
+        check("depois da recarga o pin e `novo` (store em memoria perdido)",
+              e.get("pin") == "novo", str(e.get("pin")))
+        check("e vem marcado `excecao: recarga`, nao contado como oscilacao",
+              e.get("excecao") == "recarga", str(e.get("excecao")))
+        check("traz `inst`, para distinguir instancias do modulo",
+              bool(e.get("inst")) and e["inst"] != antes[0].get("inst"),
+              f"{e.get('inst')} vs {antes[0].get('inst') if antes else None}")
+
+
 def main() -> int:
     try:
         testes()
