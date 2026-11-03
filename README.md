@@ -945,6 +945,64 @@ Regressão: `python3 test_estrategia.py` (21 casos: listas fechadas, herança,
 migração, round-trip e o efeito real em `escolher`) e os 21 casos novos em
 `dashboard/selftest.py` sobre `POST /estrategia`.
 
+## Editar uma rota do catálogo (3.20.0)
+
+Cada linha da tabela de um perfil tem um ícone `✎` e cada cartão de perfil um
+botão `＋ modelo`. Abrem uma **página própria**, e com ela aberta o painel
+principal não chega a ser construído — o mesmo `early return` que a página de
+configuração usa. Os dois botões fecham a página: **Gravar e voltar** (valida,
+grava, relê e volta ao painel com «Modelo X gravado») e **Descartar** (volta sem
+escrever). Há ainda **Validar**, que corre o mesmo `validar` do `gravar` sem
+tocar no ficheiro.
+
+A página tem três blocos: **Identidade** (`id`, `provider`, `modelo`),
+**Roteamento** (complexidade, tarefas, acesso, esforço, estado) e **Limites
+declarados** (`contexto_max`, `latencia_p95_ms`, modalidades, JSON nativo, nota).
+
+| opção | forma | fechada em |
+|---|---|---|
+| `complexidade` | vários níveis | `gestor.NIVEIS` |
+| `tarefas` | várias tarefas | as tarefas declaradas no perfil |
+| `acesso` | uma | `gestor.ACESSOS` |
+| `esforco` | uma, ou ausente | `gestor.ESFORCOS` + «não declarado» |
+| `desligado` | uma | activo / desligado |
+| `modalidades` | várias | `gestor.MODALIDADES` |
+| `json_nativo` | uma, ou ausente | sim / não / não declarado |
+| `id`, `provider`, `modelo`, `nota` | texto | — |
+| `contexto_max`, `latencia_p95_ms` | número | — |
+
+As listas vêm de `GET /modelo` → `opcoes`, lidas do próprio `gestor` — a
+autoridade da validação. Não há uma segunda cópia em JS que envelheça: um valor
+novo acrescentado ao `gestor` aparece no painel sem tocar no `index.js`.
+
+**O que não se declara não se escreve.** `esforco`, `desligado`, `modalidades`,
+`json_nativo`, `contexto_max`, `latencia_p95_ms` e `nota` sem valor **saem** da
+entrada em vez de irem com `""`/`0`: declarar é o que dá garantia, e um
+`esforco: ""` seria um valor inválido disfarçado de omissão. Um número inválido
+(`abc`) é enviado como texto, para o `gestor` dizer qual o campo e o valor, em
+vez de o painel o converter em `NaN` silencioso.
+
+**Gravação cirúrgica.** `POST /modelo` lê a config, substitui **uma** entrada do
+catálogo (ou acrescenta ao fim) e volta a gravar pelo `gestor`. O browser nunca
+reescreve a config inteira. A posição no catálogo é preservada — a ordem é a da
+estratégia `prioridade`, logo não pode mudar por acidente. Um `id` já usado por
+outra entrada é **400** com o nome repetido; o `id` é a chave por que as
+superfícies e as tarefas lhe chamam. Leva `rev` e responde `409` a uma aba que
+ficou para trás. O que se devolve é o que ficou no ficheiro, lido outra vez — não
+o que se julgou ter escrito.
+
+**Renomear** o `id` é possível (o dono pediu todas as opções), mas a página
+avisa: as regras de superfície guardam o nome da rota. `GET /modelo` sem `id`
+devolve a entrada em branco para criar; com `id`, a entrada **inteira** — que é
+mais do que o `/estado` mostra no cartão, e é por isso que a página lê sempre do
+servidor em vez de editar o que já tem em memória.
+
+Regressão: 26 casos em `dashboard/selftest.py` sobre `/modelo` (validar não
+grava, posição preservada, perfil irmão intacto, `id` repetido, `subscricao` fora
+do `openai-codex`, `rev` antigo → `409`) e 36 em `dashboard/test_logica.js`
+(round-trip forma → entrada, chaves vazias, ordem canónica, listas fechadas,
+botões e ícones).
+
 ## CLI `vmm`
 
 ```

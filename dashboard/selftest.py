@@ -481,6 +481,131 @@ def main() -> int:
     r = cli.post("/estrategia", json={"ambito": "global", "modo": "rodizio", "rev": atual})
     check("/estrategia com rev actual passa", r.status_code == 200, r.text[:200])
 
+    # --- /modelo: uma rota do catalogo, numa pagina propria ----------------
+    # O gesto e cirurgico: substitui UMA entrada do perfil e nao toca no resto.
+    # O que se prova aqui e o que um teste de strings nao prova — que "Validar"
+    # nao escreve, que gravar preserva a posicao (a ordem e a de prioridade),
+    # que um id repetido e recusado e que o perfil irmao fica intacto.
+    (d / "config.json").write_text(json.dumps(CONFIG, ensure_ascii=False, indent=2),
+                                   encoding="utf-8")
+    antes_sha = __import__("hashlib").sha256((d / "config.json").read_bytes()).hexdigest()
+
+    r = cli.get("/modelo?perfil=trabalho")
+    check("/modelo novo 200", r.status_code == 200, str(r.status_code))
+    novo = r.json() if r.status_code == 200 else {}
+    check("/modelo novo diz que e novo", novo.get("novo") is True, str(novo.get("novo")))
+    check("/modelo novo traz entrada em branco",
+          (novo.get("entrada") or {}).get("id") == ""
+          and (novo.get("entrada") or {}).get("complexidade") == [],
+          str(novo.get("entrada"))[:120])
+    opc = novo.get("opcoes") or {}
+    check("/modelo opcoes fechadas vem do gestor",
+          opc.get("niveis") == ["leve", "media", "alta"]
+          and opc.get("acessos") == ["api", "subscricao"]
+          and opc.get("esforcos") == ["baixo", "medio", "alto"]
+          and "texto" in (opc.get("modalidades") or []),
+          str(opc)[:200])
+    check("/modelo opcoes trazem as tarefas do perfil",
+          [t.get("valor") for t in (opc.get("tarefas") or [])] == ["arquitetura"],
+          str(opc.get("tarefas"))[:120])
+
+    r = cli.get("/modelo?perfil=trabalho&id=gpt-sol")
+    check("/modelo de uma rota 200", r.status_code == 200, str(r.status_code))
+    um = r.json() if r.status_code == 200 else {}
+    check("/modelo devolve a entrada inteira",
+          (um.get("entrada") or {}).get("tarefas") == ["arquitetura"]
+          and (um.get("entrada") or {}).get("modelo") == "openai/gpt-6.1-sol",
+          str(um.get("entrada"))[:160])
+    check("/modelo de uma rota nao e novo", um.get("novo") is False, str(um.get("novo")))
+
+    r = cli.get("/modelo?perfil=trabalho&id=nao-existe")
+    check("/modelo id desconhecido da 404", r.status_code == 404, str(r.status_code))
+    r = cli.get("/modelo?perfil=nao-existe")
+    check("/modelo perfil desconhecido da 404", r.status_code == 404, str(r.status_code))
+
+    # Validar nao escreve: e a promessa do botao.
+    entrada_ok = {"id": "gpt-sol", "provider": "openrouter", "modelo": "openai/gpt-6.1-sol",
+                  "complexidade": ["alta"], "acesso": "api", "tarefas": ["arquitetura"],
+                  "esforco": "alto", "contexto_max": 200000, "modalidades": ["texto"],
+                  "json_nativo": True, "nota": "rota de arquitectura"}
+    r = cli.post("/modelo", json={"perfil": "trabalho", "id": "gpt-sol",
+                                  "entrada": entrada_ok, "validar": True})
+    check("/modelo validar 200", r.status_code == 200, r.text[:200])
+    v = r.json() if r.status_code == 200 else {}
+    check("/modelo validar ok sem erros", v.get("ok") is True and not v.get("erros"),
+          str(v)[:200])
+    check("/modelo validar NAO grava",
+          __import__("hashlib").sha256((d / "config.json").read_bytes()).hexdigest() == antes_sha,
+          "o ficheiro mudou numa validacao")
+
+    r = cli.post("/modelo", json={"perfil": "trabalho", "id": "gpt-sol",
+                                  "entrada": {"id": "gpt-sol", "provider": "openrouter",
+                                              "modelo": "openai/gpt-6.1-sol",
+                                              "complexidade": []},
+                                  "validar": True})
+    check("/modelo validar recusa sem complexidade", r.status_code == 200, r.text[:200])
+    check("/modelo validar diz o erro",
+          bool((r.json() or {}).get("erros")), str(r.json())[:200])
+
+    # Gravar a mesma rota: muda o esforco, mantem a posicao no catalogo.
+    r = cli.post("/modelo", json={"perfil": "trabalho", "id": "gpt-sol",
+                                  "entrada": entrada_ok})
+    check("/modelo gravar 200", r.status_code == 200, r.text[:200])
+    g = r.json() if r.status_code == 200 else {}
+    check("/modelo gravar devolve o lido do disco",
+          (g.get("entrada") or {}).get("esforco") == "alto"
+          and (g.get("entrada") or {}).get("contexto_max") == 200000,
+          str(g.get("entrada"))[:200])
+    em_disco = json.loads((d / "config.json").read_text(encoding="utf-8"))
+    cat = em_disco["perfis"]["trabalho"]["catalogo"]
+    check("/modelo gravar mantem a posicao no catalogo",
+          [e.get("id") for e in cat] == ["deepseek-flash", "gpt-sol"],
+          str([e.get("id") for e in cat]))
+    check("/modelo gravar nao toca no perfil irmao",
+          [e.get("id") for e in em_disco["perfis"]["default"]["catalogo"]]
+          == ["deepseek-flash", "deepseek-pro"],
+          str([e.get("id") for e in em_disco["perfis"]["default"]["catalogo"]]))
+
+    # Criar: entra no fim, com os campos opcionais que se declararam.
+    r = cli.post("/modelo", json={"perfil": "trabalho", "id": None,
+                                  "entrada": {"id": "flash-baratissimo", "provider": "openrouter",
+                                              "modelo": "vendor/flash:free",
+                                              "complexidade": ["leve"], "acesso": "api",
+                                              "tarefas": [], "modalidades": ["texto", "imagem"]}})
+    check("/modelo criar 200", r.status_code == 200, r.text[:200])
+    em_disco = json.loads((d / "config.json").read_text(encoding="utf-8"))
+    cat = em_disco["perfis"]["trabalho"]["catalogo"]
+    check("/modelo criar acrescenta ao fim", (cat[-1] or {}).get("id") == "flash-baratissimo",
+          str([e.get("id") for e in cat]))
+    check("/modelo criar grava as modalidades",
+          (cat[-1] or {}).get("modalidades") == ["texto", "imagem"],
+          str(cat[-1])[:160])
+
+    r = cli.post("/modelo", json={"perfil": "trabalho", "id": None,
+                                  "entrada": {"id": "flash-baratissimo", "provider": "openrouter",
+                                              "modelo": "vendor/outro", "complexidade": ["leve"]}})
+    check("/modelo recusa id repetido", r.status_code == 400, str(r.status_code))
+    check("/modelo diz qual o id repetido", "flash-baratissimo" in r.text, r.text[:200])
+
+    r = cli.post("/modelo", json={"perfil": "trabalho", "id": "flash-baratissimo",
+                                  "entrada": {"id": "flash-baratissimo", "provider": "openrouter",
+                                              "modelo": "vendor/flash:free",
+                                              "complexidade": ["leve"],
+                                              "acesso": "subscricao"}})
+    check("/modelo recusa subscricao fora do openai-codex",
+          r.status_code == 400 and "subscricao" in r.text, r.text[:200])
+
+    velho = (cli.get("/estado").json() or {}).get("rev")
+    cli.post("/modelo", json={"perfil": "trabalho", "id": "flash-baratissimo",
+                              "entrada": {"id": "flash-baratissimo", "provider": "openrouter",
+                                          "modelo": "vendor/flash:free",
+                                          "complexidade": ["leve", "media"]}})
+    r = cli.post("/modelo", json={"perfil": "trabalho", "id": "flash-baratissimo",
+                                  "entrada": {"id": "flash-baratissimo", "provider": "openrouter",
+                                              "modelo": "vendor/flash:free",
+                                              "complexidade": ["leve"]}, "rev": velho})
+    check("/modelo com rev antigo da 409", r.status_code == 409, str(r.status_code))
+
     # --- /superficies ------------------------------------------------------
     # A superficie e o unico criterio que o core entrega de forma
     # deterministica; a regra tem de ser gravavel por perfil, ter as tres

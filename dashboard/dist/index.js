@@ -465,6 +465,319 @@
     };
   }
 
+  // ---- uma rota do catalogo: pagina propria ------------------------------
+  // A conversao forma <-> entrada do catalogo e pura (sem React) porque e o
+  // sitio onde um erro se paga caro: escreve no JSON que o middleware le. As
+  // chaves vazias nao vao para o ficheiro — declarar e o que da garantia,
+  // declarar nada nao proibe nada, e um `esforco: ""` seria um valor invalido.
+  function entradaParaForm(entrada) {
+    var x = entrada || {};
+    var cx = x.complexidade != null ? x.complexidade : x.niveis;
+    if (!Array.isArray(cx)) cx = cx == null || cx === "" ? [] : [cx];
+    return {
+      id: x.id == null ? "" : String(x.id),
+      provider: x.provider == null ? "" : String(x.provider),
+      modelo: x.modelo == null ? "" : String(x.modelo),
+      complexidade: cx.map(function (n) { return String(n); }),
+      acesso: x.acesso == null ? "api" : String(x.acesso),
+      esforco: x.esforco == null ? "" : String(x.esforco),
+      tarefas: Array.isArray(x.tarefas) ? x.tarefas.map(function (t) { return String(t); }) : [],
+      desligado: x.desligado === true,
+      contexto_max: x.contexto_max == null ? "" : String(x.contexto_max),
+      latencia_p95_ms: x.latencia_p95_ms == null ? "" : String(x.latencia_p95_ms),
+      modalidades: Array.isArray(x.modalidades) ? x.modalidades.map(function (m) { return String(m); }) : [],
+      json_nativo: x.json_nativo === true ? "sim" : (x.json_nativo === false ? "nao" : ""),
+      nota: x.nota == null ? "" : String(x.nota),
+    };
+  }
+
+  // Ordem canonica das listas fechadas: o JSON nao pode mudar de forma (nem de
+  // ordem) so porque o dono clicou nos niveis por outra ordem.
+  function emOrdem(lista, ordem) {
+    var escolhidos = (lista || []).filter(function (x) { return (ordem || []).indexOf(x) >= 0; });
+    var conhecidos = (ordem || []).filter(function (o) { return escolhidos.indexOf(o) >= 0; });
+    // Um valor fora da lista actual (config antiga) nao se perde: vai no fim.
+    var resto = (lista || []).filter(function (x) { return (ordem || []).indexOf(x) < 0; });
+    return conhecidos.concat(resto);
+  }
+
+  function numeroOuTexto(txt) {
+    var limpo = String(txt == null ? "" : txt).trim();
+    if (!limpo) return null;
+    var n = Number(limpo);
+    return isFinite(n) ? n : limpo;  // texto invalido fica texto: o gestor diz o porque
+  }
+
+  function formParaEntrada(form, opcoes) {
+    var f = form || {};
+    var o = opcoes || {};
+    var entrada = {
+      id: String(f.id == null ? "" : f.id).trim(),
+      provider: String(f.provider == null ? "" : f.provider).trim(),
+      modelo: String(f.modelo == null ? "" : f.modelo).trim(),
+      complexidade: emOrdem(f.complexidade, o.niveis),
+      acesso: f.acesso || "api",
+      tarefas: emOrdem(f.tarefas, (o.tarefas || []).map(function (t) { return t.valor; })),
+    };
+    if (f.esforco) entrada.esforco = String(f.esforco);
+    if (f.desligado) entrada.desligado = true;
+    var contexto = numeroOuTexto(f.contexto_max);
+    if (contexto !== null) entrada.contexto_max = contexto;
+    var latencia = numeroOuTexto(f.latencia_p95_ms);
+    if (latencia !== null) entrada.latencia_p95_ms = latencia;
+    var mods = emOrdem(f.modalidades, o.modalidades);
+    if (mods.length) entrada.modalidades = mods;
+    if (f.json_nativo === "sim") entrada.json_nativo = true;
+    else if (f.json_nativo === "nao") entrada.json_nativo = false;
+    var nota = String(f.nota == null ? "" : f.nota).trim();
+    if (nota) entrada.nota = nota;
+    return entrada;
+  }
+
+  // Alterna um valor numa lista fechada. Nao deixa escolher fora das opcoes: o
+  // valor que entra e sempre um dos que a lista mostrou.
+  function alternarOpcao(lista, valor, meter) {
+    var actual = lista || [];
+    if (meter) return actual.indexOf(valor) >= 0 ? actual.slice() : actual.concat([valor]);
+    return actual.filter(function (x) { return x !== valor; });
+  }
+
+  function Campo(props) {
+    return h(
+      "div",
+      { className: "vmm-campo" },
+      h("span", { className: "vmm-campo-rotulo" }, props.rotulo),
+      props.children,
+      props.ajuda ? h("span", { className: "vmm-mudo vmm-campo-ajuda" }, props.ajuda) : null
+    );
+  }
+
+  function EntradaTexto(props) {
+    return h("input", {
+      className: "vmm-input",
+      type: props.tipo || "text",
+      inputMode: props.tipo === "number" ? "numeric" : undefined,
+      value: props.valor == null ? "" : String(props.valor),
+      placeholder: props.placeholder || "",
+      "aria-label": props.rotulo || "",
+      onChange: function (e) { props.onChange(e.target.value); },
+    });
+  }
+
+  // Lista fechada de escolha multipla: botoes com o estado a vista (aria-pressed)
+  // em vez de um `<select multiple>`, que em teclado e rato e um mau negocio.
+  function BotoesOpcao(props) {
+    const escolhidos = props.valor || [];
+    return h(
+      "div",
+      { className: "vmm-opcoes", role: "group", "aria-label": props.rotulo || "" },
+      (props.opcoes || []).map(function (o) {
+        const activo = escolhidos.indexOf(o) >= 0;
+        return h(
+          Button,
+          {
+            key: o,
+            type: "button",
+            size: "sm",
+            variant: activo ? "default" : "outline",
+            className: "vmm-opcao" + (activo ? " vmm-opcao-on" : ""),
+            "aria-pressed": activo ? "true" : "false",
+            onClick: function () { props.onChange(alternarOpcao(escolhidos, o, !activo)); },
+          },
+          o
+        );
+      })
+    );
+  }
+
+  function opcoesDeLista(valores, vazio) {
+    const lista = [];
+    if (vazio) lista.push({ valor: "", rotulo: vazio });
+    (valores || []).forEach(function (v) { lista.push({ valor: v, rotulo: v }); });
+    return lista;
+  }
+
+  function PaginaModelo(props) {
+    const form = props.form || {};
+    const opcoes = props.opcoes || {};
+    const meta = metaPlugin(props.estado || {});
+    const novo = !!props.novo;
+    const perfil = props.perfil || "";
+    const titulo = novo ? "Novo modelo" : "Modelo";
+    const mudar = function (campo) {
+      return function (valor) { props.onCampo(campo, valor); };
+    };
+    const listaTarefas = (opcoes.tarefas || []);
+
+    return h(
+      "div",
+      { className: "vmm-pagina vmm-pagina-modelo" },
+      h(
+        "div",
+        { className: "vmm-topo" },
+        h(
+          "div",
+          null,
+          h("h1", { className: "vmm-h1" }, titulo + (novo ? " · " + perfil : " · " + (form.id || props.id || "—"))),
+          h(
+            "div",
+            { className: "vmm-sub" },
+            novo
+              ? "Uma rota nova no catálogo do perfil " + perfil + ". Só entra no catálogo depois de gravar; "
+                + "o id é o nome por que as superfícies e as tarefas lhe chamam."
+              : "Todas as opções desta rota do catálogo do perfil " + perfil + ". "
+                + "Gravar volta ao painel e passa a valer no turno seguinte."
+          ),
+          linhaIdentidade(meta)
+        ),
+        h(
+          "div",
+          { className: "vmm-accoes" },
+          h(Button, {
+            size: "sm",
+            variant: "outline",
+            onClick: props.onValidar,
+            disabled: props.aGravar || props.aCarregar,
+            title: "Validar esta rota contra o schema, sem gravar",
+          }, props.aValidar ? "A validar…" : "Validar"),
+          h(Button, {
+            size: "sm",
+            variant: "default",
+            className: props.validacaoOk ? "vmm-btn-ok" : undefined,
+            onClick: props.onGravar,
+            disabled: props.aGravar || props.aCarregar || !String(form.id || "").trim(),
+            title: "Validar, gravar e voltar ao painel",
+          }, props.aGravar ? "A gravar…" : (props.validacaoOk ? "✓ Gravar e voltar" : "Gravar e voltar")),
+          h(Button, {
+            size: "sm",
+            variant: "ghost",
+            onClick: props.onDescartar,
+            title: "Voltar ao painel sem gravar as alterações",
+          }, "Descartar")
+        )
+      ),
+
+      props.erro ? h("div", { className: "vmm-erro" }, "erro: " + props.erro) : null,
+
+      props.validacaoOk
+        ? h("div", { className: "vmm-ok", role: "status", "aria-live": "polite" }, "✓ " + props.validacaoOk)
+        : null,
+
+      (props.erros || []).length
+        ? h(
+            "div",
+            { className: "vmm-erro vmm-erros-lista" },
+            h("strong", null, "O gestor recusou:"),
+            props.erros.map(function (e, i) { return h("div", { key: i }, "• " + e); })
+          )
+        : null,
+
+      props.aCarregar
+        ? h("div", { className: "vmm-mudo" }, "a ler a rota do catálogo…")
+        : h(
+            "div",
+            { className: "vmm-modelo-grelha" },
+
+            h(
+              "div",
+              { className: "vmm-bloco" },
+              h("div", { className: "vmm-bloco-titulo" }, h("strong", null, "Identidade")),
+              h(
+                "div",
+                { className: "vmm-modelo-campos" },
+                h(Campo, { rotulo: "id", ajuda: novo ? "obrigatório; único dentro do perfil" : "renomear parte as regras de superfície que lhe chamam pelo nome" },
+                  h(EntradaTexto, { valor: form.id, rotulo: "id da rota", placeholder: "ex.: deepseek-flash", onChange: mudar("id") })),
+                h(Campo, { rotulo: "provider", ajuda: "openrouter, deepseek, inception, openai-codex…" },
+                  h(EntradaTexto, { valor: form.provider, rotulo: "provider", placeholder: "openrouter", onChange: mudar("provider") })),
+                h(Campo, { rotulo: "modelo", ajuda: "o id exacto do modelo no provider" },
+                  h(EntradaTexto, { valor: form.modelo, rotulo: "modelo", placeholder: "nvidia/nemotron-3.5-lightning:free", onChange: mudar("modelo") }))
+              )
+            ),
+
+            h(
+              "div",
+              { className: "vmm-bloco" },
+              h("div", { className: "vmm-bloco-titulo" }, h("strong", null, "Roteamento")),
+              h(
+                "div",
+                { className: "vmm-modelo-campos" },
+                h(Campo, { rotulo: "complexidade", ajuda: "os níveis de turno que esta rota serve (pelo menos um)" },
+                  h(BotoesOpcao, {
+                    rotulo: "complexidade",
+                    opcoes: opcoes.niveis || [],
+                    valor: form.complexidade || [],
+                    onChange: props.onCampoComplexidade,
+                  })),
+                h(Campo, { rotulo: "tarefas", ajuda: listaTarefas.length ? "uma tarefa associada vence a análise de complexidade" : "este perfil não declara tarefas — vêem do JSON do perfil" },
+                  listaTarefas.length
+                    ? h(BotoesOpcao, {
+                        rotulo: "tarefas",
+                        opcoes: listaTarefas.map(function (t) { return t.valor; }),
+                        valor: form.tarefas || [],
+                        onChange: props.onCampoTarefas,
+                      })
+                    : h("span", { className: "vmm-mudo" }, "— sem tarefas declaradas neste perfil —")),
+                h(Campo, { rotulo: "acesso", ajuda: "subscrição exige provider openai-codex" },
+                  h(Seletor, {
+                    rotulo: "acesso",
+                    opcoes: opcoesDeLista(opcoes.acessos, null),
+                    valor: form.acesso,
+                    onChange: mudar("acesso"),
+                  })),
+                h(Campo, { rotulo: "esforço", ajuda: "não declarado não é médio: é «não pedir nada»" },
+                  h(Seletor, {
+                    rotulo: "esforço",
+                    opcoes: opcoesDeLista(opcoes.esforcos, "— não declarado —"),
+                    valor: form.esforco,
+                    onChange: mudar("esforco"),
+                  })),
+                h(Campo, { rotulo: "estado", ajuda: "desligado mantém a rota no catálogo mas fora da escolha" },
+                  h(Seletor, {
+                    rotulo: "estado",
+                    opcoes: [{ valor: "nao", rotulo: "activo" }, { valor: "sim", rotulo: "desligado" }],
+                    valor: form.desligado ? "sim" : "nao",
+                    onChange: function (v) { props.onCampo("desligado", v === "sim"); },
+                  }))
+              )
+            ),
+
+            h(
+              "div",
+              { className: "vmm-bloco" },
+              h("div", { className: "vmm-bloco-titulo" }, h("strong", null, "Limites declarados")),
+              h("div", { className: "vmm-mudo vmm-campo-ajuda" },
+                "Opcionais. Ausente é «não declarado» — a rota continua utilizável. Declarar é o que a triagem "
+                + "usa para recusar uma rota impossível (contexto, modalidade, JSON, latência)."),
+              h(
+                "div",
+                { className: "vmm-modelo-campos" },
+                h(Campo, { rotulo: "contexto máximo (tokens)", ajuda: "acima disto a rota não recebe o pedido" },
+                  h(EntradaTexto, { tipo: "number", valor: form.contexto_max, rotulo: "contexto máximo", placeholder: "128000", onChange: mudar("contexto_max") })),
+                h(Campo, { rotulo: "latência p95 (ms)", ajuda: "acima do teto do perfil a rota é preterida" },
+                  h(EntradaTexto, { tipo: "number", valor: form.latencia_p95_ms, rotulo: "latência p95", placeholder: "900", onChange: mudar("latencia_p95_ms") })),
+                h(Campo, { rotulo: "modalidades", ajuda: "o que a rota aceita receber" },
+                  h(BotoesOpcao, {
+                    rotulo: "modalidades",
+                    opcoes: opcoes.modalidades || [],
+                    valor: form.modalidades || [],
+                    onChange: props.onCampoModalidades,
+                  })),
+                h(Campo, { rotulo: "JSON nativo", ajuda: "«não» é uma afirmação: recusa pedidos que exigem JSON" },
+                  h(Seletor, {
+                    rotulo: "JSON nativo",
+                    opcoes: [{ valor: "", rotulo: "— não declarado —" },
+                             { valor: "sim", rotulo: "sim" }, { valor: "nao", rotulo: "não" }],
+                    valor: form.json_nativo,
+                    onChange: mudar("json_nativo"),
+                  })),
+                h(Campo, { rotulo: "nota", ajuda: "texto livre do dono, lido no painel" },
+                  h(EntradaTexto, { valor: form.nota, rotulo: "nota", placeholder: "porque está aqui esta rota", onChange: mudar("nota") }))
+              )
+            )
+          )
+    );
+  }
+
   function CartaoPerfil(props) {
     const p = props.dados;
     const nome = props.nome;
@@ -491,7 +804,17 @@
                 (p.estrategia || {}).origem === "proprio"
                   ? " · próprio"
                   : " · herdado do global")
-            )
+            ),
+            // Uma rota nova abre uma pagina propria: o catalogo deste perfil e
+            // o que se edita, nao o perfil (que se liga no interruptor ao lado).
+            h(Button, {
+              size: "sm",
+              variant: "outline",
+              className: "vmm-icone vmm-icone-novo",
+              title: "Criar um modelo novo no catálogo de " + nome,
+              "aria-label": "Criar um modelo novo no catálogo de " + nome,
+              onClick: function () { props.onNovoModelo(nome); },
+            }, "＋ modelo")
           ),
           h(Interruptor, {
             activo: p.activo,
@@ -562,7 +885,8 @@
               h("th", null, "complexidade"),
               h("th", null, "tarefas"),
               h("th", null, "acesso"),
-              h("th", null, "esforço")
+              h("th", null, "esforço"),
+              h("th", { className: "vmm-th-accoes" }, "")
             )
           ),
           h(
@@ -583,7 +907,19 @@
                 h("td", null, h(Chip, { tone: m.acesso === "subscricao" ? "outline" : "secondary" }, m.acesso || "api")),
                 h("td", null, m.esforco
                   ? h(Chip, { tone: "outline" }, m.esforco)
-                  : h("span", { className: "vmm-mudo" }, "—"))
+                  : h("span", { className: "vmm-mudo" }, "—")),
+                // O icone da rota: abre a pagina desta rota, com todas as
+                // opcoes a vista. Nao ha escrita aqui — o cartao continua a
+                // ser leitura, o gesto abre uma pagina.
+                h("td", { className: "vmm-td-accoes" },
+                  h(Button, {
+                    size: "sm",
+                    variant: "ghost",
+                    className: "vmm-icone",
+                    title: "Editar as opções de " + m.id,
+                    "aria-label": "Editar as opções de " + m.id,
+                    onClick: function () { props.onModelo(nome, m.id); },
+                  }, "✎"))
               );
             })
           )
@@ -1132,6 +1468,18 @@
     // Mensagem de sucesso da ultima validacao/gravacao (null = sem aviso).
     // Distinta de "erro": verde, e limpa assim que o texto volta a mudar.
     const [validacaoOk, setValidacaoOk] = useState(null);
+    // Uma rota do catalogo aberta numa pagina propria. `null` = painel
+    // principal. A pagina de configuracao e esta nao se sobrepoem: cada uma tem
+    // o seu early return, para que o painel nunca fique por baixo do formulario.
+    const [modeloAberto, setModeloAberto] = useState(null);
+    const [modeloForm, setModeloForm] = useState({});
+    const [modeloOpcoes, setModeloOpcoes] = useState({});
+    const [modeloRev, setModeloRev] = useState("");
+    const [modeloErro, setModeloErro] = useState(null);
+    const [modeloErros, setModeloErros] = useState([]);
+    const [modeloOk, setModeloOk] = useState(null);
+    const [modeloAGravar, setModeloAGravar] = useState(false);
+    const [modeloACarregar, setModeloACarregar] = useState(false);
 
     const carregar = useCallback(function () {
       setACarregar(true);
@@ -1322,6 +1670,129 @@
       carregarConfig();
     }
 
+    // ---- uma rota do catalogo: abrir, validar, gravar, descartar ----------
+    function textoDoErro(e) {
+      return String(e && e.message ? e.message : e);
+    }
+
+    // Abre a pagina de UMA rota. Le sempre do servidor: a entrada tem campos
+    // (esforco, limites, modalidades) que o `/estado` nao traz, e editar o que
+    // o cartao mostra em vez do que o ficheiro tem e como se perde um campo
+    // sem ninguem dar por isso.
+    function abrirModelo(perfil, id) {
+      setModeloAberto({ perfil: perfil, id: id || null, novo: !id });
+      setModeloForm({});
+      setModeloOpcoes({});
+      setModeloRev("");
+      setModeloErro(null);
+      setModeloErros([]);
+      setModeloOk(null);
+      setModeloACarregar(true);
+      const consulta = "/modelo?perfil=" + encodeURIComponent(perfil)
+        + (id ? "&id=" + encodeURIComponent(id) : "");
+      pedir(consulta)
+        .then(function (r) {
+          setModeloOpcoes((r && r.opcoes) || {});
+          setModeloForm(entradaParaForm((r && r.entrada) || {}));
+          setModeloRev(r && r.rev ? String(r.rev) : "");
+        })
+        .catch(function (e) { setModeloErro("Erro ao ler a rota: " + textoDoErro(e)); })
+        .then(function () { setModeloACarregar(false); });
+    }
+
+    function mudarCampoModelo(campo, valor) {
+      const proximo = Object.assign({}, modeloForm);
+      proximo[campo] = valor;
+      setModeloForm(proximo);
+      setModeloOk(null);
+      setModeloErros([]);
+      setModeloErro(null);
+    }
+
+    function corpoDoModelo() {
+      const aberto = modeloAberto || {};
+      return {
+        perfil: aberto.perfil,
+        id: aberto.id || null,
+        entrada: formParaEntrada(modeloForm, modeloOpcoes),
+        rev: modeloRev,
+      };
+    }
+
+    // Validar: o mesmo `validar` do `gravar`, sem escrever. E o mesmo botao do
+    // editor de configuracao — nao ha um caminho de validacao paralelo.
+    function validarModelo() {
+      setModeloErros([]);
+      setModeloOk(null);
+      setModeloErro(null);
+      setModeloAGravar(true);
+      const corpo = Object.assign(corpoDoModelo(), { validar: true });
+      pedir("/modelo", { method: "POST", body: corpo })
+        .then(function (r) {
+          const erros = (r && r.erros) || [];
+          if (erros.length) {
+            setModeloErros(erros);
+            setModeloErro("Configuração inválida: " + erros.join("; "));
+            return;
+          }
+          const e = corpo.entrada;
+          setModeloOk("Validado — " + (e.id || "(sem id)")
+            + " · " + (e.complexidade || []).length + " nível(is)"
+            + " · " + (e.provider || "?") + "/" + (e.modelo || "?") + " · 0 erros");
+        })
+        .catch(function (e) { setModeloErro("Erro ao validar: " + textoDoErro(e)); })
+        .then(function () { setModeloAGravar(false); });
+    }
+
+    // Gravar: valida primeiro e so grava se passar. Assim o erro que se ve e o
+    // do `gestor`, com o campo e o valor, e nao um 400 generico do transporte.
+    function gravarModelo() {
+      setModeloErros([]);
+      setModeloOk(null);
+      setModeloErro(null);
+      setModeloAGravar(true);
+      const corpo = corpoDoModelo();
+      pedir("/modelo", { method: "POST", body: Object.assign({}, corpo, { validar: true }) })
+        .then(function (v) {
+          const erros = (v && v.erros) || [];
+          if (erros.length) {
+            setModeloErros(erros);
+            setModeloErro("Configuração inválida: " + erros.join("; "));
+            return null;
+          }
+          return pedir("/modelo", { method: "POST", body: corpo });
+        })
+        .then(function (r) {
+          if (r === null) return;
+          const gravado = (r && r.id) || (corpo.entrada || {}).id || "";
+          setModeloAberto(null);
+          setModeloForm({});
+          setModeloRev("");
+          setValidacaoOk("Modelo " + gravado + " gravado em " + corpo.perfil + " — o gestor já o lê");
+          carregar();
+        })
+        .catch(function (e) {
+          const msg = textoDoErro(e);
+          setModeloErro(msg.indexOf("409") !== -1
+            ? "A configuração foi alterada noutro sítio desde que abriu esta página. "
+              + "Descartar e abrir outra vez para ver o estado actual."
+            : "Erro ao gravar: " + msg);
+        })
+        .then(function () { setModeloAGravar(false); });
+    }
+
+    // Descartar e o unico caminho que abandona o formulario — sempre por accao
+    // explicita do dono, nunca por um erro.
+    function descartarModelo() {
+      setModeloAberto(null);
+      setModeloForm({});
+      setModeloOpcoes({});
+      setModeloRev("");
+      setModeloErros([]);
+      setModeloErro(null);
+      setModeloOk(null);
+    }
+
     if (!estado && !erro) {
       return h("div", { className: "vmm-pagina" }, h("div", { className: "vmm-mudo" }, "a ler o estado do gestor…"));
     }
@@ -1334,6 +1805,32 @@
     // Pagina exclusiva: com o editor aberto, o painel principal nao chega a
     // ser construido. Um early return e o que garante isso — um `&&` no meio da
     // arvore deixava os cartoes de estado por baixo do formulario.
+    // A pagina de uma rota do catalogo tem o seu proprio early return, e vem
+    // primeiro: sao dois formularios distintos, nunca os dois ao mesmo tempo.
+    if (modeloAberto) {
+      return h(PaginaModelo, {
+        estado: estado,
+        perfil: modeloAberto.perfil,
+        id: modeloAberto.id,
+        novo: modeloAberto.novo,
+        form: modeloForm,
+        opcoes: modeloOpcoes,
+        rev: modeloRev,
+        erro: modeloErro,
+        erros: modeloErros,
+        validacaoOk: modeloOk,
+        aGravar: modeloAGravar,
+        aCarregar: modeloACarregar,
+        onCampo: mudarCampoModelo,
+        onCampoComplexidade: function (v) { mudarCampoModelo("complexidade", v); },
+        onCampoTarefas: function (v) { mudarCampoModelo("tarefas", v); },
+        onCampoModalidades: function (v) { mudarCampoModelo("modalidades", v); },
+        onValidar: validarModelo,
+        onGravar: gravarModelo,
+        onDescartar: descartarModelo,
+      });
+    }
+
     if (mostrarEditor) {
       return h(PaginaConfig, {
         estado: estado,
@@ -1425,6 +1922,8 @@
             dados: perfis[n],
             aGravar: aGravar,
             onToggle: function (perfil, activo) { alternar("perfil", perfil, activo); },
+            onModelo: function (perfil, id) { abrirModelo(perfil, id); },
+            onNovoModelo: function (perfil) { abrirModelo(perfil, null); },
           });
         })
       ),
@@ -1501,5 +2000,13 @@
     window.__VMM_TEST__.PaginaConfig = PaginaConfig;
     window.__VMM_TEST__.CartaoPerfil = CartaoPerfil;
     window.__VMM_TEST__.Superficies = Superficies;
+    // A conversao forma <-> entrada do catalogo: e o que decide o que fica
+    // escrito na rota (e o que fica de fora). Testada sem browser.
+    window.__VMM_TEST__.entradaParaForm = entradaParaForm;
+    window.__VMM_TEST__.formParaEntrada = formParaEntrada;
+    window.__VMM_TEST__.alternarOpcao = alternarOpcao;
+    window.__VMM_TEST__.emOrdem = emOrdem;
+    window.__VMM_TEST__.BotoesOpcao = BotoesOpcao;
+    window.__VMM_TEST__.PaginaModelo = PaginaModelo;
   }
 })();

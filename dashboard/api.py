@@ -952,3 +952,156 @@ def _perfil_servido() -> Optional[str]:
     if casa and os.path.basename(os.path.dirname(casa)) == "profiles":
         return os.path.basename(casa)
     return None
+
+
+# ------------------------------------------------------------------ um modelo
+# Editar UMA rota do catalogo numa pagina propria. O gesto e cirurgico: le-se a
+# config, substitui-se (ou acrescenta-se) essa entrada e volta-se a gravar pelo
+# `gestor`. O browser nunca reescreve a config inteira — senao uma pagina de
+# modelo aberta ha dez minutos repunha tudo o que outra sessao escreveu, que e
+# exactamente o defeito que o `rev` existe para travar.
+
+#: Listas FECHADAS de cada campo de uma rota. Vem do `gestor` (a autoridade da
+#: validacao), nao de uma copia escrita aqui nem no JS: o que o painel mostra
+#: como escolha e o que o `gravar` aceita.
+def _opcoes_modelo() -> dict[str, Any]:
+    return {
+        "niveis": list(gestor.NIVEIS),
+        "acessos": list(gestor.ACESSOS),
+        "esforcos": list(gestor.ESFORCOS),
+        "modalidades": list(gestor.MODALIDADES),
+    }
+
+
+def _perfil_da_config(cfg: dict[str, Any], perfil: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Devolve ``(bloco do perfil, catalogo)`` ou 404 — um perfil que nao existe
+    nao pode receber um modelo por gralha de nome."""
+    dados = (cfg.get("perfis") or {}).get(perfil)
+    if not isinstance(dados, dict):
+        conhecidos = ", ".join(sorted((cfg.get("perfis") or {}).keys())) or "nenhum"
+        raise HTTPException(status_code=404,
+                            detail=f"perfil {perfil!r} nao existe na configuracao (tem: {conhecidos})")
+    catalogo = dados.get("catalogo")
+    return dados, (catalogo if isinstance(catalogo, list) else [])
+
+
+def _entrada_por_id(catalogo: list[dict[str, Any]], id_: str) -> Optional[int]:
+    for indice, entrada in enumerate(catalogo):
+        if isinstance(entrada, dict) and str(entrada.get("id")) == str(id_):
+            return indice
+    return None
+
+
+@router.get("/modelo")
+def modelo_get(perfil: str = Query(...), id: Optional[str] = Query(None)) -> dict[str, Any]:
+    """Uma rota do catalogo, crua e completa, para a pagina de edicao.
+
+    O `/estado` mostra o catalogo resumido (o que o cartao precisa). Aqui vem a
+    entrada inteira — esforco, limites, modalidades, json nativo, nota — que e o
+    que a pagina edita. Sem `id` devolve o modelo em branco para criar.
+    """
+    cfg = _cfg()
+    dados, catalogo = _perfil_da_config(cfg, perfil)
+    tarefas = dados.get("tarefas") or {}
+    opcoes = _opcoes_modelo()
+    opcoes["tarefas"] = [
+        {"valor": nome, "rotulo": nome + " · prioridade " + str((tarefas.get(nome) or {}).get("prioridade", 0))}
+        for nome in sorted(tarefas.keys())
+    ]
+    opcoes["ids"] = [str(e.get("id")) for e in catalogo if isinstance(e, dict)]
+    opcoes["perfis"] = sorted((cfg.get("perfis") or {}).keys())
+
+    if id:
+        indice = _entrada_por_id(catalogo, id)
+        if indice is None:
+            raise HTTPException(status_code=404,
+                                detail=f"modelo {id!r} nao existe no catalogo de {perfil!r}")
+        return {"perfil": perfil, "id": id, "novo": False,
+                "entrada": catalogo[indice], "opcoes": opcoes, "rev": _rev(cfg)}
+
+    return {
+        "perfil": perfil, "id": None, "novo": True,
+        "entrada": {"id": "", "provider": "", "modelo": "",
+                    "complexidade": [], "acesso": "api", "tarefas": []},
+        "opcoes": opcoes, "rev": _rev(cfg),
+    }
+
+
+@router.post("/modelo")
+def modelo_post(corpo: Any = Body(default=None)) -> JSONResponse:
+    """Valida (``validar: true``) ou grava uma rota do catalogo de um perfil.
+
+    Gravar substitui a entrada no lugar quando ela existe (a ordem do catalogo
+    e a ordem de `prioridade`, logo nao pode mudar sem intencao) e acrescenta ao
+    fim quando e nova. O id e a chave: um id ja usado por outra entrada e
+    recusado, porque as superficies e as tarefas lhe chamam pelo nome.
+    """
+    corpo = _corpo_objeto(corpo)
+    perfil = str(corpo.get("perfil") or "").strip()
+    entrada = corpo.get("entrada")
+    if not perfil:
+        raise HTTPException(status_code=400, detail="falta 'perfil'")
+    if not isinstance(entrada, dict):
+        raise HTTPException(status_code=400, detail="'entrada' tem de ser um objecto")
+    apenas_validar = bool(corpo.get("validar"))
+    id_original = str(corpo.get("id") or "").strip() or None
+    novo_id = str(entrada.get("id") or "").strip()
+    if not novo_id:
+        raise HTTPException(status_code=400,
+                            detail="o modelo precisa de um id (e por ele que as superficies e as tarefas lhe chamam)")
+
+    cfg = _cfg()
+    rev = str(corpo.get("rev") or "")
+    if rev and _conflito(rev, _rev(cfg)):
+        return JSONResponse(status_code=409, content={
+            "ok": False,
+            "detail": "a configuração mudou desde que esta página a leu",
+            "rev": _rev(cfg),
+        })
+
+    dados, catalogo = _perfil_da_config(cfg, perfil)
+    posicao = _entrada_por_id(catalogo, id_original) if id_original else None
+    if id_original and posicao is None:
+        raise HTTPException(status_code=404,
+                            detail=f"modelo {id_original!r} ja nao existe no catalogo de {perfil!r}")
+    colisao = _entrada_por_id(catalogo, novo_id)
+    if colisao is not None and colisao != posicao:
+        raise HTTPException(status_code=400,
+                            detail=f"ja existe um modelo com o id {novo_id!r} no perfil {perfil!r}")
+
+    nova_lista = list(catalogo)
+    limpa = dict(entrada)
+    if posicao is None:
+        nova_lista.append(limpa)
+    else:
+        nova_lista[posicao] = limpa
+    dados["catalogo"] = nova_lista
+
+    # Validar nunca escreve: corre o mesmo `validar` do `gravar` sobre a config
+    # em memoria e devolve os erros — o botao "Validar" tem de poder dizer nao
+    # sem deixar rasto no ficheiro.
+    if apenas_validar:
+        _, erros = gestor.validar(cfg)
+        return JSONResponse(content={"ok": not erros, "erros": list(erros),
+                                     "perfil": perfil, "id": novo_id})
+
+    try:
+        gestor.gravar(cfg)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False,
+            "detail": "não gravou: " + str(exc),
+            "erros": [p for p in str(exc).split("; ") if p],
+        })
+
+    # Releitura independente: o que se devolve e o que ficou no ficheiro, nao o
+    # que se julgou ter escrito.
+    confirmado = _cfg()
+    _, catalogo_lido = _perfil_da_config(confirmado, perfil)
+    indice = _entrada_por_id(catalogo_lido, novo_id)
+    if indice is None:  # pragma: no cover - so se o `gravar` mentir
+        raise HTTPException(status_code=500, detail="gravou mas a rota não aparece na releitura")
+    return JSONResponse(content={
+        "ok": True, "perfil": perfil, "id": novo_id,
+        "entrada": catalogo_lido[indice], "rev": _rev(confirmado),
+    })
