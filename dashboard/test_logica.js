@@ -1212,6 +1212,192 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
 
 
 
+// ---- pagina de um perfil --------------------------------------------------
+// O que se prova aqui e o que um teste de strings nao prova: que "herdar"
+// produz a palavra `herdar` (e nao um bloco copiado do global, que mataria a
+// heranca em silencio), que um campo numerico vazio fica AUSENTE do bloco em
+// vez de virar 0, e que um erro de formulario diz qual dos dezoito campos e.
+(function () {
+  const t = carregar();
+
+  check("pagina de perfil: exportada para teste", typeof t.PaginaPerfil === "function");
+  check("pagina de perfil: campos do classificador descritos",
+        Array.isArray(t.CAMPOS_CLASSIFICADOR) && t.CAMPOS_CLASSIFICADOR.length === 18,
+        "n=" + (t.CAMPOS_CLASSIFICADOR || []).length);
+  check("pagina de perfil: dois objectos JSON editaveis",
+        Array.isArray(t.CAMPOS_JSON_CLASSIFICADOR) && t.CAMPOS_JSON_CLASSIFICADOR.length === 2);
+  check("pagina de perfil: nenhuma chave repetida",
+        new Set(t.CAMPOS_CLASSIFICADOR.map(function (c) { return c.chave; })).size
+          === t.CAMPOS_CLASSIFICADOR.length);
+  check("pagina de perfil: todas as chaves tem tipo conhecido",
+        t.CAMPOS_CLASSIFICADOR.concat(t.CAMPOS_JSON_CLASSIFICADOR).every(function (c) {
+          return ["texto", "numero", "seletor", "json"].indexOf(c.tipo) >= 0 || c.tipo === undefined;
+        }));
+
+  // --- leitura: perfil que DECLARA um bloco proprio ---
+  const declarado = {
+    activo: true,
+    latencia_max_ms: 45000,
+    tarefas: { arquitetura: { termos: ["SA Analysis", "parecer"], prioridade: 10 } },
+    classificador: {
+      activo: true, provider: "openrouter", modelo: "~typesafe/jev-latest",
+      via: "decisoes", preset: "sistema-um", estado: "medidas",
+      confianca_min: 0, timeout_s: 12.0, max_tokens: 320,
+      parametros_extra: { reasoning: { effort: "low" } },
+      headers_extra: {},
+    },
+    estrategia: { modo: "rodizio", por: "sessao" },
+  };
+  const f1 = t.perfilParaForm(declarado);
+  check("leitura: declara -> clsHerdar falso", f1.clsHerdar === false);
+  check("leitura: declara -> estHerdar falso", f1.estHerdar === false);
+  check("leitura: modelo preservado", f1.cls.modelo === "~typesafe/jev-latest");
+  check("leitura: confianca 0 nao vira vazio", f1.cls.confianca_min === "0",
+        "valor=" + JSON.stringify(f1.cls.confianca_min));
+  check("leitura: parametros_extra vira JSON legivel",
+        JSON.parse(f1.cls.parametros_extra).reasoning.effort === "low");
+  check("leitura: headers_extra vazio fica string vazia", f1.cls.headers_extra === "");
+  check("leitura: termos juntos por virgula", f1.tarefas[0].termos === "SA Analysis, parecer");
+  check("leitura: latencia como texto", f1.latencia_max_ms === "45000");
+  check("leitura: estrategia preenchida",
+        f1.estModo === "rodizio" && f1.estPor === "sessao");
+
+  // --- leitura: perfil que HERDA (o estado medido da config viva) ---
+  const herdado = t.perfilParaForm({ activo: true, tarefas: {} });
+  check("leitura: sem bloco -> clsHerdar verdadeiro", herdado.clsHerdar === true);
+  check("leitura: sem bloco -> estHerdar verdadeiro", herdado.estHerdar === true);
+  check("leitura: sem bloco -> nao inventa modelo", herdado.cls.modelo === "");
+  check("leitura: sem bloco -> nenhuma tarefa", herdado.tarefas.length === 0);
+
+  // --- escrita: herdar produz a palavra, nao uma copia ---
+  const r1 = t.formParaPerfil(
+    { activo: true, tarefas: [], clsHerdar: true, estHerdar: true }, "default", "abc123");
+  check("escrita: herdar -> corpo.classificador === 'herdar'",
+        r1.corpo.classificador === "herdar", JSON.stringify(r1.corpo.classificador));
+  check("escrita: herdar -> corpo.estrategia === 'herdar'",
+        r1.corpo.estrategia === "herdar");
+  check("escrita: rev do servidor viaja no corpo", r1.corpo.rev === "abc123");
+
+  // --- escrita: proprio, com tipos certos ---
+  const r2 = t.formParaPerfil(f1, "default", "");
+  check("escrita: sem erros de formulario", r2.erro.length === 0, r2.erro.join("; "));
+  check("escrita: confianca_min volta a ser numero",
+        r2.corpo.classificador.confianca_min === 0 && typeof r2.corpo.classificador.confianca_min === "number");
+  check("escrita: timeout_s numero", r2.corpo.classificador.timeout_s === 12);
+  check("escrita: max_tokens numero", r2.corpo.classificador.max_tokens === 320);
+  check("escrita: parametros_extra volta a objecto",
+        r2.corpo.classificador.parametros_extra.reasoning.effort === "low");
+  check("escrita: headers_extra vazio NAO entra no bloco",
+        !("headers_extra" in r2.corpo.classificador));
+  check("escrita: termos partidos por virgula",
+        JSON.stringify(r2.corpo.tarefas.arquitetura.termos) === JSON.stringify(["SA Analysis", "parecer"]));
+  check("escrita: prioridade numero", r2.corpo.tarefas.arquitetura.prioridade === 10);
+  check("escrita: latencia numero", r2.corpo.latencia_max_ms === 45000);
+  check("escrita: estrategia propria objecto",
+        r2.corpo.estrategia.modo === "rodizio" && r2.corpo.estrategia.por === "sessao");
+
+  // --- escrita: campo numerico vazio fica AUSENTE (o padrao decide) ---
+  const r3 = t.formParaPerfil({
+    activo: false, tarefas: [], clsHerdar: false,
+    cls: { provider: "deepseek", modelo: "deepseek-flash", timeout_s: "", max_tokens: "" },
+    estHerdar: true,
+  }, "pessoal", "");
+  check("escrita: numero vazio nao vira 0 nem entra",
+        !("timeout_s" in r3.corpo.classificador) && !("max_tokens" in r3.corpo.classificador),
+        JSON.stringify(r3.corpo.classificador));
+  check("escrita: activo false preservado", r3.corpo.activo === false);
+  check("escrita: latencia vazia vira 0", r3.corpo.latencia_max_ms === 0);
+
+  // --- escrita: erros nomeados ---
+  const r4 = t.formParaPerfil({
+    activo: true, tarefas: [], clsHerdar: false,
+    cls: { timeout_s: "doze" }, estHerdar: true,
+  }, "default", "");
+  check("escrita: numero invalido e recusado", r4.erro.length === 1, JSON.stringify(r4.erro));
+  check("escrita: o erro nomeia o campo", /timeout/.test(r4.erro[0]), r4.erro[0]);
+
+  const r5 = t.formParaPerfil({
+    activo: true, tarefas: [], clsHerdar: false,
+    cls: { parametros_extra: "{nao e json" }, estHerdar: true,
+  }, "default", "");
+  check("escrita: JSON invalido e recusado com a causa",
+        r5.erro.length === 1 && /parâmetros extra/.test(r5.erro[0]), JSON.stringify(r5.erro));
+
+  const r6 = t.formParaPerfil({
+    activo: true, clsHerdar: true, estHerdar: true,
+    tarefas: [{ id: "a", termos: "x", prioridade: 1 }, { id: "a", termos: "y", prioridade: 2 }],
+  }, "default", "");
+  check("escrita: id de tarefa repetido e recusado", r6.erro.length === 1, JSON.stringify(r6.erro));
+
+  const r7 = t.formParaPerfil({
+    activo: true, clsHerdar: true, estHerdar: true,
+    tarefas: [{ id: "", termos: "x", prioridade: 0 }],
+  }, "default", "");
+  check("escrita: tarefa sem id e recusada", r7.erro.length === 1, JSON.stringify(r7.erro));
+
+  // --- a pagina desenha-se de verdade (sem rebentar) ---
+  const arvore = t.PaginaPerfil({
+    estado: { versao: "3.21.0", painel: { versao: "3.21.0" } },
+    perfil: "default",
+    form: f1,
+    opcoes: {
+      providers: [{ valor: "deepseek", rotulo: "deepseek" }],
+      vias: [{ valor: "auto", rotulo: "auto" }, { valor: "decisoes", rotulo: "decisoes" }],
+      presets: [{ valor: "sistema-um", rotulo: "sistema-um" }],
+      estados: [{ valor: "medidas", rotulo: "medidas" }],
+      esforcos: [{ valor: "baixo", rotulo: "baixo" }],
+      formatos_json: [{ valor: "auto", rotulo: "auto" }],
+      estrategia: { modo: [{ valor: "rodizio", rotulo: "rotação" }], por: [{ valor: "sessao", rotulo: "por sessão" }] },
+      tarefas: [], niveis: [], acessos: [], modalidades: [], superficies: [],
+    },
+    rev: "abc",
+    efectivo: { classificador: { provider: "x", modelo: "y", origem: "proprio" }, estrategia: { modo: "rodizio", por: "sessao", origem: "proprio" }, n_modelos: 4 },
+    global: { classificador: {}, estrategia: {} },
+    onCampo: function () {}, onCampoCls: function () {}, onTarefa: function () {},
+    onNovaTarefa: function () {}, onRemoverTarefa: function () {},
+    onValidar: function () {}, onGravar: function () {}, onDescartar: function () {},
+  });
+  // O harness nao executa componentes-funcao: um `h(Seletor, ...)` fica como no
+  // com tag "Seletor" e as suas props. Por isso se contam os nos, nao os
+  // elementos finais do DOM.
+  const titulos = comTag(arvore, "div").filter(function (x) {
+    return String(x.props && x.props.className || "").indexOf("vmm-bloco-titulo") !== -1;
+  });
+  check("render: a pagina tem os quatro blocos", titulos.length === 4, "blocos=" + titulos.length);
+  const textosBotoes = comTag(arvore, "button").map(function (b) { return textoPlano(b.filhos).trim(); });
+  check("render: os tres botoes do editor estao la",
+        textosBotoes.some(function (t) { return t === "Validar"; })
+          && textosBotoes.some(function (t) { return /Gravar e voltar/.test(t); })
+          && textosBotoes.some(function (t) { return t === "Descartar"; }),
+        JSON.stringify(textosBotoes));
+  const campos = comTag(arvore, "Seletor").length
+    + comTag(arvore, "EntradaTexto").length
+    + comTag(arvore, "textarea").length;
+  check("render: os 18 campos do classificador desenhados quando e proprio",
+        campos >= 20, "campos=" + campos
+          + " Seletor=" + comTag(arvore, "Seletor").length
+          + " EntradaTexto=" + comTag(arvore, "EntradaTexto").length
+          + " textarea=" + comTag(arvore, "textarea").length);
+
+  // Herdar esconde os dezoito: o formulario nao mostra campos que nao vao ser
+  // gravados — mostra o que se herda.
+  const arvoreHerdada = t.PaginaPerfil({
+    estado: {}, perfil: "pessoal", form: herdado,
+    opcoes: {}, rev: "abc",
+    efectivo: { classificador: { origem: "herdado" }, estrategia: { origem: "herdado" } },
+    global: { classificador: { provider: "openrouter", modelo: "~typesafe/jev-latest" },
+              estrategia: { modo: "rodizio", por: "sessao" } },
+    onCampo: function () {}, onCampoCls: function () {}, onTarefa: function () {},
+    onNovaTarefa: function () {}, onRemoverTarefa: function () {},
+    onValidar: function () {}, onGravar: function () {}, onDescartar: function () {},
+  });
+  check("render: a herdar nao mostra os campos do classificador",
+        comTag(arvoreHerdada, "Seletor").length + comTag(arvoreHerdada, "EntradaTexto").length <= 4,
+        "campos=" + (comTag(arvoreHerdada, "Seletor").length + comTag(arvoreHerdada, "EntradaTexto").length));
+  check("render: a herdar diz de quem herda",
+        /~typesafe\/jev-latest/.test(textoPlano(arvoreHerdada)));
+})();
+
 console.log("");
 if (falhas) {
   console.log(falhas + " de " + total + " verificacoes FALHARAM");

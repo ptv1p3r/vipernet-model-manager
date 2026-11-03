@@ -637,3 +637,110 @@
 .vmm-icone-novo {
   margin-left: 0.35rem;
 }
+
+/* --- um perfil: pagina propria -------------------------------------------
+   Quatro blocos com moldura (activacao, tarefas, classificador, estrategia),
+   como os da pagina de um modelo. A grelha e a mesma ideia: dois campos por
+   linha quando ha largura, um quando nao ha, nunca scroll horizontal.
+   O classificador tem 18 campos escalares mais dois objectos JSON: em coluna
+   unica a pagina ficava com tres metros de altura. */
+.vmm-pagina-perfil {
+  max-width: 68rem;
+  margin: 0 auto;
+  padding-bottom: 3rem;
+}
+
+/* O cabecalho sticky tem de ser opaco, senao o formulario passa por baixo e
+   aparece sobreposto ao titulo. Duas declaracoes para o mesmo valor de
+   proposito: o dashboard define `--background` como trinca HSL e o valor e
+   colorido como `hsl(...)`; se um tema (ou um harness de teste) a definir como
+   cor, `hsl(#fff)` e invalido e o browser descarta-a, ficando a segunda. Uma
+   so das formas falha em silencio — e o sintoma e o texto sobreposto. */
+.vmm-pagina-perfil > .vmm-topo {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 0.75rem 0 0.75rem;
+  background: hsl(var(--background, 0 0% 100%));
+  background: var(--background, #fff);
+  border-bottom: 1px solid hsl(var(--border, 215 20% 88%));
+  border-bottom: 1px solid var(--border, #d8dde5);
+}
+
+.vmm-pagina-perfil > .vmm-topo .vmm-accoes {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.vmm-pagina-perfil .vmm-perfil-grelha {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 0.75rem;
+}
+
+.vmm-pagina-perfil .vmm-perfil-campos {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.55rem 0.9rem;
+  align-items: start;
+}
+
+.vmm-pagina-perfil .vmm-input {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.25rem 0.4rem;
+  /* Duas declaracoes pela mesma razao do cabecalho: `--border` como trinca HSL
+     exige `hsl(...)`, como cor exige o valor cru. Assim vale nos dois temas. */
+  border: 1px solid hsl(var(--border, 214 32% 91%));
+  border: 1px solid var(--border, #d8dde5);
+  border-radius: 4px;
+  background: var(--background, transparent);
+  color: inherit;
+  min-width: 0;
+  width: 100%;
+}
+
+.vmm-pagina-perfil .vmm-input:focus-visible {
+  outline: 2px solid hsl(var(--ring, 215 20% 65%));
+  outline-offset: 1px;
+}
+
+/* Objectos livres (`parametros_extra`, `headers_extra`): JSON em varias linhas,
+   em fonte mono, para se ver que e codigo e nao prosa. */
+.vmm-pagina-perfil .vmm-textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  line-height: 1.35;
+  resize: vertical;
+}
+
+/* Tarefas: tres colunas alinhadas (id, termos, prioridade) e o botao de
+   remover. Em ecra estreito passa a duas linhas por tarefa em vez de encolher
+   os campos ate nao se ler o que la esta. */
+.vmm-tabela-tarefas {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+
+.vmm-tarefa-linha {
+  display: grid;
+  grid-template-columns: 10rem 1fr 5rem auto;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+@media (max-width: 46rem) {
+  .vmm-tarefa-linha {
+    grid-template-columns: 1fr 5rem auto;
+  }
+  .vmm-tarefa-linha > *:first-child {
+    grid-column: 1 / -1;
+  }
+}
+
+.vmm-icone-perfil {
+  margin-left: 0.35rem;
+}

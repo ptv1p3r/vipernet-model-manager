@@ -3,7 +3,7 @@
   "label": "Model Manager",
   "description": "Gestor de provider+modelo por perfil: interruptor, catalogo por complexidade, associacoes de tarefa, esforco por rota e o registo do que foi servido a cada turno. Cada cartao de perfil diz se a complexidade esta a ser decidida por um modelo (e qual) ou pela heuristica.",
   "icon": "Router",
-  "version": "3.20.3",
+  "version": "3.21.0",
   "tab": {
     "path": "/model-manager",
     "position": "end"
