@@ -111,36 +111,51 @@ def _analise_modelo():
     selftest/CLI); a importacao relativa so existe na primeira. O modulo irmao
     e a unica casa dos limites do classificador — valida aqui, decide la.
 
-    Reutiliza o objecto ja carregado (`sys.modules["vmm_analise_modelo"]`) para
-    nao haver duas instancias com dois caches: o plugin e o gestor tem de ver o
-    mesmo cache, senao a mesma mensagem paga duas chamadas.
+    Devolve sempre a **mesma instancia que o plugin tem em memoria**. O plugin
+    recarrega `analise_modelo.py` a quente (mtime) e substitui a entrada em
+    `sys.modules`; se este modulo ficasse com a instancia do arranque, o
+    `validar` usaria o `normalizar` antigo — foi assim que uma chave nova do
+    classificador foi apagada em silencio ao carregar a config e o transporte
+    de decisoes nunca chegou a ser usado, com 3.14.0 a correr.
     """
-    global _AM
-    if _AM is not None:
-        return _AM
+    global _AM, _AM_MTIME
     import sys as _sys
+
+    caminho_am = Path(__file__).resolve().parent / "analise_modelo.py"
+    try:
+        mtime = caminho_am.stat().st_mtime_ns
+    except OSError:
+        mtime = 0
+    nome_pkg = f"{__package__}.analise_modelo" if __package__ else None
+    if nome_pkg:
+        ao_vivo = _sys.modules.get(nome_pkg)
+        if ao_vivo is not None and getattr(ao_vivo, "__file__", ""):
+            _AM, _AM_MTIME = ao_vivo, mtime
+            return ao_vivo
+    if _AM is not None and _AM_MTIME == mtime:
+        return _AM
 
     existente = _sys.modules.get("vmm_analise_modelo")
     if existente is not None:
-        _AM = existente
+        _AM, _AM_MTIME = existente, mtime
         return _AM
     try:
         from . import analise_modelo as mod  # type: ignore[import-not-found]
     except Exception:  # noqa: BLE001 - import solto
         import importlib.util as _ilu
 
-        caminho = Path(__file__).resolve().parent / "analise_modelo.py"
-        spec = _ilu.spec_from_file_location("vmm_analise_modelo", caminho)
+        spec = _ilu.spec_from_file_location("vmm_analise_modelo", caminho_am)
         if spec is None or spec.loader is None:
             raise
         mod = _ilu.module_from_spec(spec)
         _sys.modules["vmm_analise_modelo"] = mod
         spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    _AM = mod
+    _AM, _AM_MTIME = mod, mtime
     return mod
 
 
 _AM: Any = None
+_AM_MTIME: int | None = None
 
 # Semente: os catalogos que o dono declarou (2026-11-02). Cada modelo traz a sua
 # complexidade. Alternancia: `rodizio` com `por: sessao` — a sessao fica na rota
