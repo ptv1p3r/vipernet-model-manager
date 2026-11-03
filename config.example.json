@@ -2,6 +2,10 @@
   "versao": 3,
   "activo": true,
   "registar": true,
+  "estrategia": {
+    "modo": "rodizio",
+    "por": "sessao"
+  },
   "analise": {
     "janela_mensagens": 8,
     "varredura_max_mensagens": 60,
@@ -10,25 +14,32 @@
       "alta": 7
     },
     "descer_apos": 2,
-    "contexto_grande_tokens": 24000
+    "contexto_grande_tokens": 24000,
+    "classificador": {
+      "activo": true,
+      "provider": "inception",
+      "modelo": "mercury-3",
+      "via": "auto",
+      "esforco": "baixo",
+      "confianca_min": 0.0
+    }
   },
   "perfis": {
     "default": {
       "activo": true,
-      "estrategia": "prioridade",
       "latencia_max_ms": 4000,
-      "rodizio": {
-        "por": "sessao"
+      "tarefas": {
+        "codigo": {
+          "termos": ["implementa", "refactor", "testes"],
+          "prioridade": 90
+        }
       },
       "catalogo": [
         {
           "id": "deepseek-flash",
           "provider": "deepseek",
           "modelo": "deepseek-flash",
-          "complexidade": [
-            "leve",
-            "media"
-          ],
+          "complexidade": ["leve", "media"],
           "acesso": "api"
         },
         {
@@ -40,7 +51,8 @@
           "contexto_max": 1000000,
           "modalidades": ["texto", "imagem"],
           "json_nativo": true,
-          "latencia_p95_ms": 2500
+          "latencia_p95_ms": 2500,
+          "tarefas": ["codigo"]
         },
         {
           "id": "gpt-sol-sub",
@@ -60,19 +72,20 @@
     },
     "pessoal": {
       "activo": true,
-      "estrategia": "rodizio",
-      "rodizio": {
-        "por": "sessao"
+      "estrategia": {
+        "modo": "prioridade"
+      },
+      "analise": {
+        "superficies": {
+          "cron": {"entrada": "deepseek-flash"}
+        }
       },
       "catalogo": [
         {
           "id": "deepseek-flash",
           "provider": "deepseek",
           "modelo": "deepseek-flash",
-          "complexidade": [
-            "leve",
-            "media"
-          ],
+          "complexidade": ["leve", "media"],
           "acesso": "api"
         },
         {
@@ -100,9 +113,15 @@
     },
     "trabalho": {
       "activo": true,
-      "estrategia": "rodizio",
-      "rodizio": {
-        "por": "sessao"
+      "analise": {
+        "classificador": {
+          "activo": true,
+          "provider": "openrouter",
+          "modelo": "~typesafe/jev-latest",
+          "via": "decisoes",
+          "estado": "medidas",
+          "confianca_min": 0.0
+        }
       },
       "catalogo": [
         {
