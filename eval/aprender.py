@@ -972,6 +972,13 @@ def _relatorio(dados: dict[str, Any]) -> str:
 # --------------------------------------------------------------------------- CLI
 
 
+def _lote_juiz(provider: str, valor: int | None) -> int:
+    """Resolve `--juiz-lote`: `None` decide pelo provider, `0` forca um a um."""
+    if valor is None:
+        return JUIZ_LOTE_PADRAO if provider == "inception" else 0
+    return max(0, int(valor))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Ciclo de aprendizagem do ViperNet Model Manager")
     ap.add_argument("--casos", type=int, default=240, help="pedidos a rotular neste ciclo")
@@ -1008,10 +1015,7 @@ def main() -> int:
                     help="segundos entre chamadas do A/B (o provedor limita por minuto)")
     args = ap.parse_args()
 
-    if args.juiz_lote is None:
-        # O limite de pedidos por minuto do `inception` e o unico motivo do lote.
-        args.juiz_lote = JUIZ_LOTE_PADRAO if args.juiz_provider == "inception" else 0
-    args.juiz_lote = max(0, int(args.juiz_lote))
+    args.juiz_lote = _lote_juiz(args.juiz_provider, args.juiz_lote)
 
     if "v4-pro" in (args.juiz_modelo or "") and not args.juiz_permitir_v4_pro:
         print(json.dumps({"ok": False, "erro": (

@@ -840,7 +840,6 @@ class TestJuizProibido(unittest.TestCase):
 
 class TestJuizLote(unittest.TestCase):
     """Rotulagem em lote: o mercury-3 recusa 130 pedidos por minuto.
-
     Medido a 2026-11-03: 130 casos um a um com 4 threads deram HTTP 429 e a
     corrida seguinte devolveu 0/130. O lote existe para isso; se ele perder
     casos em silencio, o portao fecha por falta de corpus e a causa fica
@@ -911,6 +910,15 @@ class TestJuizLote(unittest.TestCase):
                 unittest.mock.patch.object(A.time, "sleep", lambda s: None):
             r = A._etiquetar_lote(self._casos(3), {}, None, tamanho=10)
         self.assertEqual([x["rotulo"] for x in r], ["leve", None, None])
+
+    def test_lote_por_omissao_decide_pelo_provider(self):
+        self.assertEqual(A._lote_juiz("inception", None), A.JUIZ_LOTE_PADRAO)
+        self.assertEqual(A._lote_juiz("deepseek", None), 0)
+
+    def test_lote_explicito_ganha_ao_provider(self):
+        self.assertEqual(A._lote_juiz("inception", 0), 0)
+        self.assertEqual(A._lote_juiz("deepseek", 5), 5)
+        self.assertEqual(A._lote_juiz("inception", -3), 0)
 
     def test_lote_zero_usa_o_caminho_um_a_um(self):
         chamadas = []
