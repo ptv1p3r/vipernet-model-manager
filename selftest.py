@@ -747,7 +747,15 @@ def testes_cli() -> None:
 
     r = vmm("rota", "list", "trabalho")
     check("rota list mostra as complexidades",
-          r.returncode == 0 and "alta" in r.stdout and "deepseek-v4-pro" in r.stdout, r.stdout)
+          r.returncode == 0 and "alta" in r.stdout and "gpt-6.1-sol" in r.stdout, r.stdout)
+
+    # Regra do dono (2026-11-03): o `deepseek-v4-pro` nao entra em nenhum
+    # catalogo por omissao. Um perfil novo nasce sem ele.
+    cfg_default, _ = g.carregar(d / "nao-existe.json")
+    modelos_default = [e.get("modelo") for p in cfg_default["perfis"].values()
+                       for e in p.get("catalogo", [])]
+    check("catalogo por omissao sem deepseek-v4-pro",
+          "deepseek-v4-pro" not in modelos_default, str(modelos_default))
 
     r = vmm("caminho")
     check("caminho imprime o config e o ledger",

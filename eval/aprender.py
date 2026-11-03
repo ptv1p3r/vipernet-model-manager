@@ -921,7 +921,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Ciclo de aprendizagem do ViperNet Model Manager")
     ap.add_argument("--casos", type=int, default=240, help="pedidos a rotular neste ciclo")
     ap.add_argument("--juiz-provider", default="deepseek")
-    ap.add_argument("--juiz-modelo", default="deepseek-v4-pro")
+    # O dono proibiu o `deepseek-v4-pro` em qualquer funcao (2026-11-03), salvo
+    # indicacao explicita. O default passa a `deepseek-flash`; o v4-pro so entra
+    # com `--juiz-permitir-v4-pro`, para que a regra seja executavel e nao uma
+    # nota num README que a proxima sessao nao le.
+    ap.add_argument("--juiz-modelo", default="deepseek-flash")
+    ap.add_argument("--juiz-permitir-v4-pro", action="store_true",
+                    help="autoriza explicitamente o deepseek-v4-pro como juiz")
     ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--kappa-minimo", type=float, default=0.60,
                     help="kappa binario minimo por fronteira (leve/media/alta vs resto)")
@@ -938,6 +944,13 @@ def main() -> int:
     ap.add_argument("--pausa-abc", type=float, default=1.2,
                     help="segundos entre chamadas do A/B (o provedor limita por minuto)")
     args = ap.parse_args()
+
+    if "v4-pro" in (args.juiz_modelo or "") and not args.juiz_permitir_v4_pro:
+        print(json.dumps({"ok": False, "erro": (
+            "juiz deepseek-v4-pro recusado: o dono proibiu esse modelo salvo "
+            "indicacao explicita. Usa o default (deepseek-flash) ou passa "
+            "--juiz-permitir-v4-pro.")}, ensure_ascii=False))
+        return 2
 
     garantir_interpretador()
 

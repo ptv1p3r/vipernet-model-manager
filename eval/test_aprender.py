@@ -763,5 +763,43 @@ class TestLeitorGold(unittest.TestCase):
                 A.EVAL, A.GOLD_HUMANO = original_eval, original_humano
 
 
+class TestJuizProibido(unittest.TestCase):
+    """Regra do dono (2026-11-03): `deepseek-v4-pro` so com indicacao explicita.
+
+    O defeito que isto trava e silencioso: o default do juiz era o v4-pro e o job
+    semanal corre sem argumentos, logo o modelo recusado ia ser usado 200 vezes
+    por semana sem ninguem o decidir.
+    """
+
+    def test_default_do_juiz_nao_e_o_v4_pro(self):
+        import argparse
+        # le o default real da CLI, sem construir o parser todo
+        parser_defaults = {}
+        original = argparse.ArgumentParser.parse_args
+
+        def capturar(self, *a, **k):
+            for acao in self._actions:
+                parser_defaults[acao.dest] = acao.default
+            raise SystemExit(99)
+
+        argparse.ArgumentParser.parse_args = capturar
+        try:
+            with self.assertRaises(SystemExit):
+                A.main()
+        finally:
+            argparse.ArgumentParser.parse_args = original
+        self.assertEqual(parser_defaults.get("juiz_modelo"), "deepseek-flash")
+        self.assertIn("juiz_permitir_v4_pro", parser_defaults)
+
+    def test_guarda_recusa_v4_pro_sem_autorizacao(self):
+        import subprocess
+        r = subprocess.run(
+            [sys.executable, str(EVAL / "aprender.py"),
+             "--juiz-modelo", "deepseek-v4-pro", "--exportar-fila", "1"],
+            capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("recusado", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
