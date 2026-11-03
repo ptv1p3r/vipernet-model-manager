@@ -197,6 +197,20 @@ painel novo — depois de instalar, reiniciar o contentor do dashboard (ou forç
 `/api/dashboard/plugins/rescan`). Alterações ao `api.py` também só entram no
 arranque: o router é montado uma vez. A config do agente é lida a quente (TTL 5 s).
 
+### Identidade no cabeçalho (3.13.8)
+
+O cabeçalho mostra `v<versão> · <autor> · github.com/<conta>`, com o repositório
+como ligação. A versão **não** é uma cópia escrita no JS: `GET /estado` devolve
+`plugin` com `versao` lida do `plugin.yaml` — o mesmo ficheiro que o loader e o
+catálogo leem —, `autor` e `github`. Se o `version` do `manifest.json` divergir do
+`plugin.yaml`, o cabeçalho mostra os dois números a vermelho em vez de escolher um
+em silêncio: foi essa divergência (painel 3.11.2 com o disco em 3.11.3) que já fez
+duvidar de que código estava a correr.
+
+`github` é o repositório público do autor, e não o Gitea interno: o catálogo exige
+um repositório público clonável por https em GitHub ou GitLab [1], pelo que o
+endereço que o painel mostra é o que serve uma submissão.
+
 ### Indicador da análise por cartão (3.7)
 
 Cada cartão de perfil responde a uma pergunta só: **a complexidade deste turno está

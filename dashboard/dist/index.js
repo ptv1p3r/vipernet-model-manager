@@ -48,6 +48,40 @@
     };
   }
 
+  // Cabecalho de identidade: versao do plugin, autor e repositorio publico.
+  // Vive fora do componente para se testar com dados reais sem um React a
+  // serio — o componente limita-se a chama-la.
+  function linhaIdentidade(meta) {
+    return h(
+      "div",
+      { className: "vmm-meta" },
+      h("span", { className: "vmm-meta-versao" }, "v" + meta.versao),
+      h("span", { className: "vmm-meta-sep" }, "·"),
+      h("span", { className: "vmm-meta-autor" }, meta.autor),
+      meta.github ? h("span", { className: "vmm-meta-sep" }, "·") : null,
+      meta.github
+        ? h(
+            "a",
+            {
+              className: "vmm-meta-link",
+              href: meta.github,
+              target: "_blank",
+              rel: "noopener noreferrer",
+              title: "Repositorio publico do autor",
+            },
+            meta.github.replace(/^https?:\/\/(www\.)?github\.com\//, "github.com/")
+          )
+        : null,
+      meta.divergente
+        ? h(
+            "span",
+            { className: "vmm-meta-deriva", title: "plugin.yaml e manifest.json divergem" },
+            " · painel v" + meta.manifest
+          )
+        : null
+    );
+  }
+
   function pedir(caminho, opcoes) {
     var opts = Object.assign({}, opcoes || {});
     // O SDK.fetchJSON entrega o init tal e qual ao fetch(): um body objecto vira a
@@ -787,36 +821,7 @@
           ),
           // Identidade do plugin. A versao vem do plugin.yaml (a mesma que o
           // loader e o catalogo leem) e nao de uma copia escrita a mao aqui.
-          h(
-            "div",
-            { className: "vmm-meta" },
-            h("span", { className: "vmm-meta-versao" }, "v" + meta.versao),
-            h("span", { className: "vmm-meta-sep" }, "·"),
-            h("span", { className: "vmm-meta-autor" }, meta.autor),
-            meta.github
-              ? h("span", { className: "vmm-meta-sep" }, "·")
-              : null,
-            meta.github
-              ? h(
-                  "a",
-                  {
-                    className: "vmm-meta-link",
-                    href: meta.github,
-                    target: "_blank",
-                    rel: "noopener noreferrer",
-                    title: "Repositorio publico do autor",
-                  },
-                  meta.github.replace(/^https?:\/\/(www\.)?github\.com\//, "github.com/")
-                )
-              : null,
-            meta.divergente
-              ? h(
-                  "span",
-                  { className: "vmm-meta-deriva", title: "plugin.yaml e manifest.json divergem" },
-                  " · painel v" + meta.manifest
-                )
-              : null
-          )
+          linhaIdentidade(meta)
         ),
         h(
           "div",
@@ -984,5 +989,6 @@
     window.__VMM_TEST__.paresModelo = paresModelo;
     window.__VMM_TEST__.rotuloAnalise = rotuloAnalise;
     window.__VMM_TEST__.metaPlugin = metaPlugin;
+    window.__VMM_TEST__.linhaIdentidade = linhaIdentidade;
   }
 })();

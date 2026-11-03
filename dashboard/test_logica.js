@@ -32,15 +32,27 @@ function check(nome, condicao, detalhe) {
 
 function carregar() {
   const ferramentas = {};
+  // h falso que constroi a arvore: deixa o componente correr de verdade (e
+  // rebentar se rebentar) em vez de so exportar funcoes puras.
   const React = {
-    createElement: function () { return null; },
+    createElement: function (tag, props) {
+      return {
+        tag: typeof tag === "function" ? (tag.name || "Componente") : tag,
+        props: props || {},
+        filhos: Array.prototype.slice.call(arguments, 2),
+      };
+    },
     useState: function (v) { return [v, function () {}]; },
     useEffect: function () {},
     useCallback: function (f) { return f; },
+    useMemo: function (f) { return f(); },
+    useRef: function (v) { return { current: v }; },
+    Fragment: "Fragment",
   };
+  const registos = {};
   const janela = {
     __HERMES_PLUGIN_SDK__: { React: React, hooks: {}, components: {} },
-    __HERMES_PLUGINS__: { register: function () {} },
+    __HERMES_PLUGINS__: { register: function (nome, comp) { registos[nome] = comp; } },
     __VMM_TEST__: ferramentas,
   };
   const contexto = {
@@ -54,7 +66,26 @@ function carregar() {
   const codigo = fs.readFileSync(path.join(__dirname, "dist", "index.js"), "utf-8");
   vm.createContext(contexto);
   vm.runInContext(codigo, contexto, { filename: "index.js" });
+  ferramentas.__registos = registos;
   return ferramentas;
+}
+
+// Texto visivel da arvore, para procurar o que o cabecalho mostra.
+function textoDaArvore(no) {
+  if (no === null || no === undefined) return "";
+  if (typeof no === "string" || typeof no === "number") return String(no);
+  if (!no.filhos) return "";
+  return no.filhos.map(textoDaArvore).join(" ");
+}
+
+function procurarNaArvore(no, predicado) {
+  if (!no || typeof no !== "object") return null;
+  if (predicado(no)) return no;
+  for (const f of no.filhos || []) {
+    const achado = procurarNaArvore(f, predicado);
+    if (achado) return achado;
+  }
+  return null;
 }
 
 const T = carregar();
@@ -296,6 +327,44 @@ check("metaPlugin: sem deriva quando so ha um numero", mLegado.divergente === fa
 
 const mNulo = T.metaPlugin(null);
 check("metaPlugin: sem estado nao rebenta", mNulo.versao === "—" && mNulo.autor === "—" && mNulo.divergente === false);
+
+// --- o cabecalho renderiza a identidade ------------------------------------
+// Prova que o que o utilizador ve e o que o endpoint manda: versao, autor e
+// link do repositorio, sem React a serio.
+
+const cab = T.linhaIdentidade(mOk);
+check("render: cabecalho e o bloco de identidade", cab.tag === "div" && cab.props.className === "vmm-meta");
+
+const textoCab = textoDaArvore(cab);
+check("render: cabecalho mostra a versao", textoCab.indexOf("v3.13.8") !== -1, textoCab);
+check("render: cabecalho mostra o autor", textoCab.indexOf("Pedro Tiago de Jesus Estevanez Roldan") !== -1, textoCab);
+
+const link = procurarNaArvore(cab, (n) => n.tag === "a");
+check("render: cabecalho tem link para o github", !!link && link.props.href === "https://github.com/ptv1p3r",
+      link ? link.props.href : "sem link");
+check("render: link abre noutro separador", !!link && link.props.target === "_blank");
+check("render: link nao passa o opener", !!link && /noopener/.test(link.props.rel || ""));
+check("render: etiqueta do link e curta", link && link.filhos[0] === "github.com/ptv1p3r",
+      link ? String(link.filhos[0]) : "");
+
+const cabSemGithub = T.linhaIdentidade(mLegado);
+check("render: sem github nao desenha link",
+      procurarNaArvore(cabSemGithub, (n) => n.tag === "a") === null);
+
+const cabDeriva = T.linhaIdentidade(mDeriva);
+const avisoDeriva = procurarNaArvore(cabDeriva, (n) => n.props && n.props.className === "vmm-meta-deriva");
+check("render: deriva aparece no cabecalho", !!avisoDeriva, textoDaArvore(cabDeriva));
+
+// O componente inteiro, na primeira pintura (antes do /estado responder).
+const Pagina = (T.__registos || {})["vipernet-model-manager"];
+check("render: o painel regista-se no SDK", typeof Pagina === "function");
+let erroRender = "";
+try {
+  Pagina();
+} catch (e) {
+  erroRender = String(e && e.message ? e.message : e);
+}
+check("render: primeira pintura sem estado nao rebenta", erroRender === "", erroRender);
 
 console.log("");
 if (falhas) {
