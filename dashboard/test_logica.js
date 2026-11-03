@@ -1396,6 +1396,77 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
         "campos=" + (comTag(arvoreHerdada, "Seletor").length + comTag(arvoreHerdada, "EntradaTexto").length));
   check("render: a herdar diz de quem herda",
         /~typesafe\/jev-latest/.test(textoPlano(arvoreHerdada)));
+  // --- o icone do cartao ABRE a pagina: a ligacao, nao o desenho -----------
+  // O render prova que o ⚙ esta la e cabe; isto prova que carregar nele chama
+  // o handler do perfil certo. Sem esta prova, um icone bonito e inerte.
+  const cartao = t.CartaoPerfil({
+    estado: { versao: "3.21.0" },
+    perfil: "default",
+    nome: "trabalho",
+    dados: {
+      activo: true, catalogo: [], tarefas: {},
+      estrategia: { modo: "rodizio", por: "sessao", origem: "herdado" },
+      analise: { modo: "modelo" },
+    },
+    aGravar: false,
+    onToggle: function () {}, onPerfil: function () {}, onModelo: function () {},
+    onNovoModelo: function () {}, onNovo: function () {},
+  });
+  const chamadas = [];
+  (function procurar(no) {
+    if (!no || typeof no !== "object") return;
+    if (Array.isArray(no)) return no.forEach(procurar);
+    if (no.props && typeof no.props.onClick === "function") {
+      const rotulo = textoPlano(no.filhos).trim();
+      if (rotulo === "⚙") {
+        chamadas.push({ rotulo: rotulo, classe: no.props.className,
+                        titulo: no.props.title, clicar: no.props.onClick });
+      }
+    }
+    (no.filhos || []).forEach(procurar);
+  })(cartao);
+  check("cartao: o ⚙ existe e esta ligado a um onClick", chamadas.length === 1,
+        "encontrados=" + chamadas.length);
+  if (chamadas.length === 1) {
+    check("cartao: o ⚙ tem a classe do icone de perfil",
+          /vmm-icone-perfil/.test(chamadas[0].classe || ""), chamadas[0].classe);
+    check("cartao: o titulo do ⚙ diz o que faz",
+          /configurações do perfil trabalho/.test(chamadas[0].titulo || ""),
+          chamadas[0].titulo);
+
+    // E o handler: o cartao recebe `onPerfil`, e o painel passa-lhe abrirPerfil.
+    let recebido = null;
+    const cartaoComEspiao = t.CartaoPerfil({
+      estado: {}, perfil: "trabalho", nome: "trabalho",
+      dados: { activo: true, catalogo: [], tarefas: {}, estrategia: {}, analise: {} },
+      aGravar: false,
+      onToggle: function () {}, onPerfil: function (n) { recebido = n; },
+      onModelo: function () {}, onNovoModelo: function () {}, onNovo: function () {},
+    });
+    (function procurar2(no) {
+      if (!no || typeof no !== "object") return;
+      if (Array.isArray(no)) return no.forEach(procurar2);
+      if (no.props && typeof no.props.onClick === "function"
+          && textoPlano(no.filhos).trim() === "⚙") {
+        no.props.onClick();
+      }
+      (no.filhos || []).forEach(procurar2);
+    })(cartaoComEspiao);
+    check("cartao: carregar no ⚙ entrega o nome do perfil ao painel", recebido === "trabalho",
+          JSON.stringify(recebido));
+  }
+
+  // O painel liga `onPerfil` a `abrirPerfil`: le-se no proprio bundle, porque
+  // abrirPerfil e fechada dentro do modulo. Um `onPerfil` que apontasse a outra
+  // coisa (ou nada) passaria nos testes acima e falharia aqui.
+  const fonte = require("fs").readFileSync(
+    "/opt/data/plugins/vipernet-model-manager/dashboard/dist/index.js", "utf-8");
+  check("painel: onPerfil chama abrirPerfil",
+        /onPerfil:\s*function \(perfil\) \{ abrirPerfil\(perfil\); \}/.test(fonte));
+  check("painel: a pagina de perfil tem early return antes do painel",
+        /if \(perfilAberto\) \{\s*\n\s*return h\(PaginaPerfil,/.test(fonte));
+  check("painel: abrirPerfil le /perfil do servidor (nao do resumo do cartao)",
+        /pedir\("\/perfil\?nome=" \+ encodeURIComponent\(perfil\)\)/.test(fonte));
 })();
 
 console.log("");
