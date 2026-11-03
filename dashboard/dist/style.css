@@ -454,9 +454,32 @@
   padding: 0.18rem 0;
 }
 
-/* A estrategia tem dois selects por linha, nao seis campos. */
+/* Sem isto um select com texto comprido ("~typesafe/jev-latest") empurra a
+   grelha para fora do cartao e a linha passa a ter scroll horizontal. */
+.vmm-classif-linha > * {
+  min-width: 0;
+}
+
+/* A estrategia tem dois selects por linha, nao seis campos. O primeiro leva a
+   frase inteira ("herdar do global (rotacao)") e por isso precisa de mais
+   largura do que parece. */
 .vmm-linha-estrategia {
-  grid-template-columns: minmax(8rem, 1fr) minmax(11rem, 1.4fr) minmax(11rem, 1.4fr);
+  grid-template-columns: minmax(8rem, 1fr) minmax(14rem, 1.5fr) minmax(11rem, 1.2fr);
+}
+
+/* O campo de acrescentar superficie tem um placeholder comprido e um botao ao
+   lado: sem largura minima o texto sai cortado a meio da palavra. */
+.vmm-sup-add {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 0.35rem;
+}
+
+.vmm-sup-add .vmm-select {
+  flex: 0 1 15rem;
+  min-width: 12rem;
 }
 
 .vmm-classif-nome {
@@ -488,7 +511,9 @@
   min-width: 0;
 }
 
-@media (max-width: 720px) {
+/* Abaixo de 900px os campos nao cabem lado a lado: empilham por linha em vez de
+   criarem scroll horizontal dentro do cartao. */
+@media (max-width: 900px) {
   .vmm-classif-linha,
   .vmm-linha-estrategia { grid-template-columns: 1fr; }
 }
