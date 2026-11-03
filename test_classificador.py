@@ -352,6 +352,115 @@ class TestTexto(Base):
         self.assertEqual(ultima, "olá bloco")
 
 
+class TestEstadoDecisoes(Base):
+    """O `state` do transporte de decisoes.
+
+    A razao de ser foi medida a 2026-11-03 nos 250 casos do gold: o transcrito
+    cru (sete anteriores de outros assuntos) deu kappa de alta 0,3604 e, em
+    producao, 127 de 129 leituras abstiveram com p50 0,18. Com o bloco de
+    medidas o mesmo pedido deu 0,5479, e com o publicado (medidas + duas
+    anteriores rotuladas) 0,6349. Estes testes fixam a FORMA, nao o numero.
+    """
+
+    def test_pedido_isolado_e_medido(self):
+        corpo, _ = am.texto([{"role": "user", "content": "rever o pipeline"}])
+        s = am._estado_decisoes(corpo)
+        self.assertIn("[MEDIDAS DO PEDIDO]", s)
+        self.assertIn("[PEDIDO A CLASSIFICAR]", s)
+        self.assertIn("rever o pipeline", s)
+        self.assertIn("caracteres:", s)
+
+    def test_anterior_fica_rotulado_como_contexto(self):
+        msgs = [{"role": "user", "content": "primeira coisa"},
+                {"role": "assistant", "content": "certo"},
+                {"role": "user", "content": "segunda coisa"}]
+        corpo, _ = am.texto(msgs)
+        s = am._estado_decisoes(corpo)
+        self.assertIn("[CONTEXTO ANTERIOR, NAO E O PEDIDO A CLASSIFICAR]", s)
+        self.assertIn("primeira coisa", s)
+        # o que se classifica vem depois, e so ele
+        self.assertGreater(s.index("[PEDIDO A CLASSIFICAR]"),
+                           s.index("[CONTEXTO ANTERIOR"))
+
+    def test_no_maximo_duas_anteriores(self):
+        msgs = [{"role": "user", "content": f"pedido {i}"} for i in range(7)]
+        msgs.append({"role": "user", "content": "o alvo"})
+        corpo, _ = am.texto(msgs, janela=8, max_chars=4000)
+        s = am._estado_decisoes(corpo)
+        bloco = s.split("[CONTEXTO ANTERIOR")[1].split("[/CONTEXTO ANTERIOR]")[0]
+        self.assertEqual(bloco.count("[anterior]"), 2, bloco)
+        self.assertNotIn("pedido 0", bloco)
+
+    def test_anterior_truncada(self):
+        msgs = [{"role": "user", "content": "x" * 900},
+                {"role": "user", "content": "alvo"}]
+        corpo, _ = am.texto(msgs, janela=8, max_chars=4000)
+        s = am._estado_decisoes(corpo)
+        bloco = s.split("[CONTEXTO ANTERIOR")[1].split("[/CONTEXTO ANTERIOR]")[0]
+        linha = [ln for ln in bloco.splitlines() if ln.startswith("[anterior]")][0]
+        self.assertLessEqual(len(linha), 302, len(linha))
+
+    def test_modo_simples_devolve_o_corpo(self):
+        corpo, _ = am.texto([{"role": "user", "content": "olá"}])
+        self.assertEqual(am._estado_decisoes(corpo, "simples"), corpo)
+
+    def test_modo_desconhecido_cai_em_medidas(self):
+        corpo, _ = am.texto([{"role": "user", "content": "olá"}])
+        self.assertIn("[MEDIDAS DO PEDIDO]", am._estado_decisoes(corpo, "inventado"))
+
+    def test_sem_marcador_ainda_mede(self):
+        s = am._estado_decisoes("texto solto sem marcador")
+        self.assertIn("[MEDIDAS DO PEDIDO]", s)
+        self.assertIn("[PEDIDO A CLASSIFICAR]", s)
+        self.assertIn("texto solto sem marcador", s)
+
+    def test_medidas_contam_artefactos(self):
+        s = am._medidas_pedido("```py\nx=1\n```\nTraceback (most recent call last):")
+        self.assertIn("1 bloco(s) de codigo", s)
+        self.assertIn("stack trace", s)
+
+    def test_medidas_sem_artefactos(self):
+        self.assertIn("artefactos colados: nenhum", am._medidas_pedido("olá, tudo bem?"))
+
+    def test_estado_e_mais_pequeno_que_o_transcrito(self):
+        msgs = [{"role": "user", "content": "assunto antigo " * 40} for _ in range(7)]
+        msgs.append({"role": "user", "content": "o alvo"})
+        corpo, _ = am.texto(msgs, janela=8, max_chars=4000)
+        s = am._estado_decisoes(corpo)
+        self.assertLess(len(s), len(corpo))
+
+
+class TestRubricaDecisao(Base):
+    """A rubrica do `choice`: a curta custava 0,12 de precisao em alta."""
+
+    def test_tres_niveis(self):
+        self.assertEqual(set(am.CRITERIOS_DECISAO), {"leve", "media", "alta"})
+
+    def test_contra_ancoras_nomeadas(self):
+        i = am.INSTRUCOES_DECISAO
+        for n in ("CONTRA-ANCORAS", "avaria", "jargao", "ambito aberto",
+                  "comprimento", "artefacto colado"):
+            self.assertIn(n, i, n)
+
+    def test_regra_de_bolso(self):
+        self.assertIn("descobrir o que fazer", am.INSTRUCOES_DECISAO)
+
+    def test_estado_na_definicao_efectiva(self):
+        d = am.normalizar({"activo": True, "provider": "openrouter",
+                           "modelo": "~typesafe/jev-latest", "via": "decisoes",
+                           "estado": "medidas"})[0]
+        self.assertEqual(d["estado"], "medidas")
+
+    def test_estado_invalido_recusado_com_erro(self):
+        d, erros = am.normalizar({"activo": True, "provider": "openrouter",
+                                  "modelo": "m", "estado": "resumido"})
+        self.assertEqual(d["estado"], "medidas")
+        self.assertTrue(any("estado deve ser" in e for e in erros), erros)
+
+    def test_estado_por_omissao(self):
+        self.assertEqual(am.normalizar({})[0]["estado"], "medidas")
+
+
 class TestExtracao(Base):
     """O leitor da resposta — o sitio onde o modelo de raciocinio nos apanhou.
 

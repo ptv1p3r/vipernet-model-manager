@@ -939,6 +939,7 @@ def classificador_efectivo(cfg: dict[str, Any], perfil: str) -> dict[str, Any]:
         "formato_json": "auto",
         "via": "chat",
         "confianca_min": 0.0,
+        "estado": "medidas",
         "origem": origem,
         "motivo": "",
     }
@@ -953,6 +954,7 @@ def classificador_efectivo(cfg: dict[str, Any], perfil: str) -> dict[str, Any]:
                 "formato_json": definicao.get("formato_json") or "auto",
                 "via": definicao.get("via") or "chat",
                 "confianca_min": float(definicao.get("confianca_min") or 0.0),
+                "estado": definicao.get("estado") or "medidas",
             }
         )
         return saida
