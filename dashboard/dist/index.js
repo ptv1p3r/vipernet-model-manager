@@ -277,7 +277,7 @@
           className: "vmm-select",
           list: idLista,
           value: nova,
-          placeholder: "superfície (cron, cli, api_server…)",
+          placeholder: "superfície (ex.: cron)",
           disabled: props.aGravar,
           "aria-label": "superfície a acrescentar",
           onChange: function (e) { setNova(e.target.value); },
@@ -919,9 +919,12 @@
       linhas.map(function (perfil) {
         const est = estrategiaDe(cfg, perfil);
         const estGlobal = estrategiaDe(cfg, null);
+        // Sem o prefixo "estratégia: " — a linha ja diz de que perfil e a
+        // estrategia, e o prefixo empurrava o texto para fora do select
+        // ("estratégia: herdar do global (rotaç…").
         const rotuloModo = {
-          rodizio: "estratégia: rotação",
-          prioridade: "estratégia: prioridade (primeira da lista)",
+          rodizio: "rotação",
+          prioridade: "prioridade (primeira da lista)",
         };
         // forma curta, para o rotulo "herdar do global (rotação)".
         const curtoModo = { rodizio: "rotação", prioridade: "prioridade" };
@@ -929,8 +932,8 @@
           return { valor: o.valor, rotulo: rotuloModo[o.valor] || o.rotulo || o.valor };
         });
         const primeira = perfil === null
-          ? [{ valor: "", rotulo: "estratégia: não declarada" }]
-          : [{ valor: "", rotulo: "estratégia: herdar do global"
+          ? [{ valor: "", rotulo: "não declarada" }]
+          : [{ valor: "", rotulo: "herdar do global"
                 + (estGlobal && estGlobal.modo ? " (" + (curtoModo[estGlobal.modo] || estGlobal.modo) + ")" : "") }];
         const porModo = (est && est.modo) || (perfil === null ? "" : (estGlobal && estGlobal.modo) || "");
         return h("div", { key: perfil === null ? "@global" : perfil, className: "vmm-classif-linha vmm-linha-estrategia" },
@@ -1000,6 +1003,115 @@
       blocoComplexidade,
       blocoEstrategia,
       blocoSuperficies
+    );
+  }
+
+  // A configuracao vive numa pagina EXCLUSIVA. Quando o editor esta aberto a
+  // pagina principal nao e renderizada — nao ha duas copias da config no ecra
+  // nem um cartao de estado a competir com o formulario. Fechar grava e volta
+  // ao painel: um "fechar" que descartasse em silencio perdia o trabalho que o
+  // dono acabou de fazer, e um "gravar" que nao fecha deixava-o preso aqui.
+  // Ha um "Descartar" explicito para quem quiser sair sem gravar.
+  function PaginaConfig(props) {
+    const estado = props.estado || {};
+    const meta = metaPlugin(estado);
+    const versao = (estado.plugin || {}).versao || estado.versao_painel || "";
+    return h(
+      "div",
+      { className: "vmm-pagina vmm-pagina-config" },
+      h(
+        "div",
+        { className: "vmm-topo" },
+        h(
+          "div",
+          null,
+          h("h1", { className: "vmm-h1" }, "Configuração"),
+          h(
+            "div",
+            { className: "vmm-sub" },
+            "Complexidade (quem decide o nível de cada turno), estratégia (como se escolhe o modelo "
+              + "dentro do nível) e superfícies (por onde corre). Fechar grava e volta ao painel."
+          ),
+          linhaIdentidade(meta)
+        ),
+        h(
+          "div",
+          { className: "vmm-accoes" },
+          h(Button, {
+            size: "sm",
+            variant: "outline",
+            onClick: props.onValidar,
+            disabled: props.aValidar,
+            title: "Validar a configuração contra o schema, sem gravar",
+          }, props.aValidar ? "A validar…" : "Validar"),
+          h(Button, {
+            size: "sm",
+            variant: "default",
+            onClick: props.onGravar,
+            disabled: props.aGravar,
+            className: props.validacaoOk ? "vmm-btn-ok" : undefined,
+            title: "Gravar e voltar ao painel",
+          }, props.aGravar ? "A gravar…" : (props.validacaoOk ? "✓ Gravar e voltar" : "Gravar e voltar")),
+          h(Button, {
+            size: "sm",
+            variant: "ghost",
+            onClick: props.onDescartar,
+            title: "Voltar ao painel sem gravar as alterações",
+          }, "Descartar")
+        )
+      ),
+
+      props.erro ? h("div", { className: "vmm-erro" }, "erro: " + props.erro) : null,
+
+      props.validacaoOk ? h(
+        "div",
+        { className: "vmm-ok", role: "status", "aria-live": "polite" },
+        "✓ " + props.validacaoOk
+      ) : null,
+
+      // Os tres blocos, cada um com titulo proprio: duas decisoes diferentes
+      // (quem classifica / como se escolhe) nao partilham o mesmo bloco.
+      h(SecaoClassificador, {
+        configJSON: props.configJSON,
+        estado: estado,
+        aGravar: props.aGravar,
+        versao: versao,
+        opcoes: ((estado.opcoes || {}).estrategia) || {},
+        onSuperficie: props.onSuperficie,
+        onMudar: props.onMudarJSON,
+      }),
+
+      h(
+        Card,
+        { className: "vmm-card-editor" },
+        h(
+          CardContent,
+          { className: "vmm-card-content" },
+          h("h3", { className: "vmm-editor-titulo" }, "JSON da configuração"),
+          h(
+            "div",
+            { className: "vmm-editor-corpo" },
+            h("textarea", {
+              value: props.configJSON,
+              onChange: function (e) { props.onMudarJSON(e.target.value); },
+              className: "vmm-editor-textarea",
+              style: { width: "100%", height: "350px", fontFamily: "monospace", fontSize: "12px", lineHeight: "1.5", padding: "8px", border: "1px solid var(--border)", borderRadius: "4px", resize: "vertical" }
+            }),
+            (props.errosValidacao || []).length > 0 && h(
+              "div",
+              { className: "vmm-editor-erros" },
+              props.errosValidacao.map(function (e, i) {
+                return h("div", { key: i, className: "vmm-erro-item" }, "• " + e);
+              })
+            )
+          ),
+          h(
+            "div",
+            { className: "vmm-editor-accoes" },
+            h(Button, { size: "sm", variant: "ghost", onClick: props.onDescartar }, "Voltar sem gravar")
+          )
+        )
+      )
     );
   }
 
@@ -1193,11 +1305,21 @@
       }
     }
 
+    // Fechar grava. `salvarConfig` valida e, so quando o servidor aceita, poe
+    // `mostrarEditor` a false — logo um fecho nunca perde trabalho nem fecha
+    // sobre uma config invalida (o erro fica a vista e a pagina mantem-se).
+    function gravarEFechar() {
+      salvarConfig();
+    }
+
+    // Sair sem gravar: so aqui o texto e abandonado, e sempre por accao
+    // explicita do dono.
     function fecharEditor() {
       setMostrarEditor(false);
       // O texto NAO se apaga: a seccao de classificador/estrategia le-o sempre.
       setErrosValidacao([]);
       setValidacaoOk(null);
+      carregarConfig();
     }
 
     if (!estado && !erro) {
@@ -1208,6 +1330,30 @@
     const nomes = Object.keys(perfis);
     // Calculado uma vez: a identidade nao muda a meio de um render.
     const meta = metaPlugin(estado);
+
+    // Pagina exclusiva: com o editor aberto, o painel principal nao chega a
+    // ser construido. Um early return e o que garante isso — um `&&` no meio da
+    // arvore deixava os cartoes de estado por baixo do formulario.
+    if (mostrarEditor) {
+      return h(PaginaConfig, {
+        estado: estado,
+        configJSON: configJSON,
+        erro: erro,
+        errosValidacao: errosValidacao,
+        validacaoOk: validacaoOk,
+        aValidar: aValidar,
+        aGravar: aGravar,
+        onValidar: validarConfig,
+        onGravar: gravarEFechar,
+        onDescartar: fecharEditor,
+        onSuperficie: function (perfil, sup, alvo) { mudarSuperficie(perfil, sup, alvo); },
+        onMudarJSON: function (novo) {
+          setConfigJSON(novo);
+          setValidacaoOk(null);
+          setErrosValidacao([]);
+        },
+      });
+    }
 
     return h(
       "div",
@@ -1268,78 +1414,6 @@
         { className: "vmm-ok", role: "status", "aria-live": "polite" },
         "✓ " + validacaoOk
       ) : null,
-
-      mostrarEditor && h(
-        Card,
-        { className: "vmm-card-editor" },
-        h(
-          CardContent,
-          { className: "vmm-card-content" },
-          h(
-            "div",
-            { className: "vmm-linha vmm-editor-cabecalho" },
-            h("h3", { className: "vmm-editor-titulo" }, "Editor de Configuração"),
-            h(Button, { size: "sm", variant: "ghost", onClick: fecharEditor }, "Fechar")
-          ),
-          // Dois blocos distintos, ambos dentro do editor: Complexidade (quem
-          // decide o nivel) e Estrategia (como se escolhe o modelo dentro do
-          // nivel). Fora do editor nao ha cartao nenhum — a configuracao vive
-          // aqui, e so aqui. Leem e escrevem o mesmo `configJSON` que o
-          // textarea abaixo: uma so fonte de verdade.
-          h(SecaoClassificador, {
-            configJSON: configJSON,
-            estado: estado,
-            aGravar: aGravar,
-            versao: (estado.plugin || {}).versao || estado.versao_painel || "",
-            opcoes: ((estado.opcoes || {}).estrategia) || {},
-            onSuperficie: function (perfil, sup, alvo) { mudarSuperficie(perfil, sup, alvo); },
-            onMudar: function (novo) {
-              setConfigJSON(novo);
-              setValidacaoOk(null);
-              setErrosValidacao([]);
-            },
-          }),
-          h(
-            "div",
-            { className: "vmm-editor-corpo" },
-            h("textarea", {
-              value: configJSON,
-              onChange: function (e) {
-                setConfigJSON(e.target.value);
-                // o texto mudou: o "validado" anterior deixa de ser verdade
-                setValidacaoOk(null);
-                setErrosValidacao([]);
-              },
-              className: "vmm-editor-textarea",
-              style: { width: "100%", height: "350px", fontFamily: "monospace", fontSize: "12px", lineHeight: "1.5", padding: "8px", border: "1px solid var(--border)", borderRadius: "4px", resize: "vertical" }
-            }),
-            errosValidacao.length > 0 && h(
-              "div",
-              { className: "vmm-editor-erros" },
-              errosValidacao.map(function (e, i) { return h("div", { key: i, className: "vmm-erro-item" }, "• " + e); })
-            ),
-            validacaoOk && h(
-              "div",
-              { className: "vmm-editor-ok", role: "status", "aria-live": "polite" },
-              "✓ " + validacaoOk
-            )
-          ),
-          h(
-            "div",
-            { className: "vmm-editor-accoes" },
-            h(Button, {
-              size: "sm",
-              variant: validacaoOk ? "default" : "outline",
-              onClick: validarConfig,
-              disabled: aValidar,
-              className: validacaoOk ? "vmm-btn-ok" : undefined,
-              title: "Validar a configuração contra o schema, sem gravar"
-            }, aValidar ? "A validar…" : (validacaoOk ? "✓ Validado" : "Validar")),
-            h(Button, { size: "sm", variant: "default", onClick: salvarConfig, disabled: aGravar }, aGravar ? "A gravar…" : "Salvar"),
-            h(Button, { size: "sm", variant: "ghost", onClick: fecharEditor }, "Cancelar")
-          )
-        )
-      ),
 
       h(
         "div",
@@ -1424,6 +1498,7 @@
     // corpo do cartao so aparecia no browser do dono (ja aconteceu — o cartao
     // referia `perfil.superficies` sem binding). Chamar o componente em node
     // executa o corpo e apanha-o antes de publicar.
+    window.__VMM_TEST__.PaginaConfig = PaginaConfig;
     window.__VMM_TEST__.CartaoPerfil = CartaoPerfil;
     window.__VMM_TEST__.Superficies = Superficies;
   }

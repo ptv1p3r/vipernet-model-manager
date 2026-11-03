@@ -347,7 +347,8 @@ def main() -> int:
     check("manifest: entry e o ficheiro editado (dist/index.js)", entry == "dist/index.js", entry)
     check("manifest: css e o ficheiro editado (dist/style.css)", folha == "dist/style.css", folha)
     entry_txt = (RAIZ / "dashboard" / entry).read_text(encoding="utf-8") if entry else ""
-    check("manifest: o entry servido tem o verde", "✓ Validado" in entry_txt and "vmm-btn-ok" in entry_txt)
+    check("manifest: o entry servido tem o verde",
+          "✓ Gravar e voltar" in entry_txt and "vmm-btn-ok" in entry_txt)
     check("manifest: sem duplicados versionados no dist",
           not list((RAIZ / "dashboard" / "dist").glob("index-*.js")) and
           not list((RAIZ / "dashboard" / "dist").glob("style-*.css")))
@@ -360,16 +361,29 @@ def main() -> int:
           "Validado com sucesso — " in js and "rota(s)" in js and "0 erros" in js)
     check("painel: validar com erros nao deixa aviso verde",
           "setValidacaoOk(null);\n              setErro(\"Configuração inválida" in js)
-    check("painel: botao Validar muda para confirmado", "\"✓ Validado\" : \"Validar\"" in js)
-    check("painel: botao Validar ganha classe verde", "className: validacaoOk ? \"vmm-btn-ok\" : undefined" in js)
-    check("painel: aviso verde dentro do editor", "className: \"vmm-editor-ok\"" in js)
+    # Na pagina exclusiva o verde vive no botao principal: validar confirma onde
+    # se grava, nao num botao secundario que some ao mudar de pagina.
+    check("painel: botao principal confirma a validacao",
+          '"✓ Gravar e voltar"' in js)
+    check("painel: botao confirmado ganha classe verde",
+          'props.validacaoOk ? "vmm-btn-ok" : undefined' in js)
+    check("painel: aviso verde dentro da pagina de configuracao",
+          js.count('className: "vmm-ok"') >= 2
+          and 'role: "status", "aria-live": "polite"' in js)
     check("painel: aviso verde na pagina apos gravar", "className: \"vmm-ok\"" in js)
     check("painel: gravar publica aviso de sucesso",
           "setValidacaoOk(\"Configuração gravada com sucesso" in js)
+    # Procurado no corpo da accao, nao no comentario: a indentacao mudou quando
+    # a configuracao passou a pagina propria e o comentario deixou de existir.
+    def _corpo(assinatura, n=260):
+        i = js.find(assinatura)
+        return js[i:i + n] if i >= 0 else ""
+
     check("painel: editar o texto invalida o aviso",
-          "// o texto mudou: o \"validado\" anterior deixa de ser verdade" in js)
+          "setValidacaoOk(null)" in _corpo("onMudarJSON: function (novo) {"))
     check("painel: fechar o editor limpa o aviso",
-          "setErrosValidacao([]);\n      setValidacaoOk(null);\n    }\n\n    if (!estado && !erro)" in js)
+          "setValidacaoOk(null)" in _corpo("function fecharEditor() {")
+          and "setErrosValidacao([])" in _corpo("function fecharEditor() {"))
     for cls in (".vmm-ok", ".vmm-editor-ok", ".vmm-btn-ok"):
         check(f"painel: CSS {cls}", cls in css)
     check("painel: verde com variante para tema escuro", "[data-theme=\"dark\"] .vmm-ok" in css)

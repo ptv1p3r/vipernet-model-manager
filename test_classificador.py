@@ -324,7 +324,8 @@ class TestFailOpen(Base):
         chamadas = []
         r = am.classificar(self.mensagens("pedido final"), d,
                            lambda p, m: chamadas.append(1) or {"api_key": "x"})
-        self.assertIsNone(r)
+        self.assertIsNone(r.get("nivel"))
+        self.assertEqual(r["sem_efeito"], "classificador_suspenso")
         self.assertEqual(chamadas, [])
         self.assertEqual(len(am.estado()["alvos_suspensos"]), 1)
 
@@ -779,7 +780,8 @@ class TestLote(Base):
                                            timeout_s=1.0),
                             lambda p, m: self.rota(), perfil="pessoal")
         self.assertLess(time.monotonic() - inicio, 0.2, "o suspenso tem de ser imediato")
-        self.assertIsNone(r2)
+        self.assertIsNone(r2.get("nivel"))
+        self.assertEqual(r2["sem_efeito"], "classificador_suspenso")
 
     def test_timeout_padrao_tem_margem_sobre_o_medido(self):
         """O default tem de cobrir o p95 medido sem inflacionar a espera do turno.
@@ -923,12 +925,39 @@ class TestTransporteDecisoes(Base):
         self.assertIsNone(r.get("nivel"))
         self.assertEqual(r["sem_efeito"], "modelo_indisponivel")
         self.assertIn("not a valid model ID", r["motivo"])
-        # Suspensao de uma hora: a segunda chamada nao chega a bater no servidor.
+        # Suspensao de uma hora: a segunda chamada nao chega a bater no servidor,
+        # mas tem de dizer que esta suspensa — o silencio fazia o cartao mostrar
+        # "heuristica" sem causa e a correcao da config parecer sem efeito.
         antes = len(PEDIDOS)
         r2 = am.classificar(self.mensagens("b"), self.definicao(
             modelo="typesafe/jev-latest", via="decisoes"), lambda p, m: self.rota())
-        self.assertIsNone(r2, "suspenso devolve None sem nivel")
+        self.assertIsNone(r2.get("nivel"))
+        self.assertEqual(r2["sem_efeito"], "classificador_suspenso")
+        self.assertIn("suspenso", r2["motivo"])
+        self.assertTrue(r2["classificador"]["suspenso"])
+        self.assertGreater(r2["classificador"]["restante_s"], 3000)
         self.assertEqual(len(PEDIDOS), antes, "suspenso nao volta a chamar")
+
+    def test_corrigir_a_config_levanta_a_suspensao(self):
+        """Suspensao por config errada nao sobrevive a correcao da config."""
+        RESPOSTA.update({"codigo": 400, "json": {"error": {
+            "message": "~typesafe/jev-latest is a decisions model and cannot be used "
+                       "with the chat/completions endpoint.", "code": 400}}})
+        r = am.classificar(self.mensagens("a"), self.definicao(
+            modelo="~typesafe/jev-latest", via="chat"), lambda p, m: self.rota())
+        self.assertEqual(r["sem_efeito"], "modelo_indisponivel")
+        # A mesma definicao volta a bater no cartao: suspensa.
+        antes = len(PEDIDOS)
+        r2 = am.classificar(self.mensagens("b"), self.definicao(
+            modelo="~typesafe/jev-latest", via="chat"), lambda p, m: self.rota())
+        self.assertEqual(r2["sem_efeito"], "classificador_suspenso")
+        self.assertEqual(len(PEDIDOS), antes)
+        # Corrigir `via` tem de voltar a tentar ja, sem esperar a hora.
+        RESPOSTA.update({"codigo": 200, "json": self.resposta("alta", 0.9)})
+        r3 = am.classificar(self.mensagens("c"), self.definicao(
+            modelo="~typesafe/jev-latest", via="decisoes"), lambda p, m: self.rota())
+        self.assertEqual(r3["nivel"], "alta", "a config corrigida nao pode ficar suspensa")
+        self.assertEqual(len(PEDIDOS), antes + 1)
 
     def test_transporte_errado_diz_qual_e_o_erro(self):
         """O id certo no endpoint do chat devolve 'is a decisions model'."""
