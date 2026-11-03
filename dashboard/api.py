@@ -12,13 +12,16 @@ O catalogo e o log sao leitura — mudar modelos e no ficheiro que o dono contro
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 # O ``api.py`` e importado por caminho; o pacote do plugin tem de estar no sys.path
@@ -56,6 +59,127 @@ LIMITE_LOG_OMISSAO = 50
 def _cfg() -> dict[str, Any]:
     cfg, _erros = gestor.carregar()
     return cfg
+
+
+def _rev(cfg: dict[str, Any]) -> str:
+    """Impressao digital do config, para o painel nao gravar por cima do que nao leu.
+
+    Uma aba aberta ha meia hora contem o config de ha meia hora. Sem isto, um
+    "Gravar" nessa aba repoe o passado inteiro — ja aconteceu: a escrita das
+    11:27:52 repôs byte a byte o config que a pagina tinha carregado antes das
+    11:18:47, apagando a correcao do perfil pessoal. O cliente envia o `rev` que
+    leu; se nao for o actual, recusa-se a gravar e devolve o estado actual.
+    """
+    canonico = json.dumps(cfg, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonico.encode("utf-8")).hexdigest()[:16]
+
+
+def _conflito(rev_cliente: str, rev_actual: str) -> bool:
+    """Ha conflito quando o cliente declara uma versao e ela ja nao e a actual.
+
+    Sem `rev` (cliente antigo) nao ha conflito: grava-se e registra-se a
+    ausencia, para que a proxima escrita sem versao fique visivel no log em vez
+    de ser invisivel.
+    """
+    return bool(rev_cliente) and rev_cliente != rev_actual
+
+
+def _idade_s(ts: Any) -> Optional[float]:
+    """Segundos desde `ts` (ISO com ou sem offset), ou ``None`` se ilegivel."""
+    if not ts:
+        return None
+    try:
+        texto = str(ts).replace("Z", "+00:00")
+        quando = datetime.fromisoformat(texto)
+        if quando.tzinfo is None:
+            quando = quando.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - quando).total_seconds())
+    except Exception:  # noqa: BLE001 - um ts estragado nao pode derrubar a rota
+        return None
+
+
+def _decidir_rasto(
+    cl: Any,
+    rasto: Any,
+    motivo: str,
+    motivo_ts: str,
+) -> tuple[bool, str, Optional[dict[str, Any]]]:
+    """Separa o estado actual da historia — devolve (valido, motivo, historico).
+
+    O cartao mostrou "sem efeito — provider_indisponivel" e, ao lado,
+    "leu alta em 1355 ms": a leitura era de outro classificador (deepseek-flash
+    das 11:23) e o erro era da config actual (inception). Duas verdades de
+    momentos diferentes na mesma linha leem-se como uma mentira.
+
+    Regras:
+      * a leitura so e evidencia se for do MESMO provider/modelo configurado
+        agora, e posterior ao ultimo motivo registado;
+      * senao, a leitura vai para `historico` com a idade e o classificador que
+        a produziu — historia rotulada, nao estado;
+      * o motivo de configuracao so aparece quando nao ha leitura valida a
+        desmenti-lo (uma config corrigida nao fica a mostrar o erro antigo).
+    """
+    cl = cl if isinstance(cl, dict) else {}
+    rasto = rasto if isinstance(rasto, dict) else None
+    modo = str(cl.get("modo") or "")
+    mesmo = bool(
+        rasto
+        and modo == "modelo"
+        and str(rasto.get("provider") or "") == str(cl.get("provider") or "")
+        and str(rasto.get("modelo") or "") == str(cl.get("modelo") or "")
+    )
+    if mesmo and rasto is not None:
+        ts_rasto = str(rasto.get("ts") or "")
+        # ISO-8601 com o mesmo formato compara-se como texto; sem motivo nao ha
+        # nada a desmentir.
+        depois_do_motivo = (not motivo_ts) or ts_rasto >= str(motivo_ts)
+    else:
+        depois_do_motivo = False
+
+    valido = mesmo and depois_do_motivo
+    if valido:
+        return True, "", None
+
+    historico: Optional[dict[str, Any]] = None
+    if rasto is not None:
+        historico = {
+            "lido": rasto.get("lido"),
+            "ms": rasto.get("ms"),
+            "provider": rasto.get("provider"),
+            "modelo": rasto.get("modelo"),
+            "ts": rasto.get("ts"),
+            "idade_s": _idade_s(rasto.get("ts")),
+            # Porque nao conta como estado: o classificador e outro, ou a
+            # leitura e anterior ao erro que a config actual produz.
+            "motivo": "outro classificador" if not mesmo else "anterior ao erro actual",
+        }
+    return False, str(motivo or ""), historico
+
+
+def _registar_escrita(*, rev_antes: str, rev_depois: str, rev_cliente: str, conflito: bool, origem: str) -> None:
+    """Registo append-only de cada escrita no config: quem, quando, sobre o que.
+
+    A escrita das 11:27:52 nao tinha rasto nenhum — nao se sabia sequer se
+    fora o painel, o CLI ou o ciclo. Passa a saber-se. Nunca le valores do
+    config: so impressoes digitais e tamanho.
+    """
+    try:
+        pasta = gestor.directorio()
+        pasta.mkdir(parents=True, exist_ok=True)
+        linha = {
+            "ts": datetime.now(ZoneInfo("Europe/Lisbon")).isoformat(timespec="seconds"),
+            "rev_antes": rev_antes,
+            "rev_depois": rev_depois,
+            "rev_cliente": rev_cliente,
+            "conflito": bool(conflito),
+            "sem_rev": not bool(rev_cliente),
+            "origem": origem[:200],
+        }
+        with (pasta / "escritas.log").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(linha, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001 - o log nao pode impedir a escrita pedida
+        pass
+
 
 
 def _corpo_objeto(corpo: Any, *, obrigatorio: bool = True) -> Optional[dict[str, Any]]:
@@ -214,6 +338,7 @@ def _resumo_por_perfil(
                         "classificador": None,
                         "classificador_erro": "",
                         "classificador_motivo": "",
+                        "classificador_motivo_ts": "",
                         "classif_leituras": 0,
                         "classif_falhas": 0,
                         "classif_ultima_falha": "",
@@ -238,6 +363,9 @@ def _resumo_por_perfil(
                     reg["classificador_erro"] = str(ev["classificador_erro"])
                 if not reg["classificador_motivo"] and ev.get("classificador_motivo"):
                     reg["classificador_motivo"] = str(ev["classificador_motivo"])
+                    # Quando apareceu este motivo: sem a hora nao se sabe se a
+                    # leitura que esta ao lado veio antes ou depois do erro.
+                    reg["classificador_motivo_ts"] = str(ev.get("ts") or "")
                 # Taxa do classificador: um erro isolado nao e o mesmo que um
                 # modelo a falhar metade das vezes, e o mesmo `ts` aparece em
                 # varios eventos do turno (troca, sem_troca, resposta) — conta-se
@@ -305,6 +433,15 @@ def estado() -> dict[str, Any]:
             )
         pcfg = gestor.perfil_config(cfg, nome) or {}
         resumo = resumos.get(nome) or {}
+        # Estado actual vs historia: uma leitura so conta como evidencia se for
+        # do classificador que esta configurado AGORA e posterior ao ultimo erro.
+        cl_efectivo = gestor.classificador_efectivo(cfg, nome)
+        rasto_valido, motivo_efectivo, historico = _decidir_rasto(
+            cl_efectivo,
+            resumo.get("classificador"),
+            resumo.get("classificador_motivo") or "",
+            resumo.get("classificador_motivo_ts") or "",
+        )
         saida_perfis[nome] = {
             "activo": bool(dados.get("activo", True)),
             "estrategia": dados.get("estrategia") or "rodizio",
@@ -318,19 +455,25 @@ def estado() -> dict[str, Any]:
             # O indicador do cartao: modelo (qual) ou heuristica, e a evidencia
             # de que este perfil esta mesmo a usar aquilo que declara.
             "analise": {
-                "classificador": gestor.classificador_efectivo(cfg, nome),
+                "classificador": cl_efectivo,
                 "origens": resumo.get("origens") or {},
                 "respostas": resumo.get("respostas", 0),
-                "rasto": resumo.get("classificador"),
+                # `rasto` e so o que vale como estado: mesma config, mais
+                # recente que o erro. A leitura de outro classificador (ou
+                # anterior ao erro) vai em `historico`, com a idade.
+                "rasto": (resumo.get("classificador") if rasto_valido else None),
+                "rasto_valido": rasto_valido,
+                "historico": historico,
                 # O erro so acompanha o cartao quando a ULTIMA leitura falhou.
                 # Um erro de ha meia hora, ja recuperado, e historia — mostra-lo
                 # ao lado de um rasto bom faz o cartao mentir.
                 "erro": (resumo.get("classificador_erro") or "")
-                        if (resumo.get("classificador") or {}).get("falhou") else "",
+                        if (rasto_valido and (resumo.get("classificador") or {}).get("falhou")) else "",
                 # Config errada nao e aviso de avaria: o provider nao existe no
                 # perfil e o classificador nao decide ate a config mudar. O
-                # cartao mostra-o como facto, nao como ⚠.
-                "motivo": resumo.get("classificador_motivo") or "",
+                # cartao mostra-o como facto, nao como ⚠ — e so enquanto nao
+                # houver leitura valida que o desminta.
+                "motivo": motivo_efectivo,
                 "taxa": {
                     "leituras": resumo.get("classif_leituras", 0),
                     "falhas": resumo.get("classif_falhas", 0),
@@ -416,29 +559,74 @@ def perfis() -> dict[str, Any]:
 
 @router.get("/config")
 def config_get() -> dict[str, Any]:
-    """Devolve a configuracao JSON completa (normalizada) — usada pelo painel do dashboard para edicao."""
+    """Config completa (normalizada) **e a versao em que foi lida**.
+
+    O envelope `{"config": ..., "rev": ...}` e o que permite ao painel gravar
+    sem repor o passado: o editor devolve o `rev` que recebeu aqui.
+    """
     cfg, _ = gestor.carregar()
-    return cfg
+    return {"config": cfg, "rev": _rev(cfg)}
 
 @router.post("/config")
-def config_post(corpo: Any = Body(default=None)) -> dict[str, Any]:
-    """Substitui a config toda via gestor.gravar — mesma semantica que `vmm` CLI, validacao e backup."""
+def config_post(request: Request, corpo: Any = Body(default=None)) -> JSONResponse:
+    """Substitui a config toda via gestor.gravar — mesma semantica que `vmm` CLI.
+
+    Aceita dois corpos:
+
+    * ``{"config": {...}, "rev": "<rev lido>"}`` — o painel; se o `rev` nao for
+      o actual responde **409** e nao grava nada (uma aba antiga nao apaga o
+      trabalho das outras);
+    * o config cru — CLI e clientes antigos; grava, mas fica registado em
+      `escritas.log` como `sem_rev`, porque uma escrita sem versao e
+      precisamente a que nao se consegue explicar depois.
+    """
     corpo = _corpo_objeto(corpo)
     if not corpo:
         raise HTTPException(status_code=400, detail="JSON inválido: não é um objecto")
-    if not (corpo.get("perfis") or {}):
+    envelope = isinstance(corpo.get("config"), dict)
+    novo = corpo["config"] if envelope else corpo
+    rev_cliente = str(corpo.get("rev") or "") if envelope else ""
+    if not (novo.get("perfis") or {}):
         raise HTTPException(
             status_code=400,
             detail="config sem nenhum perfil: recusado (o plugin ficaria sem rotas)",
         )
+    actual, _ = gestor.carregar()
+    rev_actual = _rev(actual)
     try:
-        # gestor.gravar retorna o caminho do ficheiro, mas queremos devolver o config lido depois da gravacao.
-        # A funcao gravar no plugin ja escreve e valida, entao podemos recarregar para garantir.
-        gestor.gravar(corpo)
+        origem = "%s %s" % (request.client.host if request and request.client else "-",
+                            (request.headers.get("user-agent") if request else "") or "-")
+    except Exception:  # noqa: BLE001
+        origem = "-"
+    if _conflito(rev_cliente, rev_actual):
+        # Nao grava: devolve o estado actual para o cliente recarregar o editor.
+        _registar_escrita(
+            rev_antes=rev_actual, rev_depois="", rev_cliente=rev_cliente,
+            conflito=True, origem=origem,
+        )
+        return JSONResponse(
+            status_code=409,
+            content={
+                "erro": "config desactualizado: o editor foi aberto noutra versao",
+                "rev": rev_actual,
+                "config": actual,
+            },
+        )
+    try:
+        # gestor.gravar valida, faz backup e escreve com os.replace.
+        gestor.gravar(novo)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     cfg, _ = gestor.carregar()
-    return cfg
+    rev_novo = _rev(cfg)
+    _registar_escrita(
+        rev_antes=rev_actual, rev_depois=rev_novo, rev_cliente=rev_cliente,
+        conflito=False, origem=origem,
+    )
+    return JSONResponse(
+        status_code=200,
+        content={"ok": True, "rev": rev_novo, "config": cfg, "sem_rev": not bool(rev_cliente)},
+    )
 
 @router.post("/validar")
 def validar_post(corpo: Any = Body(default=None)) -> dict[str, Any]:

@@ -170,6 +170,20 @@
       if (rasto.lido) {
         extra.push("leu " + rasto.lido + (rasto.ms ? " em " + Math.round(rasto.ms) + " ms" : ""));
       }
+      // Uma leitura de outro classificador (ou anterior ao erro actual) nao e
+      // estado: vai rotulada como historico, com a idade e quem a produziu.
+      // Sem isto o cartao dizia "sem efeito — provider indisponivel · leu alta
+      // em 1355 ms" — duas verdades de momentos diferentes na mesma linha.
+      const hist = a.historico || null;
+      if (hist && hist.lido) {
+        const idade = hist.idade_s;
+        const quando = idade == null ? ""
+          : (idade < 90 ? " há " + Math.round(idade) + " s"
+            : idade < 5400 ? " há " + Math.round(idade / 60) + " min"
+            : " há " + Math.round(idade / 3600) + " h");
+        extra.push("histórico: " + hist.lido + quando
+          + " com " + (hist.provider || "?") + "/" + (hist.modelo || "?"));
+      }
       return {
         modo: "modelo",
         titulo: "modelo · " + (c.provider || "?") + "/" + (c.modelo || "?"),
@@ -572,6 +586,9 @@
     const [aCarregar, setACarregar] = useState(false);
     const [mostrarEditor, setMostrarEditor] = useState(false);
     const [configJSON, setConfigJSON] = useState("");
+    // Versao do config que este editor leu: volta no "Gravar" para o servidor
+    // poder recusar uma gravacao baseada em estado antigo.
+    const [configRev, setConfigRev] = useState("");
     const [errosValidacao, setErrosValidacao] = useState([]);
     const [aValidar, setAValidar] = useState(false);
     // Mensagem de sucesso da ultima validacao/gravacao (null = sem aviso).
@@ -607,7 +624,14 @@
 
     function carregarConfig() {
       pedir("/config")
-        .then(function (c) { setConfigJSON(JSON.stringify(c, null, 2)); setErrosValidacao([]); })
+        .then(function (r) {
+          // O backend devolve {"config": ..., "rev": ...}; o rev volta no
+          // "Gravar" para que esta aba nao apague o que outra escreveu.
+          const c = (r && r.config) ? r.config : r;
+          setConfigJSON(JSON.stringify(c, null, 2));
+          setConfigRev((r && r.rev) ? String(r.rev) : "");
+          setErrosValidacao([]);
+        })
         .catch(function (e) { setErro("Erro ao carregar config: " + String(e && e.message ? e.message : e)); });
     }
 
@@ -667,15 +691,30 @@
         if (cfg === null || typeof cfg !== "object" || Array.isArray(cfg)) {
           throw new Error("O JSON deve ser um objecto (não array, não null, não string)");
         }
-        pedir("/config", { method: "POST", body: cfg })
-          .then(function () {
+        // Envia-se a versao que esta aba leu. Se o config mudou entretanto
+        // (outra aba, o CLI, o ciclo), o servidor recusa com 409 em vez de
+        // deixar esta aba repor o passado.
+        pedir("/config", { method: "POST", body: { config: cfg, rev: configRev } })
+          .then(function (r) {
+            setConfigRev((r && r.rev) ? String(r.rev) : "");
             setMostrarEditor(false);
             setConfigJSON("");
             setErrosValidacao([]);
             setValidacaoOk("Configuração gravada com sucesso — o gestor já a lê");
             carregar();
           })
-          .catch(function (e) { setErro("Erro ao salvar: " + String(e && e.message ? e.message : e)); });
+          .catch(function (e) {
+            const msg = String(e && e.message ? e.message : e);
+            if (msg.indexOf("409") !== -1) {
+              setValidacaoOk(null);
+              setErro("A configuração foi alterada noutro sítio desde que abriu este editor "
+                + "— recarreguei a versão actual. Reveja o que quer mudar e grave outra vez.");
+              carregarConfig();
+              carregar();
+              return;
+            }
+            setErro("Erro ao salvar: " + msg);
+          });
       } catch (e) {
         setErro("JSON inválido: " + String(e && e.message ? e.message : e));
       }
