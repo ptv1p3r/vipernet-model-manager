@@ -200,6 +200,23 @@ class TestColheita(unittest.TestCase):
         finally:
             A._pool, A.CURSOR = original_pool, original_cursor
 
+    def test_devolve_o_limite_pedido_e_nao_o_resto_da_divisao(self):
+        """Pedir 40 dava 39: 40 // 3 estratos = 13, e 13 x 3 = 39."""
+        pool = [{"id": f"{i:012d}", "texto": "x" * comp, "comprimento": comp}
+                for i, comp in enumerate([20, 100, 400] * 20)]
+        orig_pool, orig_cursor, orig_gold = A._pool, A.CURSOR, A._textos_gold
+        try:
+            A._pool = lambda: pool  # type: ignore[assignment]
+            A._textos_gold = lambda: set()  # type: ignore[assignment]
+            with tempfile.TemporaryDirectory() as d:
+                A.CURSOR = Path(d) / "cursor.json"
+                casos, meta = A.colher(40, 7)
+                self.assertEqual(len(casos), 40)
+                self.assertEqual(meta["frescos"], 60)
+                self.assertEqual(len({c["id"] for c in casos}), 40)
+        finally:
+            A._pool, A.CURSOR, A._textos_gold = orig_pool, orig_cursor, orig_gold
+
     def test_sem_novidades_nao_quebra(self):
         original_pool, original_cursor = A._pool, A.CURSOR
         try:
@@ -574,6 +591,112 @@ class TestFronteirasEstaveis(unittest.TestCase):
         saida, comp = A.fronteiras_estaveis(f, hist)
         self.assertEqual(saida["alta"]["kappa"], 0.62)
         self.assertTrue(comp["comparado"])
+
+
+class TestLeitorGold(unittest.TestCase):
+    """O leitor do gold ja ignorou um ficheiro novo em silencio.
+
+    O tuplo `("gold.jsonl", "gold2.jsonl")` estava escrito a mao em dois
+    sitios: um `gold3.jsonl` com rotulos humanos nao entrava na calibracao
+    nem na barreira de contaminacao — o portao recusava por "0 casos comuns"
+    e o caso rotulado a mao podia voltar a ser colhido no ciclo seguinte.
+    """
+
+    def _eval_falso(self, d: str) -> Path:
+        raiz = Path(d)
+        (raiz / "gold.jsonl").write_text(
+            json.dumps({"id": "g001", "texto": "bom dia", "esperado": "leve"}) + "\n",
+            encoding="utf-8")
+        (raiz / "gold2.jsonl").write_text(
+            json.dumps({"id": "n001", "texto": "o disco encheu", "rotulo": "media"}) + "\n",
+            encoding="utf-8")
+        (raiz / "gold3.jsonl").write_text(
+            json.dumps({"id": "p001", "texto": "renova o cert do nginx", "rotulo": "media"}) + "\n"
+            + json.dumps({"id": "p002", "texto": "sem rotulo ainda", "rotulo": ""}) + "\n"
+            + json.dumps({"id": "p003", "texto": "rotulo invalido", "rotulo": "baixa"}) + "\n",
+            encoding="utf-8")
+        return raiz
+
+    def test_le_todos_os_gold_nao_so_os_dois_primeiros(self):
+        with tempfile.TemporaryDirectory() as d:
+            raiz = self._eval_falso(d)
+            original = A.EVAL
+            try:
+                A.EVAL = raiz
+                nomes = [p.name for p in A._ficheiros_gold()]
+                self.assertEqual(nomes, ["gold.jsonl", "gold2.jsonl", "gold3.jsonl"])
+                casos = A._casos_gold()
+                self.assertEqual(len(casos), 3)  # p002 vazio e p003 fora do dominio caem
+                ids = [c["id"] for c in casos]
+                self.assertIn("gold3.jsonl:p001", ids)
+            finally:
+                A.EVAL = original
+
+    def test_aceita_esperado_e_rotulo(self):
+        with tempfile.TemporaryDirectory() as d:
+            raiz = self._eval_falso(d)
+            original = A.EVAL
+            try:
+                A.EVAL = raiz
+                por_id = {c["id"]: c["rotulo"] for c in A._casos_gold()}
+                self.assertEqual(por_id["gold.jsonl:g001"], "leve")
+                self.assertEqual(por_id["gold2.jsonl:n001"], "media")
+                self.assertEqual(por_id["gold3.jsonl:p001"], "media")
+                self.assertNotIn("gold3.jsonl:p002", por_id)
+                self.assertNotIn("gold3.jsonl:p003", por_id)
+            finally:
+                A.EVAL = original
+
+    def test_barreira_de_contaminacao_cobre_a_fila_humana(self):
+        with tempfile.TemporaryDirectory() as d:
+            raiz = self._eval_falso(d)
+            original = A.EVAL
+            try:
+                A.EVAL = raiz
+                shas = A._textos_gold()
+                self.assertIn(A._sha("renova o cert do nginx"), shas)
+                self.assertEqual(len(shas), 3)
+            finally:
+                A.EVAL = original
+
+    def test_le_o_gold_humano_fora_do_repositorio(self):
+        """A fila rotulada sobre conversa real vive fora do repo publicado.
+
+        Nota de nomenclatura: o `_eval_falso` ja tem um `gold3.jsonl`, e a
+        dedupe e por nome — o do repo ganha. A fila humana usa `gold4.jsonl`.
+        """
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as h:
+            raiz = self._eval_falso(d)
+            humano = Path(h)
+            (humano / "gold4.jsonl").write_text(
+                json.dumps({"id": "q001", "texto": "aquilo num ta a dar nada",
+                            "rotulo": "media"}) + "\n", encoding="utf-8")
+            original_eval, original_humano = A.EVAL, A.GOLD_HUMANO
+            try:
+                A.EVAL, A.GOLD_HUMANO = raiz, humano
+                ids = [c["id"] for c in A._casos_gold()]
+                self.assertIn("gold4.jsonl:q001", ids)
+                self.assertEqual(len(ids), 4)
+                # o repo publicado nao ganha nada por causa disto
+                self.assertFalse((raiz / "gold4.jsonl").exists())
+            finally:
+                A.EVAL, A.GOLD_HUMANO = original_eval, original_humano
+
+    def test_nome_repetido_conta_uma_vez(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as h:
+            raiz = self._eval_falso(d)
+            humano = Path(h)
+            (humano / "gold2.jsonl").write_text(
+                json.dumps({"id": "n001", "texto": "duplicado", "rotulo": "alta"}) + "\n",
+                encoding="utf-8")
+            original_eval, original_humano = A.EVAL, A.GOLD_HUMANO
+            try:
+                A.EVAL, A.GOLD_HUMANO = raiz, humano
+                nomes = [p.name for p in A._ficheiros_gold()]
+                self.assertEqual(nomes.count("gold2.jsonl"), 1)
+                self.assertEqual(len(A._casos_gold()), 3)
+            finally:
+                A.EVAL, A.GOLD_HUMANO = original_eval, original_humano
 
 
 if __name__ == "__main__":

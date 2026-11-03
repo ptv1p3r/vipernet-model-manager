@@ -5,3 +5,4 @@ __pycache__/
 /uso.err
 /eval/reports/
 /eval/*.lock
+/eval/gold[3-9]*.jsonl
