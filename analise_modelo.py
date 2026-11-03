@@ -78,8 +78,13 @@ def _gestor():
     return modulo
 
 # Limites duros: um `timeout_s` de 300 na config nao pode parar um turno 5 min.
-_TIMEOUT_MIN, _TIMEOUT_MAX = 1.0, 30.0
-_MAX_TOKENS_MIN, _MAX_TOKENS_MAX = 2, 1024
+# Mas 30 s e 1024 tokens nao chegam a um modelo que raciocina antes de escrever:
+# medido a 2026-11-03, o juiz do ciclo (`deepseek-v4-pro`, esforco baixo) devolveu
+# 1182 tokens — o teto — sem nivel reconhecivel, e no lote seguinte 71 de 90
+# casos morreram em timeout aos 30 s. O teto tem de caber o raciocinio mais a
+# resposta; quem decide o valor de cada uso e a config, nao o esquema.
+_TIMEOUT_MIN, _TIMEOUT_MAX = 1.0, 180.0
+_MAX_TOKENS_MIN, _MAX_TOKENS_MAX = 2, 4096
 # Orcamento por omissao ate 3.5. Ficou gravado em configs antigas e trunca
 # modelos de raciocinio (os 12 tokens gastam-se a pensar e o `content` vem
 # vazio). 12 nao era alcancavel por nenhuma interface — so como omissao — logo
@@ -88,8 +93,11 @@ _MAX_TOKENS_ANTIGO = 12
 _FALHAS_PARA_SUSPENDER = 3
 _SUSPENSAO_S = 300.0
 #: Piso de `max_tokens` quando o classificador declara esforco: o raciocinio sai
-#: do mesmo orcamento e 320 tokens podem ser todos gastos a pensar.
-_MAX_TOKENS_COM_ESFORCO = 1200
+#: do mesmo orcamento e 320 tokens podem ser todos gastos a pensar. 1200 tambem
+#: nao chegava: medido a 2026-11-03, `deepseek-v4-pro` gastou os 1200 a pensar e
+#: devolveu um corpo sem nivel reconhecivel (o cartao do perfil mostrou
+#: "ValueError: resposta sem nivel reconhecivel (length 1182tok)").
+_MAX_TOKENS_COM_ESFORCO = 3000
 
 PROMPT = (
     "Classificas a complexidade de um pedido feito a um agente de engenharia.\n"

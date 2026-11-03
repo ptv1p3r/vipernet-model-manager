@@ -416,7 +416,12 @@ def _juiz_definicao(provider: str, modelo: str) -> dict[str, Any]:
     definicao, erros = _modelo().normalizar({
         "activo": True, "provider": provider, "modelo": modelo,
         "esforco": "baixo", "formato_json": "auto",
-        "max_tokens": 1200, "timeout_s": 30, "cache_ttl_s": 0,
+        # `max_tokens` 1200 cortava a resposta a meio: medido a 2026-11-03, o
+        # `deepseek-v4-pro` devolveu um corpo de 1182 tokens (o teto) sem nivel
+        # reconhecivel, e no ciclo seguinte 71 dos 90 casos do gold morreram em
+        # timeout/500 com `timeout_s` 30. O juiz raciocina antes de escrever o
+        # JSON, por isso o orcamento tem de contar com o raciocinio.
+        "max_tokens": 3000, "timeout_s": 120, "cache_ttl_s": 0,
     })
     if erros:
         raise SystemExit(f"definicao do juiz invalida: {erros}")
@@ -430,16 +435,21 @@ def _etiquetar(casos: list[dict], definicao: dict[str, Any], resolver, threads: 
         # Sem rede de seguranca de proposito: uma assinatura que nao aceite
         # `prompt` tem de estourar aqui, e nao virar "sem nivel" — o sintoma
         # seria um juiz que recusa tudo e um kappa de zero sem causa visivel.
-        r = modelo.classificar([{"role": "user", "content": caso["texto"]}],
-                               definicao, resolver, perfil="aprendiz", prompt=PROMPT_JUIZ)
-        if r is None:
-            # `classificar` devolve None quando a rota esta suspensa depois de
-            # falhar (comportamento documentado). Uma falha transitoria suspende
-            # a rota para todos os casos seguintes, por isso espera-se e tenta-se
-            # uma vez; sem isto, um unico 429 apagava o resto do lote.
-            time.sleep(3.0)
+        r = None
+        for tentativa in (1, 2):
             r = modelo.classificar([{"role": "user", "content": caso["texto"]}],
                                    definicao, resolver, perfil="aprendiz", prompt=PROMPT_JUIZ)
+            if r is not None:
+                break
+            # `classificar` devolve None quando a rota esta suspensa: 3 falhas
+            # suspendem-na 300 s. Esse disjuntor existe para nao travar cada
+            # turno de um utilizador, mas num lote de 90 casos apaga o resto
+            # (medido: 71 de 90 perdidos, e o portao fechou com "19 casos
+            # comuns"). Aqui repoe-se o disjuntor e tenta-se outra vez.
+            repor = getattr(modelo, "limpar_cache", None)
+            if callable(repor):
+                repor()
+            time.sleep(2.0 * tentativa)
         if r is None:
             return {"id": caso["id"], "rotulo": None, "erro": "rota suspensa apos falha"}
         nivel = (r.get("nivel") or "").strip().lower()

@@ -244,6 +244,70 @@ class TestColheita(unittest.TestCase):
             A._pool, A.CURSOR = original_pool, original_cursor
 
 
+class TestJuizEstavel(unittest.TestCase):
+    """O juiz raciocina antes de escrever o JSON: o orcamento tem de contar com isso.
+
+    Medido a 2026-11-03: com `max_tokens` 1200 o `deepseek-v4-pro` devolveu
+    exactamente 1182 tokens sem nivel reconhecivel, e no ciclo seguinte 71 dos
+    90 casos do gold morreram em timeout (30 s) e 500 — o portao fechou com
+    "19 casos comuns" e o juiz parecia sem autoridade (kappa 0,83 nos poucos
+    que passaram).
+    """
+
+    def test_orcamento_do_juiz_conta_com_o_raciocinio(self):
+        d = A._juiz_definicao("deepseek", "deepseek-v4-pro")
+        self.assertGreaterEqual(int(d["max_tokens"]), 3000)
+        self.assertGreaterEqual(float(d["timeout_s"]), 120)
+
+    def test_repõe_o_disjuntor_e_recupera_o_caso(self):
+        class Falso:
+            def __init__(self):
+                self.chamadas = 0
+                self.reposto = 0
+
+            def classificar(self, mensagens, definicao, resolver, perfil="", prompt=""):
+                self.chamadas += 1
+                return None if self.chamadas == 1 else {"nivel": "alta"}
+
+            def limpar_cache(self):
+                self.reposto += 1
+
+        falso = Falso()
+        original_modelo, original_sleep = A._modelo, A.time.sleep
+        A._modelo = lambda: falso
+        A.time.sleep = lambda _s: None
+        try:
+            rotulos = A._etiquetar([{"id": "x1", "texto": "depura o cluster"}],
+                                   {"provider": "p"}, lambda: None, 1)
+            self.assertEqual(rotulos[0]["rotulo"], "alta")
+            self.assertEqual(falso.chamadas, 2)
+            self.assertEqual(falso.reposto, 1)
+        finally:
+            A._modelo, A.time.sleep = original_modelo, original_sleep
+
+    def test_desiste_ao_fim_de_duas_tentativas(self):
+        class Sempre:
+            def __init__(self):
+                self.chamadas = 0
+
+            def classificar(self, *a, **k):
+                self.chamadas += 1
+                return None
+
+        sempre = Sempre()
+        original_modelo, original_sleep = A._modelo, A.time.sleep
+        A._modelo = lambda: sempre
+        A.time.sleep = lambda _s: None
+        try:
+            rotulos = A._etiquetar([{"id": "x1", "texto": "a"}], {"provider": "p"},
+                                   lambda: None, 1)
+            self.assertIsNone(rotulos[0]["rotulo"])
+            self.assertEqual(sempre.chamadas, 2)
+            self.assertIn("suspensa", rotulos[0]["erro"])
+        finally:
+            A._modelo, A.time.sleep = original_modelo, original_sleep
+
+
 class TestAbcModelo(unittest.TestCase):
     def test_none_e_falha_e_nao_estoura(self):
         """Regressao: `classificar` devolve None com a rota suspensa e o A/B morria."""
