@@ -366,6 +366,57 @@ try {
 }
 check("render: primeira pintura sem estado nao rebenta", erroRender === "", erroRender);
 
+// --- baseDoBloco: o bloco inteiro sobrevive a uma mudanca de campo ----------
+// A lista fixa de chaves perdia tudo o que nao estivesse enumerada. Estes
+// checks cobrem as chaves que o formulario nao conhece, para a proxima chave
+// nova nao voltar a ser apagada ao mudar o provider no painel.
+const blocoRico = {
+  activo: true,
+  provider: "openrouter",
+  modelo: "~typesafe/jev-latest",
+  via: "auto",
+  preset: "sistema-um",
+  estado: "medidas",
+  confianca_min: 0,
+  temperatura: null,
+  max_tokens_campo: "max_completion_tokens",
+  caminho: "/api/v9/chat",
+  caminho_decisoes: "/api/alpha/decisions",
+  timeout_s: 12,
+  max_tokens: 500,
+  esforco: "",
+  formato_json: "auto",
+  parametros_extra: { verbosity: "low" },
+  headers_extra: {},
+};
+const chavesAntes = Object.keys(blocoRico).length;
+const preservado = T.baseDoBloco(blocoRico);
+check("baseDoBloco: identidade e rota ficam",
+      preservado.activo === true && preservado.provider === "openrouter"
+      && preservado.modelo === "~typesafe/jev-latest", JSON.stringify(preservado));
+check("baseDoBloco: via/preset/estado sobrevivem",
+      preservado.via === "auto" && preservado.preset === "sistema-um"
+      && preservado.estado === "medidas", JSON.stringify(preservado));
+check("baseDoBloco: confianca_min 0 sobrevive (nao e campo vazio)",
+      preservado.confianca_min === 0, String(preservado.confianca_min));
+check("baseDoBloco: temperatura null sobrevive e continua null",
+      Object.prototype.hasOwnProperty.call(preservado, "temperatura")
+      && preservado.temperatura === null, JSON.stringify(preservado.temperatura));
+check("baseDoBloco: max_tokens_campo e caminhos sobrevivem",
+      preservado.max_tokens_campo === "max_completion_tokens"
+      && preservado.caminho === "/api/v9/chat"
+      && preservado.caminho_decisoes === "/api/alpha/decisions", JSON.stringify(preservado));
+check("baseDoBloco: parametros_extra e headers_extra sobrevivem",
+      preservado.parametros_extra && preservado.parametros_extra.verbosity === "low"
+      && preservado.headers_extra && Object.keys(preservado.headers_extra).length === 0,
+      JSON.stringify(preservado));
+check("baseDoBloco: esforco vazio sai do JSON", !("esforco" in preservado),
+      JSON.stringify(preservado));
+check("baseDoBloco: nao muta o bloco de origem",
+      blocoRico.provider === "openrouter" && blocoRico.esforco === ""
+      && Object.keys(blocoRico).length === chavesAntes,
+      String(Object.keys(blocoRico).length) + " vs " + chavesAntes);
+
 console.log("");
 if (falhas) {
   console.log(falhas + " de " + total + " verificacoes FALHARAM");

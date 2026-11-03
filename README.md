@@ -390,6 +390,63 @@ servir — falha de transporte, resposta fora dos níveis, rota suspensa — e n
 mera incerteza. Quem quiser poupar chamadas pode usar 0,40 (perde 0,008 de
 acerto e corta 26% das decisões).
 
+### Qualquer modelo como classificador (3.15.0)
+
+Até 3.14.2 o classificador assumia um provider com `/chat/completions`, corpo
+`{model, messages, temperature, max_tokens}`, credencial na rota e um modelo que
+aceita `response_format`. Isso excluía três famílias reais: os modelos de
+decisões (`~typesafe/...`), os de raciocínio (o1/o3/gpt-5 recusam `temperature`
+com 400) e os que mudam o nome do orçamento de saída. A 3.15.0 fecha as sete
+lacunas com configuração, sem código por provider — a config do perfil continua a
+ser a única casa.
+
+| chave | omissão | para que serve |
+|---|---|---|
+| `via` | `auto` | `chat`, `decisoes` ou `auto`. `auto` sonda o chat e muda sozinho |
+| `preset` | `""` | `""` infere pelo id; `padrao`, `sistema-um`, `raciocinio`; `nenhum` desliga |
+| `estado` | `medidas` | `medidas` (bloco de factos) ou `simples` (transcrito, rollback) |
+| `temperatura` | `0.0` | `null`/`omitir`/`-` = **não enviar** o campo |
+| `top_p` | `1` | omitido quando a temperatura é omitida |
+| `max_tokens_campo` | `max_tokens` | `max_completion_tokens` nos modelos recentes da OpenAI |
+| `caminho` | `""` | substitui o caminho do chat preservando esquema/host da rota |
+| `caminho_decisoes` | `""` | idem, para o endpoint de decisões |
+| `parametros_extra` | `{}` | campos extra no corpo; **não** pode trocar `model` nem `messages` |
+| `headers_extra` | `{}` | cabeçalhos extra, aplicados depois dos defaults |
+
+**O preset é uma pista, não uma prisão.** Entra por baixo do que o perfil declara
+(`{**PRESETS[preset], **bruto}`), logo o valor escrito pelo dono ganha sempre. O
+`preset: ""` infere pelo id do modelo — `~typesafe/` é System One, `o1`/`o3`/`gpt-5`
+são raciocínio — e `nenhum` desliga a inferência para quem quiser o comportamento
+cru.
+
+**`via: auto` é o default porque apontar a um modelo não devia exigir saber o tipo
+dele.** Tenta o chat; se o provider responder que é um *decisions model*, memoriza
+a descoberta por alvo (perfil+provider+modelo) **em memória** — não na config, para
+não confundir o que o dono declarou com o que o plugin aprendeu — e repete o pedido
+no endpoint certo. A sonda custa uma chamada recusada, uma vez por processo.
+
+**Duas redes de segurança, porque os providers não são coerentes.** Um 400 que
+mencione `temperature`/`top_p` retira o campo e repete **uma vez**, sobre uma cópia
+local da definição (não suja a definição do chamador). E um 400 que mencione
+`decisions model`/`/api/alpha/decisions` é levantado de imediato — antes da
+degradação de `response_format`, que de outro modo consumia a resposta e escondia a
+causa.
+
+Provas vivas contra o OpenRouter (2026-11-03, `~typesafe/jev-latest`):
+
+| prova | configuração | resultado |
+|---|---|---|
+| preset inferido | só `modelo`, mais nada | 1 pedido a `/api/alpha/decisions`, `alta`, 0,96, 292 ms |
+| sonda `auto` | `preset: nenhum`, `via: auto` | `chat` → 400 → `/api/alpha/decisions`, `alta`, 0,96, 390 ms |
+| LLM de chat | `gemini-2.5-flash`, `via: auto` | 1 pedido a `/chat/completions`, fica no chat |
+
+**O painel deixou de enumerar chaves.** O `baseDoBloco` reconstrói o bloco a partir
+do que lá está e remove só os campos vazios — com `temperatura` de fora, porque
+`null` ali significa «não enviar». A lista fixa de chaves tinha apagado
+`timeout_s`/`max_tokens`/`janela_mensagens`, depois `via`/`estado`/`confianca_min`,
+e apagaria agora `preset`/`temperatura`/`parametros_extra`: mudar o provider no
+painel não pode ser uma armadilha.
+
 ### Juiz do ciclo de aprendizagem
 
 O juiz que rotula o corpus de treino é **`inception/mercury-3`** (decisão do dono,
