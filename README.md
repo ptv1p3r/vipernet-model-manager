@@ -4,6 +4,10 @@ Escolhe **provider + modelo** em cada turno a partir da complexidade que o turno
 mostra — não a partir de uma etiqueta que o dono escreveu — dentro do catálogo
 que o dono declarou **para o perfil que está a ser servido**.
 
+**Repositório público:** https://github.com/ptv1p3r/vipernet-model-manager — a entrada de
+catálogo pronta a submeter vive em `plugin-catalog/vipernet-model-manager.yaml` (falta só o
+pin `sha`, que exige conteúdo publicado no ramo `main` do GitHub).
+
 Três frases que resumem o contrato:
 
 1. A **complexidade é medida** (última mensagem + estado do trabalho): tamanho do
