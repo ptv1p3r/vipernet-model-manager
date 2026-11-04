@@ -49,8 +49,10 @@ Regras que decidem o resultado:
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import difflib
+import fcntl
 import hashlib
 import json
 import os
@@ -966,9 +968,55 @@ def _registar_quem(caminho: Path, antes: bytes, depois: bytes) -> None:
         pass
 
 
-def gravar(cfg: dict[str, Any], caminho: Path | None = None) -> Path:
-    """Grava com validacao, backup e `os.replace` (nunca meio ficheiro)."""
-    caminho = Path(caminho) if caminho else ficheiro_config()
+def rev(cfg: dict[str, Any]) -> str:
+    """Impressao digital canonica da config, partilhada por todos os escritores.
+
+    Chaves ordenadas e separadores fixos: o mesmo conteudo em qualquer ordem de
+    insercao da a mesma impressao. E a unica definicao — o painel, o CLI e os
+    scripts comparam pelo mesmo numero, senao um `rev` de um nao vale no outro.
+    """
+    canonico = json.dumps(cfg, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonico.encode("utf-8")).hexdigest()[:16]
+
+
+class Conflito(RuntimeError):
+    """A config mudou no disco entre a leitura do chamador e a sua escrita.
+
+    Levar `Conflito` em vez de gravar e o que impede a perda silenciosa: o
+    chamador leu um documento, outro escritor mudou uma chave, e gravar o
+    documento inteiro reporia o passado. Quem apanha isto rele e reaplica o
+    delta — nunca descarta o que o outro escreveu.
+    """
+
+    def __init__(self, rev_actual: str, mensagem: str = "") -> None:
+        super().__init__(mensagem or f"a configuracao mudou no disco (rev {rev_actual})")
+        self.rev_actual = rev_actual
+
+
+@contextlib.contextmanager
+def _trava(caminho: Path):
+    """Trava exclusiva por ficheiro de config (bloqueia escritores concorrentes).
+
+    O `flock` e do kernel e vive no ficheiro `.lock` ao lado do config, nao no
+    config: o `os.replace` troca o inode do config e uma trava no inode antigo
+    deixaria de proteger. E reentrante no mesmo processo por ficheiro aberto,
+    portanto `alterar` pode chamar `_escrever` sem se auto-bloquear.
+    """
+    caminho.parent.mkdir(parents=True, exist_ok=True)
+    ficheiro = caminho.with_suffix(".json.lock")
+    with ficheiro.open("a+", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+
+
+def _escrever(cfg: dict[str, Any], caminho: Path) -> Path:
+    """Valida, faz backup, escreve em `.tmp` e troca com `os.replace`."""
     limpo, erros = validar(cfg)
     if erros:
         raise ValueError("; ".join(erros))
@@ -987,6 +1035,53 @@ def gravar(cfg: dict[str, Any], caminho: Path | None = None) -> Path:
     os.replace(tmp, caminho)
     _registar_quem(caminho, antes, texto.encode("utf-8"))
     return caminho
+
+
+def gravar(cfg: dict[str, Any], caminho: Path | None = None,
+           rev_esperado: str | None = None) -> Path:
+    """Grava o documento inteiro, com trava e verificacao de versao opcional.
+
+    Usar so quando a intencao E o documento inteiro (semente, editor de JSON,
+    importacao). Para mudar uma chave, `alterar` — que relê o disco dentro da
+    trava e aplica o delta ao estado actual, em vez de repor o que o chamador
+    tinha em maos.
+    """
+    caminho = Path(caminho) if caminho else ficheiro_config()
+    with _trava(caminho):
+        if rev_esperado:
+            actual, _erros = carregar(caminho)
+            if rev(actual) != rev_esperado:
+                raise Conflito(rev(actual))
+        return _escrever(cfg, caminho)
+
+
+def alterar(mutador, caminho: Path | None = None,
+            rev_esperado: str | None = None) -> tuple[dict[str, Any], str]:
+    """Muda chaves sobre o estado fresco do disco, dentro da trava.
+
+    Este e o caminho sancionado de escrita por chave: o `mutador` recebe a config
+    que esta no disco agora (nao a que o chamador leu ha um minuto), muda so o
+    que lhe compete e devolve-a. Uma escrita concorrente noutra chave sobrevive
+    porque nunca e substituida — so a chave que este mutador toca e reescrita.
+
+    `rev_esperado` acrescenta a deteccao de conflito de intencao: se o documento
+    mudou desde que o chamador o leu, levanta `Conflito` em vez de aplicar um
+    delta calculado sobre um estado que ja nao existe.
+
+    Devolve `(config_nova, rev_nova)`.
+    """
+    caminho = Path(caminho) if caminho else ficheiro_config()
+    with _trava(caminho):
+        cfg, erros = carregar(caminho)
+        if erros:
+            raise ValueError("; ".join(erros))
+        actual = rev(cfg)
+        if rev_esperado and rev_esperado != actual:
+            raise Conflito(actual)
+        resultado = mutador(cfg)
+        novo = resultado if isinstance(resultado, dict) else cfg
+        _escrever(novo, caminho)
+        return novo, rev(novo)
 
 
 def garantir() -> Path:
