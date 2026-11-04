@@ -300,13 +300,23 @@ _LIMITES_INTERNOS = ("contexto_max", "latencia_p95_ms")
 # divergirem. As listas do classificador vivem em `analise_modelo` (`CHAVES`),
 # derivadas do `PADRAO` dele pela mesma razao.
 _CHAVES_CONFIG = frozenset({"versao", "activo", "registar", "analise",
-                            "estrategia", "perfis"})
+                            "estrategia", "retencao", "perfis"})
 _CHAVES_PERFIL = frozenset({"activo", "estrategia", "analise", "catalogo",
                             "tarefas", "latencia_max_ms", "rodizio"})
 _CHAVES_ANALISE = frozenset(set(ANALISE_PADRAO) | {"pesos", "aprendiz",
                                                    "classificador"})
 # `limiares` so tem dois limiares: sao os que `analise.nivel_de_score` le.
 LIMIARES_CHAVES = frozenset({"media", "alta"})
+
+# Retencao: quantos dias de detalhe ficam no ledger e quantos backups do config
+# se guardam. Fica no config para o painel e o CLI lerem o mesmo numero — um
+# limite escrito em dois sitios divergem sempre.
+RETENCAO_PADRAO: dict[str, int] = {
+    "dias_completo": 7,
+    "backups_manter": 10,
+    "backups_semanais": 1,
+}
+_CHAVES_RETENCAO = frozenset(RETENCAO_PADRAO)
 _CHAVES_TAREFA = frozenset({"termos", "prioridade"})
 _CHAVES_ENTRADA = frozenset({
     "id", "provider", "modelo", "complexidade", "niveis", "acesso",
@@ -754,6 +764,46 @@ def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str
     return saida
 
 
+def normalizar_retencao(valor: Any, prefixo: str = "retencao",
+                        erros: list[str] | None = None
+                        ) -> tuple[dict[str, int], list[str]]:
+    """Normaliza o bloco de retencao: tres inteiros, listas fechadas.
+
+    So devolve o que foi declarado — ausente significa "vale o padrao", como na
+    estrategia. Um `0` explicito no `dias_completo` e legitimo (nao compacta
+    nada); o que nao e legitimo e um valor que nao seja inteiro nao negativo, ou
+    um `backups_manter` a zero, que apagaria todos os backups de rotina.
+    """
+    if erros is None:
+        erros = []
+    if valor is None or valor == "":
+        return {}, erros
+    if not isinstance(valor, dict):
+        erros.append(f"{prefixo} tem de ser um objecto com "
+                     f"{sorted(_CHAVES_RETENCAO)}")
+        return {}, erros
+    _recusar_desconhecidas(valor, _CHAVES_RETENCAO, prefixo, erros)
+    saida: dict[str, int] = {}
+    minimos = {"dias_completo": 0, "backups_manter": 1, "backups_semanais": 0}
+    for chave in sorted(_CHAVES_RETENCAO):
+        if chave not in valor:
+            continue
+        bruto = valor[chave]
+        if isinstance(bruto, bool) or not isinstance(bruto, (int, str)):
+            erros.append(f"{prefixo}.{chave} tem de ser um inteiro (veio {bruto!r})")
+            continue
+        try:
+            numero = int(bruto)
+        except (TypeError, ValueError):
+            erros.append(f"{prefixo}.{chave} tem de ser um inteiro (veio {bruto!r})")
+            continue
+        if numero < minimos[chave]:
+            erros.append(f"{prefixo}.{chave} tem de ser >= {minimos[chave]} (veio {numero})")
+            continue
+        saida[chave] = numero
+    return saida, erros
+
+
 def normalizar_estrategia(valor: Any, prefixo: str = "estrategia",
                           erros: list[str] | None = None
                           ) -> tuple[dict[str, str], list[str]]:
@@ -909,6 +959,13 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
     # omissao", que e a informacao util quando nada foi decidido.
     if est_global:
         saida["estrategia"] = dict(est_global)
+
+    # Retencao: bloco opcional, mesma regra da estrategia — so se grava o que
+    # foi declarado, e a ausencia vale o padrao.
+    retencao, erros_ret = normalizar_retencao(cfg.get("retencao"), "retencao")
+    erros.extend(erros_ret)
+    if retencao:
+        saida["retencao"] = dict(retencao)
 
     perfis = cfg.get("perfis")
     if not isinstance(perfis, dict):

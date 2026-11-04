@@ -238,6 +238,12 @@ def _append_linha(caminho: Path, linha: str) -> None:
     A escrita e atomica para linhas pequenas mesmo com varios processos a
     acrescentar em simultaneo (o CLI e o gateway correm em processos
     diferentes). O ficheiro nasce `0600`; nada de segredos, mas por higiene.
+
+    A trava **partilhada** ao lado do ficheiro nao serializa os escritores (varios
+    podem escrever ao mesmo tempo); existe para a compactacao do ledger. Sem ela,
+    o `os.replace` de uma compactacao deitava fora as linhas escritas entre a
+    leitura e a troca — perda silenciosa de eventos exactamente enquanto se
+    arruma a casa.
     """
     try:
         caminho.parent.mkdir(parents=True, exist_ok=True)
@@ -248,7 +254,8 @@ def _append_linha(caminho: Path, linha: str) -> None:
     except OSError:
         return
     try:
-        os.write(fd, linha.encode("utf-8"))
+        with _trava_ledger(caminho, exclusiva=False):
+            os.write(fd, linha.encode("utf-8"))
     finally:
         os.close(fd)
 
