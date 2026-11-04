@@ -1246,6 +1246,33 @@ histerese e com a mesma trava:
 Prova: `test_tarefa_persistente.py` (12 casos, com os negativos — sessão
 diferente, prazo esgotado, marcador de fim, desligado, validação).
 
+### O painel edita a tarefa persistente (3.33.0)
+
+O bloco existia só no ficheiro e na API: mudar o prazo obrigava a editar JSON.
+Agora tem os dois sítios que o resto do `analise` já tinha:
+
+- **Página de configuração** — bloco «Tarefa persistente», com a activação e os
+  dois prazos (1–50 turnos, 1–1440 minutos, os limites do motor). Escreve no
+  `analise` **global**.
+- **Página de perfil** — «definição: herdar do global | declarar neste perfil».
+  A herdar, mostra os valores herdados e não desenha campos; a declarar, mostra
+  os três, com **vazio = herdar essa chave**.
+- **Uma decisão, um sítio**: o global edita-se na configuração, o delta no
+  perfil. Duas cópias do mesmo número no ecrã discordam mais cedo ou mais tarde.
+
+Os valores em vigor e a origem vêm do servidor (`tarefa_persistente_efectiva`,
+no `dashboard/api.py`), calculados com as mesmas regras do motor: `proprio` (o
+perfil declara), `global` (o global difere do padrão) ou `padrao`. A distinção
+importa porque o `validar` materializa o bloco global com os valores por
+omissão — «existe no ficheiro» não é «foi escolhido», e o painel não devia
+anunciar uma escolha que ninguém fez.
+
+Prova: **18** verificações novas na lógica do painel (`node test_logica.js`,
+**266/266**) e **6** no selftest do servidor (**186/186**). As do servidor leem o
+`config.json` do disco, não a resposta: declarar exatamente os valores do global
+não fica escrito, `herdar` apaga o bloco, e um prazo fora dos limites volta como
+400 com o nome da chave.
+
 ## Limites conhecidos
 
 - Importa funções internas do Hermes (`resolve_runtime_provider`,
@@ -1455,10 +1482,10 @@ O nível fixado por turno tem ainda duas provas próprias:
   **0 em `pin`**, com `953 = 1 109 − 156` reutilizações.
 
 
-190 verificações no selftest, 55 no classificador por modelo (servidor HTTP
+186 verificações no selftest, 55 no classificador por modelo (servidor HTTP
 local a sério, sem mocks), 32 no banco de avaliação (métricas, percentis,
 congelamento do gold, recusa de afinar, consistência entre registos) e mais 79
-em quatro holdouts rotulados à mão, 79 no painel — incluindo a lógica pura do
+em quatro holdouts rotulados à mão, 266 no painel — incluindo a lógica pura do
 editor corrida em node —, 51 na triagem por necessidades, 22 na
 amostragem/rotulagem, 55 no ciclo de aprendizagem, 23 no nível fixado por turno
 e 16 de tarefas.

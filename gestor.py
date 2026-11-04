@@ -1825,9 +1825,16 @@ def tarefa_persistente_efectiva(cfg: dict[str, Any], perfil: str) -> dict[str, A
     cru = (((cfg.get("perfis") or {}).get(nome_cfg) or {}).get("analise") or {})
     proprio = cru.get("tarefa_persistente") if isinstance(cru, dict) else None
     global_tp = (cfg.get("analise") or {}).get("tarefa_persistente")
+    # O `validar` materializa o bloco global com os valores por omissao, logo
+    # "existe no ficheiro" nao quer dizer "foi declarado". Se o resultado e
+    # igual ao padrao, a origem honesta e `padrao` — dizer `global` faria o
+    # painel anunciar uma escolha que ninguem fez.
+    global_efectivo = dict(TAREFA_PERSISTENTE_PADRAO)
+    if isinstance(global_tp, dict):
+        global_efectivo.update({k: global_tp[k] for k in TAREFA_PERSISTENTE_CHAVES if k in global_tp})
     if isinstance(proprio, dict) and proprio:
         origem = "proprio"
-    elif isinstance(global_tp, dict) and global_tp:
+    elif global_efectivo != dict(TAREFA_PERSISTENTE_PADRAO):
         origem = "global"
     else:
         origem = "padrao"

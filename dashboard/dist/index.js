@@ -3127,6 +3127,12 @@
     window.__VMM_TEST__.PaginaPerfil = PaginaPerfil;
     window.__VMM_TEST__.perfilParaForm = perfilParaForm;
     window.__VMM_TEST__.formParaPerfil = formParaPerfil;
+    // A tarefa persistente tem dois donos (global na configuracao, delta no
+    // perfil): testar as quatro funcoes e o que impede o painel de escrever um
+    // valor que a validacao descarta em silencio.
+    window.__VMM_TEST__.tarefaPersistenteDe = tarefaPersistenteDe;
+    window.__VMM_TEST__.comTarefaPersistente = comTarefaPersistente;
+    window.__VMM_TEST__.TAREFA_PERSISTENTE_PADRAO = TAREFA_PERSISTENTE_PADRAO;
     window.__VMM_TEST__.CAMPOS_CLASSIFICADOR = CAMPOS_CLASSIFICADOR;
     window.__VMM_TEST__.CAMPOS_JSON_CLASSIFICADOR = CAMPOS_JSON_CLASSIFICADOR;
   }
