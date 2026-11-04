@@ -49,8 +49,10 @@ Regras que decidem o resultado:
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import difflib
+import fcntl
 import hashlib
 import json
 import os
@@ -58,6 +60,7 @@ import re
 import shutil
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -282,6 +285,64 @@ MODALIDADES = ("texto", "imagem", "audio", "ficheiro")
 _LIMITES_INTERNOS = ("contexto_max", "latencia_p95_ms")
 
 
+# ------------------------------------------------------------------ listas fechadas
+# Chaves aceites em cada nivel do config. Uma chave fora destas listas e ERRO e
+# nao um descarte silencioso. Medido a 2026-11-04, antes desta guarda: dez casos
+# — `classificador` no topo, `perfís` com acento, `modelo` declarado no perfil,
+# `latencia_max` sem o `_ms`, `cust` por `custo` na entrada, `superficie` no
+# singular — passavam com ZERO erros e o valor declarado desaparecia na
+# gravacao. O utilizador julgava ter mudado uma definicao que nunca chegou ao
+# disco, que e a pior classe de defeito deste ficheiro: silencioso e com
+# aspecto de sucesso.
+#
+# `_CHAVES_ANALISE` deriva de `ANALISE_PADRAO` de proposito: uma chave nova
+# acrescentada la entra aqui sozinha, e um teste prende as duas para nao
+# divergirem. As listas do classificador vivem em `analise_modelo` (`CHAVES`),
+# derivadas do `PADRAO` dele pela mesma razao.
+_CHAVES_CONFIG = frozenset({"versao", "activo", "registar", "analise",
+                            "estrategia", "perfis"})
+_CHAVES_PERFIL = frozenset({"activo", "estrategia", "analise", "catalogo",
+                            "tarefas", "latencia_max_ms", "rodizio"})
+_CHAVES_ANALISE = frozenset(set(ANALISE_PADRAO) | {"pesos", "aprendiz",
+                                                   "classificador"})
+# `limiares` so tem dois limiares: sao os que `analise.nivel_de_score` le.
+LIMIARES_CHAVES = frozenset({"media", "alta"})
+_CHAVES_TAREFA = frozenset({"termos", "prioridade"})
+_CHAVES_ENTRADA = frozenset({
+    "id", "provider", "modelo", "complexidade", "niveis", "acesso",
+    "esforco", "tarefas", "desligado", "custo", "ordem", "nota",
+    "superficies", "modalidades", "json_nativo",
+}) | frozenset(_LIMITES_INTERNOS)
+
+
+def _recusar_desconhecidas(mapa: Any, permitidas: frozenset[str],
+                           prefixo: str, erros: list[str]) -> None:
+    """Um erro por cada chave fora da lista fechada, com sugestao do typo.
+
+    A sugestao vem de `difflib` porque o caso real e o engano de uma letra
+    (`cust` por `custo`, `latencia_max` por `latencia_max_ms`): com a chave
+    certa ao lado, o erro corrige-se sozinho em vez de obrigar a ler a lista
+    inteira. Nao levanta e nao escreve: so acrescenta a `erros`.
+    """
+    if not isinstance(mapa, dict):
+        return
+    for chave in sorted(set(mapa) - set(permitidas), key=str):
+        # Corte a 0,75 medido a 2026-11-04: as sugestoes uteis ficam todas acima
+        # (`cust`->`custo` 0,889, `janela_msgs`->`janela_mensagens` 0,815) e a
+        # unica falsa (`superficies`->`perfis`, 0,706) cai. Uma sugestao errada
+        # custa mais do que nenhuma, porque manda mudar a chave certa.
+        perto = difflib.get_close_matches(str(chave), sorted(permitidas),
+                                          n=1, cutoff=0.75)
+        if perto:
+            dica = f"; queria dizer '{perto[0]}'?"
+        else:
+            lista = ", ".join(sorted(permitidas))
+            if len(lista) > 140:
+                lista = lista[:137] + "..."
+            dica = f" (aceita: {lista})"
+        erros.append(f"{prefixo}.{chave} desconhecida{dica}")
+
+
 # Superficies que o core ja entrega ao middleware `llm_request` via
 # `agent.platform` (medidas em producao a 2026-11-03). Nao e uma lista
 # fechada: `superficies` aceita qualquer valor, porque um provider novo traz
@@ -411,6 +472,94 @@ def regra_de_superficie(pcfg: dict[str, Any], superficie: str) -> dict[str, Any]
     return None
 
 
+# Chave que vale como "todas as outras" dentro do mapa de superficie de um
+# modelo: com `"*": false` o modelo so serve as superficies que nomear a `true`.
+CORINGA_SUPERFICIE = "*"
+
+
+def normalizar_superficies_modelo(
+    valor: Any,
+    contexto: str,
+    erros: list[str],
+) -> dict[str, bool]:
+    """Valida `catalogo[i].superficies`: superficie -> permitido (booleano).
+
+    Duas camadas, com proposito diferente, e por isso com forma diferente:
+
+    - No **perfil** (`analise.superficies`) a regra diz *quem serve* a
+      superficie: mapeia superficie -> rota (entrada, niveau ou provider/modelo).
+    - No **modelo** (`catalogo[i].superficies`) a regra diz *se pode servir*:
+      mapeia superficie -> booleano. E um filtro de elegibilidade, nao um router.
+      Um modelo nunca aponta para outro — isso seria uma terceira copia da
+      decisao, e o desempate e do perfil.
+
+    Heranca: o modelo que nao declara `superficies` herda o comportamento do
+    perfil (a regra do perfil decide a rota e o modelo nao restringe). Uma
+    superficie ausente do mapa declarado tambem herda; para inverter o sentido
+    usa-se a chave `*` (`{"*": false, "cron": true}` = so cron).
+
+    Nome parecido com uma superficie real e erro, e nao aviso: uma regra para
+    `crom` nunca dispara e o silencio e o pior resultado — o utilizador fica
+    convencido de ter limitado o cron.
+    """
+    if isinstance(valor, list):
+        # Acucar: lista de superficies permitidas vale por todas a `true`.
+        valor = {str(v): True for v in valor if str(v).strip()}
+    if not isinstance(valor, dict):
+        erros.append(f"{contexto}.superficies tem de ser um objecto "
+                     f"(superficie -> true/false)")
+        return {}
+    saida: dict[str, bool] = {}
+    for bruto, permitido in valor.items():
+        nome = str(bruto or "").strip().lower()
+        if not nome:
+            erros.append(f"{contexto}.superficies: superficie com nome vazio")
+            continue
+        if not isinstance(permitido, bool):
+            erros.append(f"{contexto}.superficies.{nome} tem de ser true ou false "
+                         f"(recebido {permitido!r})")
+            continue
+        if nome != CORINGA_SUPERFICIE and nome not in SUPERFICIES_CONHECIDAS \
+                and nome.isalpha():
+            parecida = difflib.get_close_matches(
+                nome, SUPERFICIES_CONHECIDAS, n=1, cutoff=0.75)
+            if parecida:
+                erros.append(f"{contexto}.superficies.{nome}: superficie parecida "
+                             f"com '{parecida[0]}' — corrija o nome ou use uma "
+                             f"superficie real")
+                continue
+        saida[nome] = permitido
+    return saida
+
+
+def serve_superficie(entrada: dict[str, Any], superficie: str) -> bool:
+    """O modelo aceita servir esta superficie? Ausente = herda (sim).
+
+    Le-se de forma tolerante: um mapa mal escrito nao pode calar o turno todo.
+    So o `false` explicito exclui — a ausencia e heranca, nao uma proibicao.
+    """
+    nome = str(superficie or "").strip().lower()
+    if not nome:
+        return True
+    mapa = entrada.get("superficies")
+    if not isinstance(mapa, dict) or not mapa:
+        return True
+    if nome in mapa:
+        return bool(mapa[nome])
+    if CORINGA_SUPERFICIE in mapa:
+        return bool(mapa[CORINGA_SUPERFICIE])
+    return True
+
+
+def superficies_do_modelo(pcfg: dict[str, Any], entrada_id: str) -> dict[str, bool] | None:
+    """O mapa declarado por um modelo, ou `None` quando herda do perfil."""
+    for entrada in (pcfg.get("catalogo") or []):
+        if isinstance(entrada, dict) and str(entrada.get("id")) == str(entrada_id):
+            mapa = entrada.get("superficies")
+            return dict(mapa) if isinstance(mapa, dict) and mapa else None
+    return None
+
+
 def normalizar_limites(entrada: dict[str, Any], indice: int, erros: list[str]) -> dict[str, Any]:
     """Valida e normaliza os limites de uma rota (janela, modalidades, json, latencia)."""
     saida: dict[str, Any] = {}
@@ -505,6 +654,7 @@ def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str
     if not isinstance(entrada, dict):
         erros.append(f"catalogo[{indice}] nao e um objecto")
         return None
+    _recusar_desconhecidas(entrada, _CHAVES_ENTRADA, f"catalogo[{indice}]", erros)
     provider = str(entrada.get("provider") or "").strip()
     modelo = str(entrada.get("modelo") or "").strip()
     bruto = entrada.get("complexidade", entrada.get("niveis"))
@@ -590,6 +740,14 @@ def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str
             return None
         saida["ordem"] = valor_ordem
     saida.update(normalizar_limites(entrada, indice, erros))
+    # Superficies do modelo: filtro de elegibilidade por superficie de sessao.
+    # Ausente = herda do perfil (o modelo nao restringe nada).
+    bruto_sup = entrada.get("superficies")
+    if bruto_sup not in (None, {}, []):
+        mapa = normalizar_superficies_modelo(
+            bruto_sup, f"catalogo[{indice}] ({provider}:{modelo})", erros)
+        if mapa:
+            saida["superficies"] = mapa
     for chave in ("nota",):
         if entrada.get(chave):
             saida[chave] = str(entrada[chave])
@@ -670,6 +828,14 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
             pass  # continuará à validação normal que rejeitará non-dict
     if not isinstance(cfg, dict):
         return copy.deepcopy(SEED), ["config nao e um objecto"]
+    _recusar_desconhecidas(cfg, _CHAVES_CONFIG, "config", erros)
+    # `versao` tambem nao se reescreve em silencio: um ficheiro de uma versao
+    # futura aberto e gravado aqui perdia as chaves que esta versao desconhece,
+    # e o utilizador ficava com uma copia mutilada sem um unico erro.
+    _versao = cfg.get("versao")
+    if _versao not in (None, "", 3, "3"):
+        erros.append(f"config.versao {_versao!r} nao suportada "
+                     f"(este plugin le a versao 3)")
     saida: dict[str, Any] = {
         "versao": 3,
         "activo": bool(cfg.get("activo", True)),
@@ -679,9 +845,15 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
     }
     analise = cfg.get("analise") or {}
     if isinstance(analise, dict):
+        _recusar_desconhecidas(analise, _CHAVES_ANALISE, "analise", erros)
         for chave, valor in analise.items():
             if chave == "limiares" and isinstance(valor, dict):
-                saida["analise"]["limiares"].update(valor)
+                # Fechado a `media`/`alta`, que e o que `nivel_de_score` le.
+                # Um `leve` aqui era aceite e nunca decidia nada.
+                _recusar_desconhecidas(valor, LIMIARES_CHAVES,
+                                       "analise.limiares", erros)
+                saida["analise"]["limiares"].update(
+                    {k: v for k, v in valor.items() if k in LIMIARES_CHAVES})
             elif chave == "classificador":
                 limpo, erros_c = _analise_modelo().normalizar(valor)
                 saida["analise"]["classificador"] = limpo
@@ -735,8 +907,6 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
     # transformava "nao escolhi" numa escolha, e a origem passava a ser
     # `herdado` para toda a gente — o painel deixava de poder dizer "por
     # omissao", que e a informacao util quando nada foi decidido.
-    base_est = dict(ESTRATEGIA_PADRAO)
-    base_est.update(est_global)
     if est_global:
         saida["estrategia"] = dict(est_global)
 
@@ -752,6 +922,7 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         if not isinstance(pcfg, dict):
             erros.append(f"perfis.{nome} nao e um objecto")
             continue
+        _recusar_desconhecidas(pcfg, _CHAVES_PERFIL, f"perfis.{nome}", erros)
         # Estrategia do perfil: bloco opcional. Ausente = herda o global; com
         # chaves = sobrepoe-se chave a chave. Aceita a forma antiga (string mais
         # `rodizio.por`) e converte-a — sem isto, gravar apagava a estrategia de
@@ -759,6 +930,10 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         bruto_est = pcfg.get("estrategia")
         por_antigo = (pcfg.get("rodizio") or {}).get("por") \
             if isinstance(pcfg.get("rodizio"), dict) else None
+        # Migracao da forma antiga (string + `rodizio.por`): a semente escrevia
+        # `rodizio`/`sessao` em todos os perfis, portanto esse valor nao e uma
+        # escolha — converter sem distinguir fixava cada perfil ao padrao.
+        migrada = isinstance(bruto_est, str) or (bruto_est is None and por_antigo is not None)
         if isinstance(bruto_est, str):
             bruto_est = {"modo": bruto_est, "por": por_antigo}
         elif bruto_est is None and por_antigo is not None:
@@ -766,11 +941,16 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         est_limpa, erros_est = normalizar_estrategia(
             bruto_est, f"perfis.{nome}.estrategia")
         erros.extend(erros_est)
-        # Grava-se so o delta: um valor igual ao global nao e uma declaracao, e
-        # uma copia que fixa o perfil ao dia em que foi gravada (a mesma regra
-        # da `analise`, e a razao pela qual os perfis nao devem repetir valores).
-        delta_est = {k: v for k, v in est_limpa.items()
-                     if base_est.get(k) != v}
+        # A estrategia declarada grava-se tal e qual, mesmo quando hoje coincide
+        # com o global. A heranca e a AUSENCIA da chave; a presenca e uma
+        # declaracao. A regra do delta (que se mantem na `analise`) engolia uma
+        # escolha explicita: o painel respondia 200, o perfil continuava a
+        # herdar, e uma alteracao posterior do global arrastava um perfil que o
+        # dono tinha declarado independente. As paginas de edicao inicializam
+        # sempre de `pcfg["estrategia"]` (nunca do valor efectivo), portanto nao
+        # geram copias por acidente.
+        est_declarada = {} if (migrada and est_limpa == dict(ESTRATEGIA_PADRAO)) \
+            else dict(est_limpa)
         # `teto_latencia` e tolerante em tempo de execucao (0 = sem teto), mas
         # um valor declarado e invalido tem de aparecer no editor, senao o
         # utilizador grava um teto que nao existe e nunca sabe por que.
@@ -784,8 +964,13 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         # classificador: qualquer chave herdada e a mesma armadilha.
         panalise: dict[str, Any] = {}
         if isinstance(pcfg.get("analise"), dict):
+            _recusar_desconhecidas(pcfg["analise"], _CHAVES_ANALISE,
+                                   f"perfis.{nome}.analise", erros)
             for chave, valor in pcfg["analise"].items():
                 if chave == "limiares" and isinstance(valor, dict):
+                    _recusar_desconhecidas(valor, LIMIARES_CHAVES,
+                                           f"perfis.{nome}.analise.limiares",
+                                           erros)
                     # So as chaves declaradas: o que falta vem do global.
                     globais = saida["analise"].get("limiares") or {}
                     declarados = {k: v for k, v in valor.items() if globais.get(k) != v}
@@ -798,10 +983,12 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
                     limpo, erros_c = _analise_modelo().normalizar(
                         valor, prefixo=f"perfis.{nome}.analise.classificador")
                     erros.extend(erros_c)
-                    if limpo == saida["analise"].get("classificador"):
-                        # Igual ao global: nao se grava copia (ver acima).
-                        continue
-                    panalise["classificador"] = limpo
+                    # Grava-se o que o perfil declara, mesmo que coincida hoje
+                    # com o global: o painel abre em "herdar" quando a chave nao
+                    # existe, por isso uma declaracao so aparece quando o dono a
+                    # escolhe. Um bloco vazio continua a significar herdar.
+                    if limpo:
+                        panalise["classificador"] = limpo
                 elif chave == "superficies":
                     # Guardado bruto: a validacao estreita precisa do
                     # catalogo, que so existe depois deste laco.
@@ -838,6 +1025,8 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
             if not isinstance(tid, str) or not tid.strip() or not isinstance(regra, dict):
                 erros.append(f"perfis.{nome}.tarefas: regra invalida")
                 continue
+            _recusar_desconhecidas(regra, _CHAVES_TAREFA,
+                                   f"perfis.{nome}.tarefas.{tid}", erros)
             termos = regra.get("termos", [])
             prioridade = regra.get("prioridade", 0)
             if (not isinstance(termos, list) or not termos or
@@ -880,10 +1069,10 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         saida["perfis"][nome] = {
             "tarefas": tarefas,
             "activo": bool(pcfg.get("activo", True)),
-            # Sem delta nao se grava `estrategia`: a ausencia da chave e o que
-            # significa "herda o global" (e o que permite mudar o global sem
-            # tocar nos perfis).
-            **(lambda e: {"estrategia": e} if e else {})(delta_est),
+            # Sem bloco declarado nao se grava `estrategia`: a ausencia da chave
+            # e o que significa "herda o global" (e o que permite mudar o global
+            # sem tocar nos perfis que nunca declararam nada).
+            **(lambda e: {"estrategia": e} if e else {})(est_declarada),
             # Teto de latencia do perfil: so se grava quando declarado, pela
             # mesma razao que a `analise` — ausencia e "sem teto", e um valor
             # herdado do global fixaria o perfil ao numero do dia.
@@ -917,20 +1106,253 @@ def carregar(caminho: Path | None = None) -> tuple[dict[str, Any], list[str]]:
     return validar(bruto)
 
 
-def gravar(cfg: dict[str, Any], caminho: Path | None = None) -> Path:
-    """Grava com validacao, backup e `os.replace` (nunca meio ficheiro)."""
+def _registar_quem(caminho: Path, antes: bytes, depois: bytes) -> None:
+    """Auditoria de autoria: atribui cada escrita a um processo.
+
+    Nasceu de um incidente sem rasto (nove escritas em dois minutos, cada uma a
+    reduzir uma rota ao seu nivel classificado): o `escritas.log` do painel so
+    cobre o painel, o CLI e os scripts gravavam sem deixar autor. Aqui fica o
+    pid, a linha de comando e os tres frames de cima da pilha.
+
+    Nunca le valores do config — so tamanhos e hashes. Falha em silencio: um
+    registo de auditoria nao pode impedir a escrita que foi pedida.
+    """
+    try:
+        # `sys.orig_argv` (3.10+) tem a linha de comando completa sem ler /proc
+        # de outro processo — o validador do catalogo marca leituras a /proc.
+        cmdline = " ".join(str(a) for a in (getattr(sys, "orig_argv", None) or sys.argv))
+    except Exception:  # noqa: BLE001
+        cmdline = ""
+    try:
+        pilha = [
+            "%s:%s:%s" % (Path(str(f.filename)).name, f.lineno, f.name)
+            for f in traceback.extract_stack()[-6:-1]
+        ]
+        linha = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "pid": os.getpid(),
+            "ppid": os.getppid(),
+            "cmdline": cmdline[:300],
+            "pilha": pilha,
+            "antes_sha": hashlib.sha256(antes).hexdigest()[:16] if antes else "",
+            "depois_sha": hashlib.sha256(depois).hexdigest()[:16],
+            "antes_b": len(antes),
+            "depois_b": len(depois),
+        }
+        with (caminho.parent / "escritas-quem.log").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(linha, ensure_ascii=False) + "\n")
+        _podar_registo(caminho.parent / "escritas-quem.log")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+#: Tecto do log de auditoria. Uma linha tem ~200 B; 256 KiB dao ~1300 escritas,
+#: muito acima do pior incidente medido (nove escritas em dois minutos).
+_LIMITE_LOG_AUDITORIA = 256 * 1024
+_LINHAS_LOG_AUDITORIA = 400
+
+
+def _podar_registo(registo: Path) -> None:
+    """Corta o log de auditoria a 400 linhas quando passa de 256 KiB.
+
+    A cadeia de hashes so precisa do ultimo elo para dizer se a config foi
+    escrita pelo caminho unico; as linhas antigas sao contexto forense. Sem
+    tecto, um escritor em laco fazia crescer isto sem fim, no mesmo diretorio
+    onde ja houve 119 backups a encher o disco.
+    """
+    try:
+        if registo.stat().st_size <= _LIMITE_LOG_AUDITORIA:
+            return
+        linhas = registo.read_text(encoding="utf-8").splitlines()
+        if len(linhas) <= _LINHAS_LOG_AUDITORIA:
+            return
+        tmp = registo.with_suffix(registo.suffix + ".tmp")
+        tmp.write_text("\n".join(linhas[-_LINHAS_LOG_AUDITORIA:]) + "\n",
+                       encoding="utf-8")
+        os.replace(tmp, registo)
+    except OSError:
+        pass
+
+
+def verificar_cadeia(caminho: Path | None = None) -> dict[str, Any]:
+    """Diz se a config no disco foi escrita pelo caminho unico.
+
+    O `escritas-quem.log` atribui cada escrita — mas so as que passam por
+    `_escrever`. Uma edicao a mao do JSON, um `sed`, um script que escreva o
+    ficheiro diretamente nao deixam linha nenhuma, e ate agora isso lia-se como
+    "ninguem escreveu": o log provava autoria quando havia escrita, nunca
+    provava ausencia de escrita por fora.
+
+    A cadeia fecha esse buraco com o que ja estava gravado: cada linha leva
+    `depois_sha` e a seguinte leva o mesmo valor em `antes_sha`. Se o sha dos
+    bytes vivos nao for o `depois_sha` da ultima linha, o ficheiro foi mexido
+    fora do caminho unico — ou o log foi apagado. E a diferenca entre "o
+    utilizador mudou pelo painel" (linha 1 a 11 do log real: `api.py:modelo_post`,
+    pid do gateway) e "alguem escreveu o JSON por fora" (nenhuma linha).
+    """
     caminho = Path(caminho) if caminho else ficheiro_config()
+    registo = caminho.parent / "escritas-quem.log"
+    saida: dict[str, Any] = {
+        "config": str(caminho),
+        "registo": str(registo),
+        "existe": registo.exists(),
+        "linhas": 0,
+        "ilegiveis": 0,
+        "quebras": [],
+        "ultimo_depois_sha": "",
+        "vivo_sha": "",
+        "cadeia_continua": True,
+        "fora_da_cadeia": False,
+    }
+    try:
+        saida["vivo_sha"] = hashlib.sha256(caminho.read_bytes()).hexdigest()[:16]
+    except OSError:
+        saida["vivo_sha"] = ""
+    if not registo.exists():
+        # Sem registo nao ha como atribuir: se ha config, ela veio de fora.
+        saida["fora_da_cadeia"] = bool(saida["vivo_sha"])
+        return saida
+    anterior = ""
+    try:
+        linhas = registo.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return saida
+    for numero, linha in enumerate(linhas, 1):
+        try:
+            dado = json.loads(linha)
+        except (json.JSONDecodeError, ValueError):
+            saida["ilegiveis"] += 1
+            continue
+        if not isinstance(dado, dict):
+            saida["ilegiveis"] += 1
+            continue
+        saida["linhas"] += 1
+        antes = str(dado.get("antes_sha") or "")
+        depois = str(dado.get("depois_sha") or "")
+        # A primeira escrita legitima de todas tem `antes_sha` vazio.
+        if anterior and antes and antes != anterior:
+            saida["quebras"].append(numero)
+        anterior = depois
+    saida["ultimo_depois_sha"] = anterior
+    saida["cadeia_continua"] = not saida["quebras"]
+    saida["fora_da_cadeia"] = bool(anterior) and saida["vivo_sha"] != anterior
+    return saida
+
+
+def rev(cfg: dict[str, Any]) -> str:
+    """Impressao digital canonica da config, partilhada por todos os escritores.
+
+    Chaves ordenadas e separadores fixos: o mesmo conteudo em qualquer ordem de
+    insercao da a mesma impressao. E a unica definicao — o painel, o CLI e os
+    scripts comparam pelo mesmo numero, senao um `rev` de um nao vale no outro.
+    """
+    canonico = json.dumps(cfg, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonico.encode("utf-8")).hexdigest()[:16]
+
+
+class Conflito(RuntimeError):
+    """A config mudou no disco entre a leitura do chamador e a sua escrita.
+
+    Levar `Conflito` em vez de gravar e o que impede a perda silenciosa: o
+    chamador leu um documento, outro escritor mudou uma chave, e gravar o
+    documento inteiro reporia o passado. Quem apanha isto rele e reaplica o
+    delta — nunca descarta o que o outro escreveu.
+    """
+
+    def __init__(self, rev_actual: str, mensagem: str = "") -> None:
+        super().__init__(mensagem or f"a configuracao mudou no disco (rev {rev_actual})")
+        self.rev_actual = rev_actual
+
+
+@contextlib.contextmanager
+def _trava(caminho: Path):
+    """Trava exclusiva por ficheiro de config (bloqueia escritores concorrentes).
+
+    O `flock` e do kernel e vive no ficheiro `.lock` ao lado do config, nao no
+    config: o `os.replace` troca o inode do config e uma trava no inode antigo
+    deixaria de proteger. E reentrante no mesmo processo por ficheiro aberto,
+    portanto `alterar` pode chamar `_escrever` sem se auto-bloquear.
+    """
+    caminho.parent.mkdir(parents=True, exist_ok=True)
+    ficheiro = caminho.with_suffix(".json.lock")
+    with ficheiro.open("a+", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+
+
+def _escrever(cfg: dict[str, Any], caminho: Path) -> Path:
+    """Valida, faz backup, escreve em `.tmp` e troca com `os.replace`."""
     limpo, erros = validar(cfg)
     if erros:
         raise ValueError("; ".join(erros))
     caminho.parent.mkdir(parents=True, exist_ok=True)
+    antes = b""
     if caminho.exists():
         carimbo = time.strftime("%Y%m%dT%H%M%S")
         shutil.copy2(caminho, caminho.with_suffix(f".json.bak-{carimbo}"))
+        try:
+            antes = caminho.read_bytes()
+        except OSError:
+            antes = b""
+    texto = json.dumps(limpo, ensure_ascii=False, indent=2) + "\n"
     tmp = caminho.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(limpo, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.write_text(texto, encoding="utf-8")
     os.replace(tmp, caminho)
+    _registar_quem(caminho, antes, texto.encode("utf-8"))
     return caminho
+
+
+def gravar(cfg: dict[str, Any], caminho: Path | None = None,
+           rev_esperado: str | None = None) -> Path:
+    """Grava o documento inteiro, com trava e verificacao de versao opcional.
+
+    Usar so quando a intencao E o documento inteiro (semente, editor de JSON,
+    importacao). Para mudar uma chave, `alterar` — que relê o disco dentro da
+    trava e aplica o delta ao estado actual, em vez de repor o que o chamador
+    tinha em maos.
+    """
+    caminho = Path(caminho) if caminho else ficheiro_config()
+    with _trava(caminho):
+        if rev_esperado:
+            actual, _erros = carregar(caminho)
+            if rev(actual) != rev_esperado:
+                raise Conflito(rev(actual))
+        return _escrever(cfg, caminho)
+
+
+def alterar(mutador, caminho: Path | None = None,
+            rev_esperado: str | None = None) -> tuple[dict[str, Any], str]:
+    """Muda chaves sobre o estado fresco do disco, dentro da trava.
+
+    Este e o caminho sancionado de escrita por chave: o `mutador` recebe a config
+    que esta no disco agora (nao a que o chamador leu ha um minuto), muda so o
+    que lhe compete e devolve-a. Uma escrita concorrente noutra chave sobrevive
+    porque nunca e substituida — so a chave que este mutador toca e reescrita.
+
+    `rev_esperado` acrescenta a deteccao de conflito de intencao: se o documento
+    mudou desde que o chamador o leu, levanta `Conflito` em vez de aplicar um
+    delta calculado sobre um estado que ja nao existe.
+
+    Devolve `(config_nova, rev_nova)`.
+    """
+    caminho = Path(caminho) if caminho else ficheiro_config()
+    with _trava(caminho):
+        cfg, erros = carregar(caminho)
+        if erros:
+            raise ValueError("; ".join(erros))
+        actual = rev(cfg)
+        if rev_esperado and rev_esperado != actual:
+            raise Conflito(actual)
+        resultado = mutador(cfg)
+        novo = resultado if isinstance(resultado, dict) else cfg
+        _escrever(novo, caminho)
+        return novo, rev(novo)
 
 
 def garantir() -> Path:
@@ -1318,25 +1740,30 @@ def candidatos(catalogo: list[dict[str, Any]], nivel: str) -> list[dict[str, Any
 
 
 def _chave_ordem(entrada: dict[str, Any]) -> tuple:
-    """Chave total e determinista de um candidato: custo declarado, `ordem`, `id`.
+    """Chave total e determinista de um candidato: `ordem`, custo declarado, `id`.
 
-    A entrada **sem** custo declarado ordena depois das que o declaram. Ler a
-    ausencia como zero fazia o nao-classificado ganhar a todos os pagos — a
-    armadilha inversa da que se quer fechar.
+    A `ordem` declarada **manda** sobre o custo, e a entrada que a declara ordena
+    antes da que nao a declara: sem essa precedencia, um pago nunca podia ser
+    escolhido a frente de um gratuito, por muito que o dono o escrevesse. Dentro
+    do mesmo patamar, a entrada **sem** custo ordena depois das que o declaram —
+    ler a ausencia como zero fazia o nao-classificado ganhar a todos os pagos.
     """
     custo = entrada.get("custo")
     if custo is None:
-        primeira = (1, 0.0)
+        patamar_custo = (1, 0.0)
     else:
         try:
-            primeira = (0, float(custo))
+            patamar_custo = (0, float(custo))
         except (TypeError, ValueError):
-            primeira = (1, 0.0)
+            patamar_custo = (1, 0.0)
+    bruto_ordem = entrada.get("ordem")
+    if bruto_ordem in (None, ""):
+        return ((1, 0), patamar_custo, str(entrada.get("id") or ""))
     try:
-        ordem = int(entrada.get("ordem") or 0)
+        ordem = int(str(bruto_ordem).strip())
     except (TypeError, ValueError):
-        ordem = 0
-    return (primeira, ordem, str(entrada.get("id") or ""))
+        return ((1, 0), patamar_custo, str(entrada.get("id") or ""))
+    return ((0, ordem), patamar_custo, str(entrada.get("id") or ""))
 
 
 def ordenar_candidatos(lista: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1355,12 +1782,41 @@ def chave_rodizio(perfil: str, sessao: str, nivel: str) -> str:
     return f"{perfil}\x1f{sessao}\x1f{nivel}"
 
 
+def _hash_candidato(semente: str, entrada_id: str) -> str:
+    """Hash estavel de (semente, id). Nao depende do numero de candidatos."""
+    return hashlib.md5(f"{semente}\x1f{entrada_id}".encode("utf-8")).hexdigest()
+
+
+def indice_consistente(perfil: str, sessao: str, nivel: str, ids: list[str]) -> int:
+    """Hash consistente: o candidato com o menor md5(semente|id).
+
+    Ao contrario de `semente % n`, acrescentar ou remover um modelo nao muda o
+    divisor de ninguem: so se deslocam as sessoes que caem perto da entrada nova.
+    """
+    if not ids:
+        return 0
+    semente = f"{perfil}|{sessao}|{nivel}"
+    melhor, melhor_hash = 0, None
+    for posicao, entrada_id in enumerate(ids):
+        h = _hash_candidato(semente, str(entrada_id))
+        if melhor_hash is None or h < melhor_hash:
+            melhor_hash, melhor = h, posicao
+    return melhor
+
+
 def indice_rodizio(chave: str, n: int, *, por: str, perfil: str, sessao: str,
-                   nivel: str, contadores: dict[str, int]) -> int:
-    """Indice estavel: por sessao usa hash, por turno incrementa. Nunca negativo."""
+                   nivel: str, contadores: dict[str, int],
+                   ids: list[str] | None = None) -> int:
+    """Indice estavel: por sessao usa hash, por turno incrementa. Nunca negativo.
+
+    Com `ids` preenchido e `por="sessao"`, usa hash consistente em vez de modulo;
+    sem `ids` mantem a formula antiga, para nao partir quem so conhece `n`.
+    """
     if n <= 0:
         return 0
     if por == "sessao":
+        if ids:
+            return indice_consistente(perfil, sessao, nivel, ids) % n
         semente = int(hashlib.md5(f"{perfil}|{sessao}|{nivel}".encode("utf-8")).hexdigest()[:8], 16)
         return semente % n
     atual = contadores.get(chave, 0)

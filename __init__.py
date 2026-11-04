@@ -402,7 +402,7 @@ def _entrada_do_catalogo(pcfg: dict[str, Any], entrada_id: Any) -> dict[str, Any
 
 def escolher(pcfg: dict[str, Any], nivel: str, *, perfil: str, sessao: str) -> dict[str, Any] | None:
     catalogo = gestor.catalogo_utilizavel(pcfg)
-    lista = gestor.candidatos(catalogo, nivel)
+    lista = gestor.ordenar_candidatos(gestor.candidatos(catalogo, nivel))
     if not lista:
         return None
     modo, por = _estrategia_do_perfil(pcfg)
@@ -411,13 +411,15 @@ def escolher(pcfg: dict[str, Any], nivel: str, *, perfil: str, sessao: str) -> d
     chave = gestor.chave_rodizio(perfil, sessao, nivel)
     with _lock:
         indice = gestor.indice_rodizio(chave, len(lista), por=por, perfil=perfil,
-                                       sessao=sessao, nivel=nivel, contadores=_contadores)
+                                       sessao=sessao, nivel=nivel, contadores=_contadores,
+                                       ids=[str(e.get("id") or "") for e in lista])
     return lista[indice % len(lista)]
 
 
 def escolher_com_rota(pcfg: dict[str, Any], nivel: str, *, perfil: str,
                       sessao: str, tarefa: str | None = None,
-                      needs: dict[str, Any] | None = None) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str]]:
+                      needs: dict[str, Any] | None = None,
+                      superficie: str = "") -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str]]:
     """Primeira entrada utilizavel do nivel, na ordem da estrategia; devolve as falhadas.
 
     A ordem e construida **uma vez** e percorrida: repetir `escolher()` a cada
@@ -427,6 +429,11 @@ def escolher_com_rota(pcfg: dict[str, Any], nivel: str, *, perfil: str,
     `needs` (janela, modalidades, JSON, latencia) filtra antes de tentar
     credenciais: uma rota que declarou nao caber nao se tenta, e a razao fica
     no registo como `inviavel` em vez de `sem_rota`.
+
+    `superficie` filtra primeiro pelo que o **modelo** declarou em
+    `catalogo[i].superficies` — a camada de modelo, herdada do perfil quando o
+    modelo nao declara nada. Vem antes de `needs` porque e mais barata e mais
+    deterministica: nao depende do pedido, so da superficie da sessao.
     """
     catalogo = gestor.catalogo_utilizavel(pcfg)
     lista = ([e for e in catalogo if tarefa in e.get("tarefas", [])] if tarefa
@@ -434,6 +441,17 @@ def escolher_com_rota(pcfg: dict[str, Any], nivel: str, *, perfil: str,
     if not lista:
         return None, None, []
     falhadas: list[str] = []
+    if superficie:
+        permitidas = []
+        for entrada_s in lista:
+            if gestor.serve_superficie(entrada_s, superficie):
+                permitidas.append(entrada_s)
+            else:
+                falhadas.append(
+                    f"{entrada_s['id']}:inviavel:superficie:{superficie}")
+        if not permitidas:
+            return None, None, falhadas
+        lista = permitidas
     if needs:
         viaveis = []
         for entrada_n in lista:
@@ -453,7 +471,8 @@ def escolher_com_rota(pcfg: dict[str, Any], nivel: str, *, perfil: str,
         chave = gestor.chave_rodizio(perfil, sessao, nivel)
         with _lock:
             indice = gestor.indice_rodizio(chave, len(lista), por=por, perfil=perfil,
-                                           sessao=sessao, nivel=nivel, contadores=_contadores)
+                                           sessao=sessao, nivel=nivel, contadores=_contadores,
+                                           ids=[str(e.get("id") or "") for e in lista])
         ordenada = lista[indice % len(lista):] + lista[:indice % len(lista)]
     else:
         ordenada = list(lista)
@@ -510,7 +529,8 @@ def ajustar_por_resultado(sessao: str, nivel: str) -> tuple[str, str]:
 
 
 def degradar_nivel(pcfg: dict[str, Any], nivel: str, *, perfil: str,
-                   sessao: str, needs: dict[str, Any] | None = None) -> tuple[str | None, dict[str, Any] | None,
+                   sessao: str, needs: dict[str, Any] | None = None,
+                   superficie: str = "") -> tuple[str | None, dict[str, Any] | None,
                                       dict[str, Any] | None, list[str]]:
     """C: desce um nivel quando o decidido nao tem rota utilizavel.
 
@@ -523,7 +543,8 @@ def degradar_nivel(pcfg: dict[str, Any], nivel: str, *, perfil: str,
     while i >= 0:
         abaixo = NIVEIS[i]
         entrada, rota, falhadas = escolher_com_rota(
-            pcfg, abaixo, perfil=perfil, sessao=sessao, needs=needs)
+            pcfg, abaixo, perfil=perfil, sessao=sessao, needs=needs,
+            superficie=superficie)
         if entrada is not None and rota is not None:
             return abaixo, entrada, rota, falhadas
         i -= 1
@@ -531,8 +552,9 @@ def degradar_nivel(pcfg: dict[str, Any], nivel: str, *, perfil: str,
 
 
 def escolher_por_janela(pcfg: dict[str, Any], needs: dict[str, Any] | None, *,
-                        perfil: str = "", sessao: str = "") -> tuple[dict[str, Any] | None,
-                                                                    dict[str, Any] | None, list[str]]:
+                        perfil: str = "", sessao: str = "",
+                        superficie: str = "") -> tuple[dict[str, Any] | None,
+                                                       dict[str, Any] | None, list[str]]:
     """Ultimo recurso: a rota viavel com a maior janela declarada.
 
     Descer de nivel nao resolve um pedido que nao cabe: se o texto ocupa mais do
@@ -543,6 +565,9 @@ def escolher_por_janela(pcfg: dict[str, Any], needs: dict[str, Any] | None, *,
     catalogo = gestor.catalogo_utilizavel(pcfg)
     viaveis, falhadas = [], []
     for entrada in catalogo:
+        if not gestor.serve_superficie(entrada, superficie):
+            falhadas.append(f"{entrada['id']}:inviavel:superficie:{superficie}")
+            continue
         motivo = gestor.rota_serve(entrada, needs)
         if motivo:
             falhadas.append(f"{entrada['id']}:inviavel:{motivo}")
@@ -1047,7 +1072,15 @@ def middleware_llm_request(
                               candidata["modelo"])
                 with _lock:
                     morta = _maus_expira.get(chave_rota, 0.0) > time.monotonic()
-                if motivo_cap:
+                if superficie and not gestor.serve_superficie(candidata, superficie):
+                    # O modelo fixado no turno nao serve esta superficie: a
+                    # camada de modelo manda sobre o pin. Cai para a escolha
+                    # normal, com o motivo declarado — senao parecia que o pin
+                    # nunca falhou.
+                    base["excecao"] = "superficie"
+                    base["excecao_motivo"] = (f"rota_pinada:nao_serve_superficie:"
+                                              f"{superficie}")
+                elif motivo_cap:
                     base["excecao"] = "capacidade"
                     base["excecao_motivo"] = f"rota_pinada:{motivo_cap}"
                 elif morta:
@@ -1076,7 +1109,14 @@ def middleware_llm_request(
                           candidata["modelo"])
             with _lock:
                 morta = _maus_expira.get(chave_rota, 0.0) > time.monotonic()
-            if motivo_cap:
+            if not gestor.serve_superficie(candidata, superficie):
+                # A regra do perfil aponta para um modelo que declarou nao
+                # servir esta superficie. A camada de modelo ganha: a ordem do
+                # perfil nao pode sobrepor-se ao que o proprio modelo recusa.
+                base["excecao"] = "superficie"
+                base["excecao_motivo"] = (f"superficie:{nome_sup}:"
+                                          "modelo_nao_serve")
+            elif motivo_cap:
                 base["excecao"] = "capacidade"
                 base["excecao_motivo"] = f"superficie:{nome_sup}:{motivo_cap}"
             elif morta:
@@ -1096,17 +1136,19 @@ def middleware_llm_request(
         if entrada is None or rota is None:
             entrada, rota, falhadas = escolher_com_rota(
                 pcfg, nivel, perfil=perfil, sessao=session_id, tarefa=associada,
-                needs=needs)
+                needs=needs, superficie=superficie)
         if associada and (entrada is None or rota is None):
             base["origem"] = "analise_fallback_tarefa"
             base["falhadas_tarefa"] = falhadas
             entrada, rota, falhadas = escolher_com_rota(
-                pcfg, nivel, perfil=perfil, sessao=session_id, needs=needs)
+                pcfg, nivel, perfil=perfil, sessao=session_id, needs=needs,
+                superficie=superficie)
         if entrada is None or rota is None:
             # C: sem rota no nivel decidido, desce um nivel em vez de nao decidir.
             if not associada:
                 nivel_ef, entrada_ef, rota_ef, falhadas_ef = degradar_nivel(
-                    pcfg, nivel, perfil=perfil, sessao=session_id, needs=needs)
+                    pcfg, nivel, perfil=perfil, sessao=session_id, needs=needs,
+                    superficie=superficie)
                 if entrada_ef is not None and rota_ef is not None:
                     base["degradado_de"] = nivel
                     base["nivel_efetivo"] = nivel_ef
@@ -1121,7 +1163,8 @@ def middleware_llm_request(
                 # da complexidade.
                 if any(":inviavel:" in f for f in falhadas):
                     entrada_j, rota_j, falhadas_j = escolher_por_janela(
-                        pcfg, needs, perfil=perfil, sessao=session_id)
+                        pcfg, needs, perfil=perfil, sessao=session_id,
+                        superficie=superficie)
                     if entrada_j is not None and rota_j is not None:
                         base["escolhido_por_janela"] = entrada_j["id"]
                         entrada, rota = entrada_j, rota_j
@@ -1137,6 +1180,11 @@ def middleware_llm_request(
                              "provider": rota["provider"],
                              "modelo": entrada["modelo"], "passo": passo})
             _pin_gravar(chave_turno, guardado)
+        mapa_sup = entrada.get("superficies")
+        if isinstance(mapa_sup, dict) and mapa_sup:
+            # Rasto da camada de modelo: sem isto, uma escolha filtrada por
+            # superficie ficava indistinguivel de uma escolha por nivel.
+            base["superficies_modelo"] = mapa_sup
         _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
                          origem=base["origem"], acesso=entrada.get("acesso", ""),
                          entrada=entrada["id"], escolhido_provider=rota["provider"],
@@ -1221,6 +1269,15 @@ def pos_resposta(
     turn_id: Any = None,
     task_id: Any = None,
     api_mode: str = "",
+    # Entregues pelo core em `post_api_request` e ate agora descartados no
+    # `**_` desta assinatura (`turn_response_intake.py:77-105`). Nao ha nada a
+    # estimar: `api_duration` e o tempo da chamada ao provider e
+    # `first_chunk_at - started_at` e o time-to-first-token.
+    api_call_count: Any = 0,
+    api_duration: Any = None,
+    started_at: Any = None,
+    first_chunk_at: Any = None,
+    context_length: Any = None,
     **_: Any,
 ) -> None:
     """Prova independente do que respondeu: o provider e o modelo **efectivos**
@@ -1291,6 +1348,29 @@ def pos_resposta(
                                  ("input_tokens", "output_tokens", "prompt_tokens",
                                   "completion_tokens", "total_tokens")
                                  if usage.get(k) is not None}
+        # Latencia e forma do pedido. `api_ms` e o tempo da chamada ao provider;
+        # o `ms` das linhas de troca mede outra coisa (a decisao do plugin), e
+        # confundir os dois foi o que me fez dizer que o ledger nao tinha
+        # latencia. `ttft_ms` so existe em streaming: fica AUSENTE quando nao
+        # houve chunk, nunca a zero, senao entra nas medias como se fosse rapido.
+        if isinstance(api_duration, (int, float)) and not isinstance(api_duration, bool) \
+                and api_duration >= 0:
+            entrada["api_ms"] = int(round(float(api_duration) * 1000))
+        if isinstance(first_chunk_at, (int, float)) and not isinstance(first_chunk_at, bool) \
+                and isinstance(started_at, (int, float)) and not isinstance(started_at, bool) \
+                and first_chunk_at >= started_at:
+            entrada["ttft_ms"] = int(round((float(first_chunk_at) - float(started_at)) * 1000))
+        # Um turno vale o que as suas chamadas valem: 12 chamadas de ferramenta
+        # nao sao comparaveis a uma so, e 9 506 de 10 093 respostas terminam em
+        # tool_calls. Sem este campo, a latencia media mistura os dois.
+        if isinstance(api_call_count, int) and not isinstance(api_call_count, bool) \
+                and api_call_count > 0:
+            entrada["passo_api"] = api_call_count
+        # Janela em uso, para normalizar a taxa de truncagem: 32k e 1M nao
+        # truncam o mesmo com o mesmo prompt.
+        if isinstance(context_length, int) and not isinstance(context_length, bool) \
+                and context_length > 0:
+            entrada["janela"] = context_length
         # A: guarda o resultado para o turno seguinte poder ver se o nivel chegou.
         if session_id and decisao.get("nivel"):
             saida = None
@@ -1309,6 +1389,108 @@ def pos_resposta(
         return
 
 
+# --------------------------------------------------------------------------- erros
+
+
+def ao_erro(
+    session_id: str = "",
+    model: str = "",
+    provider: str = "",
+    platform: str = "",
+    api_request_id: Any = None,
+    turn_id: Any = None,
+    task_id: Any = None,
+    api_mode: str = "",
+    api_call_count: Any = 0,
+    api_duration: Any = None,
+    status_code: Any = None,
+    retry_count: Any = None,
+    max_retries: Any = None,
+    retryable: Any = None,
+    reason: Any = None,
+    error: Any = None,
+    **_: Any,
+) -> None:
+    """Falha de uma tentativa de chamada ao provider, tal como o core a classificou.
+
+    O `classe` NAO e parsing nosso de codigo HTTP: e o `FailoverReason` do core
+    (`api_request_hooks.py:163-198`), que ja distingue `billing` de
+    `upstream_rate_limit`, `timeout`, `auth`, `context_overflow` ou
+    `model_not_found`. Inventar a classificacao a partir do status era repetir
+    mal o que o core faz bem.
+
+    Uma linha `erro` pode existir SEM uma `resposta` a seguir com o mesmo
+    desfecho — o core recupera tentativas. Contar falhas por turno inventa
+    falhas onde houve sucesso; a contagem e por `request_id`.
+    """
+    try:
+        config = _config()
+        if not bool(config.get("registar", True)):
+            return
+        with _lock:
+            decisao = dict(_ultima_decisao.get(session_id) or {})
+            perfil = decisao.get("perfil") or _ultimo_perfil.get(session_id) or ""
+        if not perfil:
+            perfil = gestor.perfil_atual(agente_vivo(session_id))
+        entrada: dict[str, Any] = {
+            "evento": "erro",
+            "perfil": perfil or "desconhecido",
+            "sessao": session_id,
+            "superficie": (platform or "").strip().lower() or "desconhecido",
+            "provider": (provider or "").strip().lower() or "desconhecido",
+            "modelo": (model or "").strip() or "desconhecido",
+            "motor": _VERSAO_MOTOR,
+            "inst": _INSTANCIA,
+        }
+        if reason:
+            entrada["classe"] = str(reason)[:80]
+        if isinstance(status_code, int) and not isinstance(status_code, bool):
+            entrada["status"] = status_code
+        if isinstance(retryable, bool):
+            entrada["retryable"] = retryable
+        # `tentativa` so aparece quando o core disse alguma coisa sobre retries:
+        # `feitas` nulo com `max` preenchido e uma tentativa que nunca chegou a
+        # ser repetida, e isso e diferente de zero repeticoes.
+        if isinstance(retry_count, int) or isinstance(max_retries, int):
+            entrada["tentativa"] = {
+                "feitas": retry_count if isinstance(retry_count, int) else None,
+                "max": max_retries if isinstance(max_retries, int) else None,
+            }
+        # O core ja redige chaves nos payloads de hook; ainda assim trunco, para
+        # uma mensagem enorme nao arrastar contexto para o ledger.
+        if isinstance(error, dict):
+            if error.get("type"):
+                entrada["erro_tipo"] = str(error["type"])[:120]
+            if error.get("message"):
+                entrada["erro_msg"] = str(error["message"])[:300]
+        if isinstance(api_duration, (int, float)) and not isinstance(api_duration, bool) \
+                and api_duration >= 0:
+            entrada["api_ms"] = int(round(float(api_duration) * 1000))
+        if isinstance(api_call_count, int) and not isinstance(api_call_count, bool) \
+                and api_call_count > 0:
+            entrada["passo_api"] = api_call_count
+        if api_request_id is not None:
+            entrada["request_id"] = api_request_id
+        if turn_id is not None:
+            entrada["turn_id"] = turn_id
+        if task_id is not None:
+            entrada["task_id"] = task_id
+        if decisao.get("nivel"):
+            entrada["nivel"] = decisao["nivel"]
+        if decisao.get("tarefa"):
+            entrada["tarefa"] = decisao["tarefa"]
+        if decisao.get("origem"):
+            entrada["origem"] = decisao["origem"]
+        if decisao.get("escolhido_provider"):
+            entrada["escolhido"] = {
+                "provider": decisao["escolhido_provider"],
+                "modelo": decisao.get("escolhido_modelo", ""),
+            }
+        _registar(entrada, registar=True)
+    except Exception:
+        return
+
+
 # --------------------------------------------------------------------------- registo
 
 
@@ -1316,6 +1498,10 @@ def register(ctx: Any) -> None:
     try:
         ctx.register_middleware("llm_request", middleware_llm_request)
         ctx.register_hook("post_api_request", pos_resposta)
+        # Antes de 3.24.0 o plugin nao registava este hook, e a unica prova de
+        # uma falha de provider era um `sem_troca` sem explicacao ou uma linha
+        # de traceback em uso.err.
+        ctx.register_hook("api_request_error", ao_erro)
         gestor.garantir()  # cria o config por omissao para o dono o editar
         _config()  # aquece a cache com o que esta no disco
     except Exception:

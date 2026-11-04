@@ -112,9 +112,11 @@ def _rev(cfg: dict[str, Any]) -> str:
     11:27:52 repôs byte a byte o config que a pagina tinha carregado antes das
     11:18:47, apagando a correcao do perfil pessoal. O cliente envia o `rev` que
     leu; se nao for o actual, recusa-se a gravar e devolve o estado actual.
+
+    A definicao vive no `gestor`: se o painel, o CLI e os scripts calculassem
+    impressoes diferentes, um `rev` de um nao valia no outro.
     """
-    canonico = json.dumps(cfg, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-    return hashlib.sha256(canonico.encode("utf-8")).hexdigest()[:16]
+    return gestor.rev(cfg)
 
 
 def _conflito(rev_cliente: str, rev_actual: str) -> bool:
@@ -636,23 +638,28 @@ def toggle(corpo: Any = Body(default=None)) -> JSONResponse:
     if not isinstance(activo, bool):
         raise HTTPException(status_code=400, detail="'activo' tem de ser booleano")
     ambito = (corpo.get("ambito") or "global").strip().lower()
+    nome = (corpo.get("perfil") or "").strip()
+    if ambito not in ("global", "perfil"):
+        raise HTTPException(status_code=400, detail="'ambito' tem de ser 'global' ou 'perfil'")
 
-    cfg = _cfg()
-    if ambito == "global":
-        cfg["activo"] = activo
-        alvo = "global"
-    elif ambito == "perfil":
-        nome = (corpo.get("perfil") or "").strip()
+    def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
+        """Muda so o interruptor — o resto do documento vem fresco do disco."""
+        if ambito == "global":
+            cfg["activo"] = activo
+            return cfg
         perfis = cfg.get("perfis") or {}
         if nome not in perfis:
             raise HTTPException(status_code=404, detail=f"perfil {nome!r} nao existe na configuracao")
         perfis[nome]["activo"] = activo
-        alvo = nome
-    else:
-        raise HTTPException(status_code=400, detail="'ambito' tem de ser 'global' ou 'perfil'")
+        return cfg
 
+    alvo = "global" if ambito == "global" else nome
     try:
-        gestor.gravar(cfg)
+        gestor.alterar(mutar, rev_esperado=str(corpo.get("rev") or "") or None)
+    except gestor.Conflito as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001 - 500 com a razao real, nao um OK mentiroso
         raise HTTPException(status_code=500, detail=f"nao gravou: {type(exc).__name__}: {exc}") from exc
 
@@ -686,28 +693,25 @@ def estrategia_post(corpo: Any = Body(default=None)) -> JSONResponse:
     corpo = _corpo_objeto(corpo)
     ambito = str(corpo.get("ambito") or "global").strip().lower()
     herdar = bool(corpo.get("herdar"))
-    cfg = _cfg()
     rev = str(corpo.get("rev") or "")
-    if rev and _conflito(rev, _rev(cfg)):
-        raise HTTPException(
-            status_code=409,
-            detail="a configuração mudou desde que este painel leu o estado",
-        )
     campos = {k: corpo[k] for k in ("modo", "por") if k in corpo}
     if not herdar and not campos:
         raise HTTPException(status_code=400, detail="indique 'modo' e/ou 'por'")
+    nome = str(corpo.get("perfil") or "").strip()
+    if ambito not in ("global", "perfil"):
+        raise HTTPException(status_code=400, detail="'ambito' tem de ser 'global' ou 'perfil'")
 
-    if ambito == "global":
-        if herdar:
-            cfg.pop("estrategia", None)
-        else:
-            est = gestor.estrategia_global(cfg)
-            est.pop("origem", None)
-            est.update(campos)
-            cfg["estrategia"] = est
-        alvo = "global"
-    elif ambito == "perfil":
-        nome = str(corpo.get("perfil") or "").strip()
+    def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
+        """Aplica o delta da estrategia sobre a config que esta no disco agora."""
+        if ambito == "global":
+            if herdar:
+                cfg.pop("estrategia", None)
+            else:
+                est = gestor.estrategia_global(cfg)
+                est.pop("origem", None)
+                est.update(campos)
+                cfg["estrategia"] = est
+            return cfg
         perfis = cfg.get("perfis") or {}
         if nome not in perfis:
             raise HTTPException(status_code=404,
@@ -725,12 +729,18 @@ def estrategia_post(corpo: Any = Body(default=None)) -> JSONResponse:
             est.update(campos)
             perfil["estrategia"] = est
             perfil.pop("rodizio", None)
-        alvo = nome
-    else:
-        raise HTTPException(status_code=400, detail="'ambito' tem de ser 'global' ou 'perfil'")
+        return cfg
 
+    alvo = "global" if ambito == "global" else nome
     try:
-        gestor.gravar(cfg)
+        gestor.alterar(mutar, rev_esperado=rev or None)
+    except gestor.Conflito:
+        raise HTTPException(
+            status_code=409,
+            detail="a configuração mudou desde que este painel leu o estado",
+        )
+    except HTTPException:
+        raise
     except ValueError as exc:
         # Erro de validacao (valor fora da lista, config inconsistente) e 400
         # com a razao, nao 500: o pedido e que estava errado, o servidor nao.
@@ -803,24 +813,34 @@ def superficies_post(corpo: Any = Body(default=None)) -> JSONResponse:
                    "'nunca' ou vazio (apagar)",
         )
 
-    if ambito == "global":
-        destino = cfg.setdefault("analise", {}).setdefault("superficies", {})
-        nome = "global"
-    else:
-        nome = str(corpo.get("perfil") or "").strip()
-        perfis = cfg.get("perfis") or {}
-        if nome not in perfis:
-            raise HTTPException(status_code=404,
-                                detail=f"perfil {nome!r} nao existe na configuracao")
-        destino = (perfis[nome].setdefault("analise", {})
-                   .setdefault("superficies", {}))
-    if regra is None:
-        destino.pop(superficie, None)
-    else:
-        destino[superficie] = regra
+    nome = "global" if ambito == "global" else str(corpo.get("perfil") or "").strip()
+
+    def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
+        """Muda so este ramo de superficies sobre a config fresca do disco."""
+        if ambito == "global":
+            destino = cfg.setdefault("analise", {}).setdefault("superficies", {})
+        else:
+            perfis = cfg.get("perfis") or {}
+            if nome not in perfis:
+                raise HTTPException(status_code=404,
+                                    detail=f"perfil {nome!r} nao existe na configuracao")
+            destino = (perfis[nome].setdefault("analise", {})
+                       .setdefault("superficies", {}))
+        if regra is None:
+            destino.pop(superficie, None)
+        else:
+            destino[superficie] = regra
+        return cfg
 
     try:
-        gestor.gravar(cfg)
+        gestor.alterar(mutar, rev_esperado=rev or None)
+    except gestor.Conflito:
+        raise HTTPException(
+            status_code=409,
+            detail="a configuração mudou desde que este painel leu o estado",
+        )
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"nao gravou: {exc}") from exc
 
@@ -885,6 +905,15 @@ def config_post(request: Request, corpo: Any = Body(default=None)) -> JSONRespon
             status_code=400,
             detail="config sem nenhum perfil: recusado (o plugin ficaria sem rotas)",
         )
+    if envelope and not rev_cliente:
+        # Documento inteiro sem versao de origem e uma escrita as cegas: reporia
+        # o passado sobre o que outra sessao escreveu entretanto. O painel manda
+        # sempre o `rev` que leu; quem escreve por API tem de o mandar tambem.
+        raise HTTPException(
+            status_code=400,
+            detail="falta 'rev': substituir a config inteira exige a versão que foi lida "
+                   "(POST /config devolve-a em 'rev')",
+        )
     actual, _ = gestor.carregar()
     rev_actual = _rev(actual)
     try:
@@ -907,8 +936,19 @@ def config_post(request: Request, corpo: Any = Body(default=None)) -> JSONRespon
             },
         )
     try:
-        # gestor.gravar valida, faz backup e escreve com os.replace.
-        gestor.gravar(novo)
+        # `rev_esperado` repete a verificacao DENTRO da trava: entre a leitura
+        # acima e a escrita ha uma janela, e e nela que duas escritas simultaneas
+        # perdiam uma delas. Aqui a segunda leva `Conflito` em vez de ganhar.
+        gestor.gravar(novo, rev_esperado=rev_actual if rev_cliente else None)
+    except gestor.Conflito as exc:
+        _registar_escrita(
+            rev_antes=rev_actual, rev_depois="", rev_cliente=rev_cliente,
+            conflito=True, origem=origem,
+        )
+        return JSONResponse(
+            status_code=409,
+            content={"erro": "config mudou durante a gravação", "rev": exc.rev_actual},
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     cfg, _ = gestor.carregar()
@@ -1073,43 +1113,59 @@ def modelo_post(corpo: Any = Body(default=None)) -> JSONResponse:
         raise HTTPException(status_code=400,
                             detail="o modelo precisa de um id (e por ele que as superficies e as tarefas lhe chamam)")
 
-    cfg = _cfg()
     rev = str(corpo.get("rev") or "")
-    if rev and _conflito(rev, _rev(cfg)):
-        return JSONResponse(status_code=409, content={
-            "ok": False,
-            "detail": "a configuração mudou desde que esta página a leu",
-            "rev": _rev(cfg),
-        })
 
-    dados, catalogo = _perfil_da_config(cfg, perfil)
-    posicao = _entrada_por_id(catalogo, id_original) if id_original else None
-    if id_original and posicao is None:
-        raise HTTPException(status_code=404,
-                            detail=f"modelo {id_original!r} ja nao existe no catalogo de {perfil!r}")
-    colisao = _entrada_por_id(catalogo, novo_id)
-    if colisao is not None and colisao != posicao:
-        raise HTTPException(status_code=400,
-                            detail=f"ja existe um modelo com o id {novo_id!r} no perfil {perfil!r}")
+    def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
+        """Substitui/acrescenta a rota no catalogo, sobre a config fresca.
 
-    nova_lista = list(catalogo)
-    limpa = dict(entrada)
-    if posicao is None:
-        nova_lista.append(limpa)
-    else:
-        nova_lista[posicao] = limpa
-    dados["catalogo"] = nova_lista
+        As verificacoes (id inexistente, id duplicado) correm aqui dentro, contra
+        o disco de agora — nao contra o que a pagina leu. Se outra sessao
+        acrescentou a mesma rota entretanto, a colisao e apanhada na mesma.
+        """
+        dados, catalogo = _perfil_da_config(cfg, perfil)
+        posicao = _entrada_por_id(catalogo, id_original) if id_original else None
+        if id_original and posicao is None:
+            raise HTTPException(status_code=404,
+                                detail=f"modelo {id_original!r} ja nao existe no catalogo de {perfil!r}")
+        colisao = _entrada_por_id(catalogo, novo_id)
+        if colisao is not None and colisao != posicao:
+            raise HTTPException(status_code=400,
+                                detail=f"ja existe um modelo com o id {novo_id!r} no perfil {perfil!r}")
+        nova_lista = list(catalogo)
+        limpa = dict(entrada)
+        if posicao is None:
+            nova_lista.append(limpa)
+        else:
+            nova_lista[posicao] = limpa
+        dados["catalogo"] = nova_lista
+        return cfg
 
     # Validar nunca escreve: corre o mesmo `validar` do `gravar` sobre a config
     # em memoria e devolve os erros — o botao "Validar" tem de poder dizer nao
     # sem deixar rasto no ficheiro.
     if apenas_validar:
+        try:
+            cfg = _cfg()
+            mutar(cfg)
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code,
+                                content={"ok": False, "detail": exc.detail,
+                                         "erros": [str(exc.detail)]})
         _, erros = gestor.validar(cfg)
         return JSONResponse(content={"ok": not erros, "erros": list(erros),
                                      "perfil": perfil, "id": novo_id})
 
     try:
-        gestor.gravar(cfg)
+        novo, rev_novo = gestor.alterar(mutar, rev_esperado=rev or None)
+    except gestor.Conflito as exc:
+        return JSONResponse(status_code=409, content={
+            "ok": False,
+            "detail": "a configuração mudou desde que esta página a leu",
+            "rev": exc.rev_actual,
+        })
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code,
+                            content={"ok": False, "detail": exc.detail})
     except ValueError as exc:
         return JSONResponse(status_code=400, content={
             "ok": False,
@@ -1347,7 +1403,15 @@ def perfil_post(corpo: Any = Body(default=None)) -> JSONResponse:
                                      "erros": [], "rev": rev_antes})
 
     try:
-        gestor.gravar(limpa)
+        # O documento foi montado sobre a leitura desta requisicao; `rev_esperado`
+        # garante, ja dentro da trava, que ninguem escreveu entretanto — sem isso
+        # esta escrita reporia o estado lido ha milissegundos.
+        gestor.gravar(limpa, rev_esperado=rev_antes or None)
+    except gestor.Conflito as exc:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "detail": "a configuração mudou desde que esta página a leu",
+            "rev": exc.rev_actual,
+        })
     except ValueError as exc:
         return JSONResponse(status_code=400, content={
             "ok": False, "detail": "não gravou: " + str(exc),

@@ -453,6 +453,41 @@ def main() -> int:
               for p in (est.get("perfis") or {}).values()),
           str({n: p.get("estrategia") for n, p in (est.get("perfis") or {}).items()}))
 
+    # --- isolamento entre perfis: uma escolha explicita nao pode ser engolida --
+    # Fluxo real do dono: escolher no perfil o mesmo valor que o global tem.
+    r = cli.post("/perfil", json={"perfil": "default", "estrategia": {"modo": "prioridade"}})
+    check("/perfil estrategia igual ao global 200", r.status_code == 200, r.text[:200])
+    em_disco = json.loads((d / "config.json").read_text(encoding="utf-8"))
+    check("/perfil estrategia igual ao global fica gravada",
+          (em_disco["perfis"]["default"].get("estrategia") or {}).get("modo") == "prioridade",
+          str(em_disco["perfis"]["default"].get("estrategia")))
+    est = cli.get("/estado").json()
+    check("/estado default passa a proprio",
+          (est["perfis"]["default"].get("estrategia") or {}).get("origem") == "proprio",
+          str(est["perfis"]["default"].get("estrategia")))
+
+    # Mudar o global depois: o default declarado nao se mexe, os outros seguem.
+    r = cli.post("/estrategia", json={"ambito": "global", "modo": "rodizio"})
+    check("/estrategia global muda com perfil declarado 200", r.status_code == 200, r.text[:200])
+    est = cli.get("/estado").json()
+    check("/estado perfil declarado resiste a mudanca do global",
+          (est["perfis"]["default"].get("estrategia") or {}).get("modo") == "prioridade"
+          and (est["perfis"]["default"].get("estrategia") or {}).get("origem") == "proprio",
+          str(est["perfis"]["default"].get("estrategia")))
+    check("/estado perfil que herda segue o global",
+          (est["perfis"]["trabalho"].get("estrategia") or {}).get("modo") == "rodizio"
+          and (est["perfis"]["trabalho"].get("estrategia") or {}).get("origem") == "herdado",
+          str(est["perfis"]["trabalho"].get("estrategia")))
+
+    # Repor o cenario que os testes seguintes esperam: default a herdar, global prioridade.
+    cli.post("/estrategia", json={"ambito": "perfil", "perfil": "default", "herdar": True})
+    cli.post("/estrategia", json={"ambito": "global", "modo": "prioridade"})
+    est = cli.get("/estado").json()
+    check("/estado reposicao do cenario",
+          (est["perfis"]["default"].get("estrategia") or {}).get("origem") == "herdado"
+          and (est.get("estrategia_global") or {}).get("modo") == "prioridade",
+          str(est.get("estrategia_global")))
+
     r = cli.post("/estrategia", json={"ambito": "perfil", "perfil": "trabalho",
                                       "modo": "rodizio", "por": "turno"})
     check("/estrategia por perfil 200", r.status_code == 200, r.text[:200])

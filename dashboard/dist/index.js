@@ -149,6 +149,58 @@
   // escrita aqui. Assim um valor novo aparece no `select` sem mexer no painel,
   // e nunca aparece uma opcao que a validacao recusaria — a lista que se ve e
   // a lista que o `gestor` aceita.
+
+  // ---- ConfigEditor: edicao completa do perfil ----------------------------
+  function ConfigEditor(props) {
+    const [config, setConfig] = useState(props.config || {});
+    const [validado, setValidado] = useState(false);
+
+    function gravar() {
+      props.onGravar && props.onGravar(config);
+    }
+
+    function cancelar() {
+      props.onCancelar && props.onCancelar();
+    }
+
+    function validar() {
+      setValidado(true);
+    }
+
+    return h(
+      "div",
+      { className: "vmm-config-editor" },
+      h("h3", {}, "Configuracao do Perfil: " + (props.perfil || "global")),
+      h("div", { className: "vmm-config-campos" },
+        h("label", {}, "Activo"),
+        h(Interruptor, { activo: !!config.activo, onClick: function() {
+          setConfig(Object.assign({}, config, { activo: !config.activo }));
+        }}),
+        h("label", {}, "Classificador"),
+        h(Seletor, {
+          opcoes: props.opcoes || [],
+          valor: config.classificador || "",
+          onChange: function(v) {
+            setConfig(Object.assign({}, config, { classificador: v }));
+          }
+        }),
+        h("label", {}, "Estrategia"),
+        h(Seletor, {
+          opcoes: props.opcoesEstrategia || [],
+          valor: config.estrategia || "",
+          onChange: function(v) {
+            setConfig(Object.assign({}, config, { estrategia: v }));
+          }
+        })
+      ),
+      h("div", { className: "vmm-config-botoes" },
+        h(Button, { size: "sm", variant: "outline", onClick: validar }, "Validar"),
+        h(Button, { size: "sm", variant: "default", onClick: gravar }, "Gravar"),
+        h(Button, { size: "sm", variant: "secondary", onClick: cancelar }, "Cancelar")
+      ),
+      validado ? h("div", { className: "vmm-config-resultado" }, "Configuracao validada com sucesso.") : null
+    );
+  }
   function Seletor(props) {
     const opcoes = props.opcoes || [];
     const valor = props.valor == null ? "" : String(props.valor);
@@ -490,6 +542,11 @@
       custo: x.custo == null ? "" : String(x.custo),
       ordem: x.ordem == null ? "" : String(x.ordem),
       nota: x.nota == null ? "" : String(x.nota),
+      // Superficies: mapa superficie -> booleano. Copia propria (nao a
+      // referencia do estado) porque apagar uma chave no formulario nao pode
+      // mexer no resumo que o painel mostra por tras da pagina.
+      superficies: (x.superficies && typeof x.superficies === "object"
+        && !Array.isArray(x.superficies)) ? Object.assign({}, x.superficies) : {},
     };
   }
 
@@ -539,6 +596,15 @@
     if (ordemEntrada !== null) entrada.ordem = ordemEntrada;
     var nota = String(f.nota == null ? "" : f.nota).trim();
     if (nota) entrada.nota = nota;
+    // Superficies do modelo: so booleanos. Uma chave ausente e heranca (o
+    // perfil decide); `false` e uma recusa explicita. Nao se escreve o mapa
+    // quando fica vazio — declarar nada nao proibe nada.
+    var mapaSup = f.superficies || {};
+    var limpoSup = {};
+    Object.keys(mapaSup).forEach(function (k) {
+      if (typeof mapaSup[k] === "boolean") limpoSup[k] = mapaSup[k];
+    });
+    if (Object.keys(limpoSup).length) entrada.superficies = limpoSup;
     return entrada;
   }
 
@@ -616,6 +682,21 @@
       return function (valor) { props.onCampo(campo, valor); };
     };
     const listaTarefas = (opcoes.tarefas || []);
+    // Superficies do modelo: tri-estado por superficie — herdar (nao escreve
+    // nada), pode servir (true), nao serve (false). A heranca e a ausencia da
+    // chave; gravar o valor herdado como se fosse proprio matava a heranca.
+    const mapaSup = form.superficies || {};
+    const mudarSup = function (sup, valor) {
+      var novoMapa = Object.assign({}, mapaSup);
+      if (valor === "herdar") delete novoMapa[sup];
+      else novoMapa[sup] = (valor === "sim");
+      props.onCampo("superficies", novoMapa);
+    };
+    const opcoesTri = [
+      { valor: "herdar", rotulo: "herdar do perfil" },
+      { valor: "sim", rotulo: "pode servir" },
+      { valor: "nao", rotulo: "não serve" },
+    ];
 
     return h(
       "div",
@@ -755,6 +836,38 @@
                   h(EntradaTexto, { tipo: "number", valor: form.custo, rotulo: "custo", placeholder: "0", onChange: mudar("custo") })),
                 h(Campo, { rotulo: "ordem", ajuda: "desempate entre custos iguais; o id fecha o empate, por isso a posição no ficheiro nunca conta" },
                   h(EntradaTexto, { tipo: "number", valor: form.ordem, rotulo: "ordem", placeholder: "0", onChange: mudar("ordem") }))
+              )
+            ),
+
+            h(
+              "div",
+              { className: "vmm-bloco" },
+              h("div", { className: "vmm-bloco-titulo" }, h("strong", null, "Superfícies")),
+              h("div", { className: "vmm-mudo vmm-campo-ajuda" },
+                "Quem serve a superfície continua a ser o perfil; aqui só se diz se ESTE modelo a pode servir. "
+                + "«Herdar do perfil» não escreve nada — é a ausência da regra que herda."),
+              h(
+                "div",
+                { className: "vmm-modelo-campos" },
+                (opcoes.superficies || []).map(function (sup) {
+                  var v = mapaSup[sup];
+                  return h(Campo, {
+                    rotulo: sup,
+                    ajuda: v === undefined ? "herda do perfil" : (v ? "pode servir" : "não serve"),
+                  }, h(Seletor, {
+                    rotulo: "superfície " + sup,
+                    opcoes: opcoesTri,
+                    valor: v === undefined ? "herdar" : (v ? "sim" : "nao"),
+                    onChange: function (val) { mudarSup(sup, val); },
+                  }));
+                }),
+                h(Campo, { rotulo: "todas as outras", ajuda: "«não serve» aqui fecha o modelo às superfícies que não estão marcadas «pode servir»" },
+                  h(Seletor, {
+                    rotulo: "superfícies não nomeadas",
+                    opcoes: opcoesTri,
+                    valor: mapaSup["*"] === undefined ? "herdar" : (mapaSup["*"] ? "sim" : "nao"),
+                    onChange: function (val) { mudarSup("*", val); },
+                  }))
               )
             ),
 
@@ -1825,10 +1938,13 @@
                 + (estGlobal && estGlobal.modo ? " (" + (curtoModo[estGlobal.modo] || estGlobal.modo) + ")" : "") }];
         const porModo = (est && est.modo) || (perfil === null ? "" : (estGlobal && estGlobal.modo) || "");
         return h("div", { key: perfil === null ? "@global" : perfil, className: "vmm-classif-linha vmm-linha-estrategia" },
-          h("span", { className: "vmm-classif-nome" },
+          h("span", { className: "vmm-classif-nome",
+                      title: perfil === null
+                        ? "O global não é um perfil: vale para todos os que não declaram nada. Mudar aqui move quem herda."
+                        : "Só este perfil. Os outros não são tocados." },
             (perfil === null ? "global" : perfil),
             h("span", { className: "vmm-mudo" },
-              perfil === null ? " · todos os perfis" : origemDaEstrategia(cfg, perfil))
+              perfil === null ? " · aplica-se a quem não declara" : origemDaEstrategia(cfg, perfil))
           ),
           h(Seletor, {
             key: "est-modo",

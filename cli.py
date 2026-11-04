@@ -65,6 +65,23 @@ def _cfg() -> tuple[dict[str, Any], list[str]]:
     return g.carregar()
 
 
+def _gravar_cas(cfg: dict[str, Any], rev_lido: str) -> None:
+    """Grava so se a config no disco continuar na versao que este comando leu.
+
+    O CLI le, muda em memoria e grava o documento inteiro: se outra sessao
+    escreveu nesse intervalo, gravar reporia o passado e a escolha dela
+    desaparecia sem erro nenhum. Com `rev_esperado`, o `gestor` compara dentro
+    da trava e levanta `Conflito` em vez de ganhar.
+    """
+    try:
+        g.gravar(cfg, rev_esperado=rev_lido or None)
+    except g.Conflito as exc:
+        # Nao e falha de gravacao: e a outra escrita a ser respeitada. Dizer
+        # "recusada" com a versao actual e o que evita repetir as cegas.
+        raise ValueError(f"a config mudou no disco (rev {exc.rev_actual}); "
+                         f"releia com `vmm status` e repita o comando") from exc
+
+
 def _erro(msg: str, codigo: int = 1) -> int:
     print(f"vmm: {msg}", file=sys.stderr)
     return codigo
@@ -115,6 +132,7 @@ def cmd_status(args) -> int:
 
 def cmd_on_off(args) -> int:
     cfg, _ = _cfg()
+    rev_lido = g.rev(cfg)
     ligar = args.cmd == "on"
     if args.perfil:
         p = (cfg.get("perfis") or {}).get(args.perfil)
@@ -126,7 +144,7 @@ def cmd_on_off(args) -> int:
         cfg["activo"] = ligar
         alvo = "global"
     try:
-        g.gravar(cfg)
+        _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
         return _erro(f"config recusada: {exc}")
     print(f"{alvo}: {'ligado' if ligar else 'desligado'}")
@@ -142,6 +160,7 @@ def cmd_classificador(args) -> int:
     que declare o seu substitui-o por inteiro.
     """
     cfg, erros = _cfg()
+    rev_lido = g.rev(cfg)
     for erro in erros:
         print(f"aviso: {erro}", file=sys.stderr)
     perfis = cfg.get("perfis") or {}
@@ -270,7 +289,7 @@ def cmd_classificador(args) -> int:
             if not (bloco.get("provider") and bloco.get("modelo")):
                 return _erro("ligar exige --provider e --modelo", 2)
         try:
-            g.gravar(cfg)
+            _gravar_cas(cfg, rev_lido)
         except ValueError as exc:
             return _erro(f"config recusada: {exc}")
         print(f"{alvo}: classificador {'ligado' if args.cmd == 'on' else 'desligado'}"
@@ -307,6 +326,7 @@ def cmd_perfis(args) -> int:
 
 def cmd_perfil_add(args) -> int:
     cfg, _ = _cfg()
+    rev_lido = g.rev(cfg)
     perfis = cfg.setdefault("perfis", {})
     if args.nome in perfis:
         return _erro(f"perfil '{args.nome}' ja existe", 2)
@@ -319,7 +339,7 @@ def cmd_perfil_add(args) -> int:
         novo = {"activo": True, "catalogo": []}
     perfis[args.nome] = novo
     try:
-        g.gravar(cfg)
+        _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
         return _erro(f"config recusada: {exc}")
     print(f"perfil '{args.nome}' acrescentado"
@@ -336,6 +356,7 @@ def cmd_estrategia(args) -> int:
     hoje para sempre.
     """
     cfg, _ = _cfg()
+    rev_lido = g.rev(cfg)
     perfis = cfg.get("perfis") or {}
     if args.perfil and args.perfil not in perfis:
         return _erro(f"perfil '{args.perfil}' nao existe", 3)
@@ -381,7 +402,7 @@ def cmd_estrategia(args) -> int:
         alvo["estrategia"] = est
 
     try:
-        g.gravar(cfg)
+        _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
         # O `ValueError` traz a razao com os valores aceites: mostra-la e o que
         # ensina a lista fechada, um "invalido" seco nao.
@@ -400,12 +421,13 @@ def cmd_estrategia(args) -> int:
 
 def cmd_perfil_rm(args) -> int:
     cfg, _ = _cfg()
+    rev_lido = g.rev(cfg)
     perfis = cfg.get("perfis") or {}
     if args.nome not in perfis:
         return _erro(f"perfil '{args.nome}' nao existe", 3)
     del perfis[args.nome]
     try:
-        g.gravar(cfg)
+        _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
         return _erro(f"config recusada: {exc}")
     print(f"perfil '{args.nome}' removido (deixa de ser gerido)")
@@ -451,6 +473,7 @@ def _niveis(texto: str) -> list[str]:
 
 def cmd_rota_add(args) -> int:
     cfg, _ = _cfg()
+    rev_lido = g.rev(cfg)
     perfis = cfg.get("perfis") or {}
     p = perfis.get(args.perfil)
     if not isinstance(p, dict):
@@ -476,7 +499,7 @@ def cmd_rota_add(args) -> int:
         entrada["ordem"] = args.ordem
     p.setdefault("catalogo", []).append(entrada)
     try:
-        g.gravar(cfg)
+        _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
         return _erro(f"config recusada: {exc}")
     extras = [f"acesso={entrada['acesso']}"]
@@ -494,6 +517,7 @@ def cmd_rota_add(args) -> int:
 def cmd_rota_esforco(args) -> int:
     """Define (ou limpa com '-') o esforco de uma rota existente."""
     cfg, _ = _cfg()
+    rev_lido = g.rev(cfg)
     p = (cfg.get("perfis") or {}).get(args.perfil)
     if not isinstance(p, dict):
         return _erro(f"perfil '{args.perfil}' nao existe", 3)
@@ -510,7 +534,7 @@ def cmd_rota_esforco(args) -> int:
         alvo["esforco"] = esforco
         novo = esforco
     try:
-        g.gravar(cfg)
+        _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
         return _erro(f"config recusada: {exc}")
     print(f"rota '{args.id}' de {args.perfil}: esforco={novo}")
@@ -519,6 +543,7 @@ def cmd_rota_esforco(args) -> int:
 
 def cmd_rota_rm(args) -> int:
     cfg, _ = _cfg()
+    rev_lido = g.rev(cfg)
     p = (cfg.get("perfis") or {}).get(args.perfil)
     if not isinstance(p, dict):
         return _erro(f"perfil '{args.perfil}' nao existe", 3)
@@ -528,7 +553,7 @@ def cmd_rota_rm(args) -> int:
         return _erro(f"rota '{args.id}' nao existe em {args.perfil}", 3)
     p["catalogo"] = restantes
     try:
-        g.gravar(cfg)
+        _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
         return _erro(f"config recusada: {exc}")
     print(f"rota '{args.id}' removida de {args.perfil}")
@@ -564,8 +589,92 @@ def cmd_superficie_list(args) -> int:
             else:
                 alvo = f"{regra.get('provider')}/{regra.get('modelo')}"
             print(f"  {sup:14s} -> {alvo:28s} [{origem}]")
+        # Camada de modelo: um modelo que declara superficies restringe-se a
+        # elas; quem nao declara herda o comportamento do perfil.
+        declarados = [(e.get("id"), e.get("superficies"))
+                      for e in (p.get("catalogo") or [])
+                      if isinstance(e.get("superficies"), dict) and e["superficies"]]
+        if declarados:
+            print(f"  {'modelos':14s} (superficie -> permitido)")
+            for mid, mapa in declarados:
+                regras_m = " ".join(f"{s}={'sim' if v else 'nao'}"
+                                    for s, v in sorted(mapa.items()))
+                print(f"    {str(mid)[:24]:24s} {regras_m}")
         saida = True
     return 0 if saida else 0
+
+
+def cmd_superficie_modelo(args) -> int:
+    """Liga/desliga uma superficie para um modelo, ou devolve-o a heranca.
+
+    A camada de modelo nunca aponta para outro modelo: so diz se este pode
+    servir a superficie. A escolha de qual serve continua a ser do perfil.
+    """
+    valor = str(args.valor or "").strip().lower()
+    mapa_permitido = {"on": True, "sim": True, "true": True,
+                      "off": False, "nao": False, "false": False}
+    if valor in ("herdar", "herda", "reset"):
+        novo = None
+    elif valor in mapa_permitido:
+        novo = mapa_permitido[valor]
+    else:
+        return _erro(f"valor invalido '{args.valor}' (use on|off|herdar)", 2)
+    sup = str(args.superficie or "").strip().lower()
+    if not sup:
+        return _erro("superficie vazia", 2)
+    cfg, _ = _cfg()
+    rev = g.rev(cfg)
+    p = g.perfil_config(cfg, args.perfil)
+    if p is None:
+        return _erro(f"perfil '{args.perfil}' nao e gerido por este config", 3)
+    candidatos = g.catalogo_utilizavel(p)
+    alvo = next((e for e in candidatos if str(e.get("id")) == args.id), None)
+    if alvo is None:
+        # Aceita tambem o provider/modelo, para nao obrigar a decorar ids.
+        alvo = next((e for e in candidatos
+                     if f"{e['provider']}/{e['modelo']}" == args.id), None)
+    if alvo is None:
+        ids = ", ".join(str(e.get("id")) for e in candidatos) or "(catalogo vazio)"
+        return _erro(f"modelo '{args.id}' nao existe em {args.perfil}: {ids}", 3)
+    # Escreve-se na entrada DECLARADA no perfil, nao na copia fundida que
+    # `perfil_config` devolve: mutar a copia e uma escrita que se perde em
+    # silencio (o comando dizia "recusado" e o ficheiro ficava igual).
+    entrada = None
+    for e in ((cfg.get("perfis", {}).get(args.perfil) or {}).get("catalogo") or []):
+        if str(e.get("id")) == str(alvo.get("id")):
+            entrada = e
+            break
+    if entrada is None:
+        return _erro(f"modelo '{args.id}' vem do catalogo global, nao de "
+                     f"{args.perfil}: declare-o no perfil antes de o limitar", 3)
+    mapa = entrada.get("superficies")
+    mapa = dict(mapa) if isinstance(mapa, dict) else {}
+    if novo is None:
+        mapa.pop(sup, None)
+        if not mapa:
+            entrada.pop("superficies", None)
+        else:
+            entrada["superficies"] = mapa
+        estado = "herda do perfil"
+    else:
+        mapa[sup] = novo
+        entrada["superficies"] = mapa
+        estado = "permitido" if novo else "recusado"
+    try:
+        _gravar_cas(cfg, rev)
+    except ValueError as exc:
+        return _erro(str(exc))
+    # Releitura do disco: o rc do `gravar` nao e prova de que a chave ficou.
+    depois, _ = _cfg()
+    ficou = g.superficies_do_modelo(
+        {"catalogo": ((depois.get("perfis", {}).get(args.perfil) or {})
+                      .get("catalogo") or [])}, str(alvo.get("id")))
+    if novo is None and ficou is not None:
+        return _erro("a escrita nao ficou no disco (mapa ainda presente)", 1)
+    if novo is not None and (ficou or {}).get(sup) is not novo:
+        return _erro("a escrita nao ficou no disco (valor diferente)", 1)
+    print(f"{args.perfil}: {alvo.get('id')} superficie '{sup}' -> {estado}")
+    return 0
 
 
 def _alvo_superficie(valor: str, perfil: str) -> tuple[dict | None, str]:
@@ -591,6 +700,7 @@ def _alvo_superficie(valor: str, perfil: str) -> tuple[dict | None, str]:
 def cmd_superficie_add(args) -> int:
     """Liga uma superficie (cron, api_server, cli...) a uma rota do perfil."""
     cfg, _ = _cfg()
+    rev_lido = g.rev(cfg)
     p = (cfg.get("perfis") or {}).get(args.perfil)
     if not isinstance(p, dict):
         return _erro(f"perfil '{args.perfil}' nao existe", 3)
@@ -608,7 +718,7 @@ def cmd_superficie_add(args) -> int:
         return _erro(f"perfis.{args.perfil}.analise.superficies nao e um objecto", 3)
     superficies[sup] = regra
     try:
-        g.gravar(cfg)
+        _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
         return _erro(f"config recusada: {exc}")
     print(f"{args.perfil}: superficie '{sup}' -> {regra}")
@@ -617,6 +727,7 @@ def cmd_superficie_add(args) -> int:
 
 def cmd_superficie_rm(args) -> int:
     cfg, _ = _cfg()
+    rev_lido = g.rev(cfg)
     p = (cfg.get("perfis") or {}).get(args.perfil)
     if not isinstance(p, dict):
         return _erro(f"perfil '{args.perfil}' nao existe", 3)
@@ -628,7 +739,7 @@ def cmd_superficie_rm(args) -> int:
     if not superficies:
         (p.get("analise") or {}).pop("superficies", None)
     try:
-        g.gravar(cfg)
+        _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
         return _erro(f"config recusada: {exc}")
     print(f"{args.perfil}: regra da superficie '{sup}' removida")
@@ -660,9 +771,9 @@ def cmd_simular(args) -> int:
         if not lista:
             print(f"rota: nenhuma — o catalogo de {args.perfil} nao cobre '{nivel}'")
             return 1
-        # o rodizio real depende da sessao; aqui mostra-se a ordem declarada
-        print("candidatas (ordem declarada):")
-        for r in lista:
+        # o rodizio real depende da sessao; a ordem mostrada e a que o plugin usa
+        print("candidatas (ordem efetiva: ordem, custo, id):")
+        for r in g.ordenar_candidatos(lista):
             print(f"  {r['id']}: {r['provider']} / {r['modelo']}")
     return 0
 
@@ -795,6 +906,36 @@ def cmd_caminho(args) -> int:
     return 0
 
 
+def cmd_auditoria(args) -> int:
+    """Quem escreveu a config, e se o que esta no disco veio desse caminho.
+
+    `rc 1` quando ha prova de escrita fora do caminho unico ou uma quebra na
+    cadeia: e o sinal que um script de vigia pode ler. `--json` para consumo
+    por maquina, o texto para leitura humana.
+    """
+    info = g.verificar_cadeia(getattr(args, "caminho", None))
+    if args.json:
+        print(json.dumps(info, ensure_ascii=False, indent=2))
+    else:
+        print(f"config:  {info['config']}")
+        print(f"registo: {info['registo']}"
+              f" ({'existe' if info['existe'] else 'AUSENTE'})")
+        print(f"linhas:  {info['linhas']}"
+              + (f" ({info['ilegiveis']} ilegiveis)" if info["ilegiveis"] else ""))
+        print(f"vivo:    {info['vivo_sha'] or '-'}")
+        print(f"ultimo:  {info['ultimo_depois_sha'] or '-'}")
+        if info["fora_da_cadeia"]:
+            print("VEREDITO: escrita FORA do caminho unico "
+                  "(o config vivo nao e o que o ultimo escritor deixou)")
+        elif not info["existe"]:
+            print("VEREDITO: sem registo de escritas e sem config — nada a atribuir")
+        elif not info["cadeia_continua"]:
+            print(f"VEREDITO: cadeia quebrada nas linhas {info['quebras']}")
+        else:
+            print("VEREDITO: OK — a config viva foi escrita pelo caminho unico")
+    return 1 if (info["fora_da_cadeia"] or not info["cadeia_continua"]) else 0
+
+
 # --------------------------------------------------------------------------- main
 
 
@@ -904,6 +1045,14 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("superficie")
     a.set_defaults(func=cmd_superficie_rm)
 
+    a = ss.add_parser("modelo",
+                      help="dizer se um MODELO pode servir uma superficie (on|off|herdar)")
+    a.add_argument("perfil")
+    a.add_argument("id", help="id do modelo no catalogo (ou provider/modelo)")
+    a.add_argument("superficie", help="cron, api_server, cli, whatsapp... ou * para todas")
+    a.add_argument("valor", help="on (pode servir) | off (nao serve) | herdar (volta ao perfil)")
+    a.set_defaults(func=cmd_superficie_modelo)
+
     s = sub.add_parser("simular", help="classificar um texto e ver a rota")
     s.add_argument("perfil")
     s.add_argument("texto")
@@ -923,6 +1072,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("caminho", help="caminhos da config e do ledger")
     s.set_defaults(func=cmd_caminho)
+
+    # A auditoria le o que o caminho unico ja grava. `rc 1` quando ha prova de
+    # escrita por fora: um script de vigia pode limitar-se a olhar para o rc.
+    s = sub.add_parser("auditoria",
+                       help="quem escreveu a config e se o disco veio desse caminho")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--caminho", help="ficheiro de config alternativo (testes)")
+    s.set_defaults(func=cmd_auditoria)
 
     return p
 

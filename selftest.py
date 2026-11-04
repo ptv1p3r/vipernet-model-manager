@@ -275,6 +275,51 @@ def testes_gestor() -> None:
                             nivel="leve", contadores={}) for i in range(12)}
     check("rodizio por sessao distribui por sessoes diferentes", len(dif) > 1, str(dif))
 
+    # hash consistente: acrescentar um modelo so desloca quem cai na entrada nova
+    ids = ["flash", "inkling", "lightning", "nemotron"]
+    sessoes = [f"s{i}" for i in range(200)]
+
+    def _escolhido(lista_ids, sessao):
+        return lista_ids[g.indice_consistente("pessoal", sessao, "media", lista_ids)]
+
+    check("hash consistente e estavel para a mesma sessao",
+          len({_escolhido(ids, "s1") for _ in range(5)}) == 1)
+    antes = {s: _escolhido(ids, s) for s in sessoes}
+    novos = ids + ["novo"]
+    depois = {s: _escolhido(novos, s) for s in sessoes}
+    mudaram = {s for s in sessoes if antes[s] != depois[s]}
+    so_para_novo = all(depois[s] in (antes[s], "novo") for s in mudaram)
+    check("hash consistente so muda sessoes para o modelo novo", so_para_novo,
+          str(sorted({(antes[s], depois[s]) for s in mudaram})[:4]))
+    check("hash consistente desloca uma minoria", 0 < len(mudaram) < len(sessoes) // 2,
+          f"{len(mudaram)}/{len(sessoes)}")
+
+    # o modulo antigo, no mesmo cenario, troca sessoes entre modelos antigos
+    def _modulo(lista_ids, sessao):
+        sem = int(g.hashlib.md5(f"pessoal|{sessao}|media".encode("utf-8")).hexdigest()[:8], 16)
+        return lista_ids[sem % len(lista_ids)]
+
+    mao = {s: _modulo(ids, s) for s in sessoes}
+    mdepois = {s: _modulo(novos, s) for s in sessoes}
+    m_mudaram = {s for s in sessoes if mao[s] != mdepois[s]}
+    check("modulo desloca mais sessoes do que o hash consistente",
+          len(m_mudaram) > len(mudaram), f"modulo {len(m_mudaram)} vs consistente {len(mudaram)}")
+    check("modulo chega a trocar entre modelos antigos",
+          any(mdepois[s] != "novo" for s in m_mudaram),
+          str(sorted({(mao[s], mdepois[s]) for s in m_mudaram})[:4]))
+
+    # sem ids mantem a formula antiga, calculada aqui a parte
+    sem_ids = [g.indice_rodizio("k", 4, por="sessao", perfil="p", sessao=f"s{i}",
+                                nivel="leve", contadores={}) for i in range(20)]
+    esperado = [int(g.hashlib.md5(f"p|s{i}|leve".encode("utf-8")).hexdigest()[:8], 16) % 4
+                for i in range(20)]
+    check("sem ids mantem a formula do modulo", sem_ids == esperado, str(sem_ids[:6]))
+    com_ids = [g.indice_rodizio("k", 4, por="sessao", perfil="p", sessao=f"s{i}",
+                                nivel="leve", contadores={}, ids=ids)
+               for i in range(20)]
+    check("com ids usa hash consistente", com_ids ==
+          [g.indice_consistente("p", f"s{i}", "leve", ids) for i in range(20)], str(com_ids[:6]))
+
     # acesso: inferencia retrocompativel e validacao de incompatibilidades
     inf = g.validar(_cfg_base())[0]
     pc = inf["perfis"]["pessoal"]["catalogo"]
@@ -1186,9 +1231,14 @@ def testes_heranca_classificador() -> None:
               (efectiva(g.validar(cfg(LIGADO, {"activo": True, "provider": "openrouter",
                                                "modelo": "x/y"}))[0], "pessoal") or {}
                ).get("provider") == "openrouter")
-        check("perfil que declara igual ao global nao fica com copia",
-              not ((g.validar(cfg(LIGADO, dict(LIGADO)))[0]["perfis"]["pessoal"]
-                    .get("analise") or {}).get("classificador")))
+        # Uma declaracao identica ao global tem de sobreviver: a ausencia da
+        # chave e que significa herdar. (Ate 2026-11-04 era descartada, e o
+        # perfil voltava a seguir o global sem o dono saber.)
+        igual = g.validar(cfg(LIGADO, dict(LIGADO)))[0]["perfis"]["pessoal"]
+        bloco = (igual.get("analise") or {}).get("classificador") or {}
+        check("perfil que declara igual ao global fica com o bloco proprio",
+              (bloco.get("provider"), bloco.get("modelo")) == ("deepseek", "deepseek-flash"),
+              str(bloco))
 
         # limiares: o perfil declara so o que quer mudar
         parcial = _cfg_base()
