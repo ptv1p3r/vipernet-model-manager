@@ -32,7 +32,7 @@ maintainer: ptv1p3r
 tier: community
 category: models
 requires_hermes: ">=0.22.0"
-version: 3.34.0
+version: 3.34.1
 title: Vipernet Model Manager
 readme: true
 

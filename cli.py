@@ -882,7 +882,10 @@ def _seams_mod():
         global _SEAMS_CACHE
         if _SEAMS_CACHE is not None:
             return _SEAMS_CACHE
-        caminho = Path(__file__).with_name("seams.py")
+        # `_AQUI` e o directorio do ficheiro JA resolvido: usar `__file__` cru
+        # falha quando o CLI e invocado pelo symlink /opt/data/bin/vmm, porque
+        # procurava /opt/data/bin/seams.py e o comando dizia "seam indisponivel".
+        caminho = _AQUI / "seams.py"
         spec = _ilu.spec_from_file_location("vmm_seams", caminho)
         if spec is None or spec.loader is None:
             raise RuntimeError("seams.py nao encontrado junto de cli.py")
