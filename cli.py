@@ -1018,13 +1018,20 @@ def cmd_auditoria(args) -> int:
               + (f" ({info['ilegiveis']} ilegiveis)" if info["ilegiveis"] else ""))
         print(f"vivo:    {info['vivo_sha'] or '-'}")
         print(f"ultimo:  {info['ultimo_depois_sha'] or '-'}")
+        if info["quebras_reconciliadas"]:
+            print(f"reconciliadas: linhas {info['quebras_reconciliadas']} "
+                  "(quebra declarada com testemunha igual)")
         if info["fora_da_cadeia"]:
             print("VEREDITO: escrita FORA do caminho unico "
                   "(o config vivo nao e o que o ultimo escritor deixou)")
         elif not info["existe"]:
             print("VEREDITO: sem registo de escritas e sem config — nada a atribuir")
-        elif not info["cadeia_continua"]:
-            print(f"VEREDITO: cadeia quebrada nas linhas {info['quebras']}")
+        elif info["quebras_nao_explicadas"]:
+            print(f"VEREDITO: cadeia quebrada SEM explicacao nas linhas "
+                  f"{info['quebras_nao_explicadas']}")
+        elif info["quebras_reconciliadas"]:
+            print("VEREDITO: OK com quebras declaradas — a config viva veio do "
+                  "caminho unico; a historia tem escritas manuais reconciliadas")
         else:
             print("VEREDITO: OK — a config viva foi escrita pelo caminho unico")
     return 1 if (info["fora_da_cadeia"] or not info["cadeia_continua"]) else 0

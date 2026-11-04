@@ -67,7 +67,7 @@
               href: meta.github,
               target: "_blank",
               rel: "noopener noreferrer",
-              title: "Repositorio publico do autor",
+              title: "Repositorio publico do plugin",
             },
             meta.github.replace(/^https?:\/\/(www\.)?github\.com\//, "github.com/")
           )

@@ -1315,6 +1315,55 @@ def _podar_registo(registo: Path) -> None:
         pass
 
 
+def _reconciliar(saida: dict[str, Any], registo: Path) -> None:
+    """Separa quebra **explicada** de quebra **por explicar**.
+
+    Uma escrita fora do caminho unico deixa o registo com um salto entre o
+    `depois_sha` de uma linha e o `antes_sha` da seguinte. Ha duas causas
+    possiveis e o registo sozinho nao as distingue: corrupcao (alguem mexeu no
+    ficheiro ou no log) ou uma escrita manual conhecida e reversivel.
+
+    O ficheiro ``escritas-quem.reconciliacao.json`` ao lado do registo declara
+    as quebras conhecidas. Cada declaracao tem de trazer a **testemunha** — os
+    tres shas medidos naquela linha. Sem isso, uma entrada generica desculparia
+    tambem as quebras futuras, e o alarme morria por excesso de confianca.
+
+    O que fica: `quebras` continua a listar **todas** (a evidencia nao se apaga),
+    `quebras_reconciliadas` as que teem declaracao com testemunha igual, e
+    `quebras_nao_explicadas` as restantes — so estas fazem a auditoria falhar.
+    """
+    saida["quebras_nao_explicadas"] = list(saida["quebras"])
+    ficheiro = registo.parent / "escritas-quem.reconciliacao.json"
+    try:
+        dados = json.loads(ficheiro.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return
+    declaradas = dados.get("quebras") if isinstance(dados, dict) else None
+    if not isinstance(declaradas, list):
+        return
+    for item in declaradas:
+        if not isinstance(item, dict):
+            continue
+        bruto = item.get("linha")
+        if bruto is None or isinstance(bruto, bool):
+            continue
+        try:
+            numero = int(bruto)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        testemunha = saida["_testemunhas"].get(numero)
+        if not testemunha:
+            continue
+        if (str(item.get("antes_sha") or "") != testemunha["antes_sha"]
+                or str(item.get("depois_sha") or "") != testemunha["depois_sha"]
+                or str(item.get("ultimo_depois_sha") or "") != testemunha["ultimo_depois_sha"]):
+            # Declaracao que nao casa com o medido nao desculpa nada.
+            continue
+        if numero in saida["quebras_nao_explicadas"]:
+            saida["quebras_nao_explicadas"].remove(numero)
+            saida["quebras_reconciliadas"].append(numero)
+
+
 def verificar_cadeia(caminho: Path | None = None) -> dict[str, Any]:
     """Diz se a config no disco foi escrita pelo caminho unico.
 
@@ -1340,6 +1389,9 @@ def verificar_cadeia(caminho: Path | None = None) -> dict[str, Any]:
         "linhas": 0,
         "ilegiveis": 0,
         "quebras": [],
+        "quebras_reconciliadas": [],
+        "quebras_nao_explicadas": [],
+        "_testemunhas": {},
         "ultimo_depois_sha": "",
         "vivo_sha": "",
         "cadeia_continua": True,
@@ -1373,10 +1425,19 @@ def verificar_cadeia(caminho: Path | None = None) -> dict[str, Any]:
         # A primeira escrita legitima de todas tem `antes_sha` vazio.
         if anterior and antes and antes != anterior:
             saida["quebras"].append(numero)
+            # Guarda a testemunha da quebra: e o que impede uma reconciliacao
+            # generica de desculpar uma quebra que ainda nao aconteceu.
+            saida["_testemunhas"][numero] = {
+                "antes_sha": antes,
+                "depois_sha": depois,
+                "ultimo_depois_sha": anterior,
+            }
         anterior = depois
     saida["ultimo_depois_sha"] = anterior
-    saida["cadeia_continua"] = not saida["quebras"]
+    _reconciliar(saida, registo)
+    saida["cadeia_continua"] = not saida["quebras_nao_explicadas"]
     saida["fora_da_cadeia"] = bool(anterior) and saida["vivo_sha"] != anterior
+    saida.pop("_testemunhas", None)
     return saida
 
 

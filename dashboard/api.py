@@ -61,32 +61,38 @@ def _meta_plugin() -> dict[str, str]:
     divergirem, o painel mostra os dois valores e a divergencia fica visivel em
     vez de escolher um deles em silencio.
 
-    ``github`` e o repositorio publico do autor. O repositorio que o catalogo
-    aceita tem de ser publico, clonavel por https em GitHub ou GitLab [1]; o
-    Gitea interno continua a ser o espelho de trabalho, nao o endereco de
-    submissao.
+    ``github`` e o **repositorio do plugin**, lido do campo ``homepage`` do
+    ``plugin.yaml`` — uma so casa para o endereco, senao o painel e o manifesto
+    dizem coisas diferentes. O catalogo exige um repositorio publico, clonavel
+    por https em GitHub ou GitLab [1]; o Gitea interno continua a ser o espelho
+    de trabalho, nao o endereco de submissao. ``autor_github`` fica separado: e
+    o perfil do autor, nao o repositorio que se pinа.
     """
     versao = ""
     autor = ""
+    homepage = ""
     try:
         manifesto = Path(__file__).resolve().parent.parent / "plugin.yaml"
         for linha in manifesto.read_text(encoding="utf-8").splitlines():
             chave, _, valor = linha.partition(":")
             chave = chave.strip()
-            if chave not in ("version", "author"):
+            if chave not in ("version", "author", "homepage"):
                 continue
-            # Aceita `author: Nome` e `author: "Nome"`.
+            # Aceita `author: Nome`, `author: "Nome"` e comentarios a direita.
             limpo = valor.strip().strip('"').strip("'")
             if chave == "version":
                 versao = limpo
-            else:
+            elif chave == "author":
                 autor = limpo
+            else:
+                homepage = limpo
     except Exception:  # noqa: BLE001 - sem plugin.yaml o painel ainda responde
         pass
     return {
         "versao": versao,
         "autor": autor,
-        "github": GITHUB_AUTOR,
+        "github": homepage or GITHUB_AUTOR,
+        "autor_github": GITHUB_AUTOR,
         # Divergencia entre os dois numeros e deriva, nao gosto: o painel diz.
         "versao_manifest": _versao_painel(),
     }
