@@ -58,6 +58,7 @@ import re
 import shutil
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -926,6 +927,45 @@ def carregar(caminho: Path | None = None) -> tuple[dict[str, Any], list[str]]:
     return validar(bruto)
 
 
+def _registar_quem(caminho: Path, antes: bytes, depois: bytes) -> None:
+    """Auditoria de autoria: atribui cada escrita a um processo.
+
+    Nasceu de um incidente sem rasto (nove escritas em dois minutos, cada uma a
+    reduzir uma rota ao seu nivel classificado): o `escritas.log` do painel so
+    cobre o painel, o CLI e os scripts gravavam sem deixar autor. Aqui fica o
+    pid, a linha de comando e os tres frames de cima da pilha.
+
+    Nunca le valores do config — so tamanhos e hashes. Falha em silencio: um
+    registo de auditoria nao pode impedir a escrita que foi pedida.
+    """
+    try:
+        # `sys.orig_argv` (3.10+) tem a linha de comando completa sem ler /proc
+        # de outro processo — o validador do catalogo marca leituras a /proc.
+        cmdline = " ".join(str(a) for a in (getattr(sys, "orig_argv", None) or sys.argv))
+    except Exception:  # noqa: BLE001
+        cmdline = ""
+    try:
+        pilha = [
+            "%s:%s:%s" % (Path(str(f.filename)).name, f.lineno, f.name)
+            for f in traceback.extract_stack()[-6:-1]
+        ]
+        linha = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "pid": os.getpid(),
+            "ppid": os.getppid(),
+            "cmdline": cmdline[:300],
+            "pilha": pilha,
+            "antes_sha": hashlib.sha256(antes).hexdigest()[:16] if antes else "",
+            "depois_sha": hashlib.sha256(depois).hexdigest()[:16],
+            "antes_b": len(antes),
+            "depois_b": len(depois),
+        }
+        with (caminho.parent / "escritas-quem.log").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(linha, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def gravar(cfg: dict[str, Any], caminho: Path | None = None) -> Path:
     """Grava com validacao, backup e `os.replace` (nunca meio ficheiro)."""
     caminho = Path(caminho) if caminho else ficheiro_config()
@@ -933,12 +973,19 @@ def gravar(cfg: dict[str, Any], caminho: Path | None = None) -> Path:
     if erros:
         raise ValueError("; ".join(erros))
     caminho.parent.mkdir(parents=True, exist_ok=True)
+    antes = b""
     if caminho.exists():
         carimbo = time.strftime("%Y%m%dT%H%M%S")
         shutil.copy2(caminho, caminho.with_suffix(f".json.bak-{carimbo}"))
+        try:
+            antes = caminho.read_bytes()
+        except OSError:
+            antes = b""
+    texto = json.dumps(limpo, ensure_ascii=False, indent=2) + "\n"
     tmp = caminho.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(limpo, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.write_text(texto, encoding="utf-8")
     os.replace(tmp, caminho)
+    _registar_quem(caminho, antes, texto.encode("utf-8"))
     return caminho
 
 
