@@ -402,7 +402,7 @@ def _entrada_do_catalogo(pcfg: dict[str, Any], entrada_id: Any) -> dict[str, Any
 
 def escolher(pcfg: dict[str, Any], nivel: str, *, perfil: str, sessao: str) -> dict[str, Any] | None:
     catalogo = gestor.catalogo_utilizavel(pcfg)
-    lista = gestor.candidatos(catalogo, nivel)
+    lista = gestor.ordenar_candidatos(gestor.candidatos(catalogo, nivel))
     if not lista:
         return None
     modo, por = _estrategia_do_perfil(pcfg)
