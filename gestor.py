@@ -285,6 +285,64 @@ MODALIDADES = ("texto", "imagem", "audio", "ficheiro")
 _LIMITES_INTERNOS = ("contexto_max", "latencia_p95_ms")
 
 
+# ------------------------------------------------------------------ listas fechadas
+# Chaves aceites em cada nivel do config. Uma chave fora destas listas e ERRO e
+# nao um descarte silencioso. Medido a 2026-11-04, antes desta guarda: dez casos
+# — `classificador` no topo, `perfís` com acento, `modelo` declarado no perfil,
+# `latencia_max` sem o `_ms`, `cust` por `custo` na entrada, `superficie` no
+# singular — passavam com ZERO erros e o valor declarado desaparecia na
+# gravacao. O utilizador julgava ter mudado uma definicao que nunca chegou ao
+# disco, que e a pior classe de defeito deste ficheiro: silencioso e com
+# aspecto de sucesso.
+#
+# `_CHAVES_ANALISE` deriva de `ANALISE_PADRAO` de proposito: uma chave nova
+# acrescentada la entra aqui sozinha, e um teste prende as duas para nao
+# divergirem. As listas do classificador vivem em `analise_modelo` (`CHAVES`),
+# derivadas do `PADRAO` dele pela mesma razao.
+_CHAVES_CONFIG = frozenset({"versao", "activo", "registar", "analise",
+                            "estrategia", "perfis"})
+_CHAVES_PERFIL = frozenset({"activo", "estrategia", "analise", "catalogo",
+                            "tarefas", "latencia_max_ms", "rodizio"})
+_CHAVES_ANALISE = frozenset(set(ANALISE_PADRAO) | {"pesos", "aprendiz",
+                                                   "classificador"})
+# `limiares` so tem dois limiares: sao os que `analise.nivel_de_score` le.
+LIMIARES_CHAVES = frozenset({"media", "alta"})
+_CHAVES_TAREFA = frozenset({"termos", "prioridade"})
+_CHAVES_ENTRADA = frozenset({
+    "id", "provider", "modelo", "complexidade", "niveis", "acesso",
+    "esforco", "tarefas", "desligado", "custo", "ordem", "nota",
+    "superficies", "modalidades", "json_nativo",
+}) | frozenset(_LIMITES_INTERNOS)
+
+
+def _recusar_desconhecidas(mapa: Any, permitidas: frozenset[str],
+                           prefixo: str, erros: list[str]) -> None:
+    """Um erro por cada chave fora da lista fechada, com sugestao do typo.
+
+    A sugestao vem de `difflib` porque o caso real e o engano de uma letra
+    (`cust` por `custo`, `latencia_max` por `latencia_max_ms`): com a chave
+    certa ao lado, o erro corrige-se sozinho em vez de obrigar a ler a lista
+    inteira. Nao levanta e nao escreve: so acrescenta a `erros`.
+    """
+    if not isinstance(mapa, dict):
+        return
+    for chave in sorted(set(mapa) - set(permitidas), key=str):
+        # Corte a 0,75 medido a 2026-11-04: as sugestoes uteis ficam todas acima
+        # (`cust`->`custo` 0,889, `janela_msgs`->`janela_mensagens` 0,815) e a
+        # unica falsa (`superficies`->`perfis`, 0,706) cai. Uma sugestao errada
+        # custa mais do que nenhuma, porque manda mudar a chave certa.
+        perto = difflib.get_close_matches(str(chave), sorted(permitidas),
+                                          n=1, cutoff=0.75)
+        if perto:
+            dica = f"; queria dizer '{perto[0]}'?"
+        else:
+            lista = ", ".join(sorted(permitidas))
+            if len(lista) > 140:
+                lista = lista[:137] + "..."
+            dica = f" (aceita: {lista})"
+        erros.append(f"{prefixo}.{chave} desconhecida{dica}")
+
+
 # Superficies que o core ja entrega ao middleware `llm_request` via
 # `agent.platform` (medidas em producao a 2026-11-03). Nao e uma lista
 # fechada: `superficies` aceita qualquer valor, porque um provider novo traz
@@ -596,6 +654,7 @@ def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str
     if not isinstance(entrada, dict):
         erros.append(f"catalogo[{indice}] nao e um objecto")
         return None
+    _recusar_desconhecidas(entrada, _CHAVES_ENTRADA, f"catalogo[{indice}]", erros)
     provider = str(entrada.get("provider") or "").strip()
     modelo = str(entrada.get("modelo") or "").strip()
     bruto = entrada.get("complexidade", entrada.get("niveis"))
@@ -769,6 +828,14 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
             pass  # continuará à validação normal que rejeitará non-dict
     if not isinstance(cfg, dict):
         return copy.deepcopy(SEED), ["config nao e um objecto"]
+    _recusar_desconhecidas(cfg, _CHAVES_CONFIG, "config", erros)
+    # `versao` tambem nao se reescreve em silencio: um ficheiro de uma versao
+    # futura aberto e gravado aqui perdia as chaves que esta versao desconhece,
+    # e o utilizador ficava com uma copia mutilada sem um unico erro.
+    _versao = cfg.get("versao")
+    if _versao not in (None, "", 3, "3"):
+        erros.append(f"config.versao {_versao!r} nao suportada "
+                     f"(este plugin le a versao 3)")
     saida: dict[str, Any] = {
         "versao": 3,
         "activo": bool(cfg.get("activo", True)),
@@ -778,9 +845,15 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
     }
     analise = cfg.get("analise") or {}
     if isinstance(analise, dict):
+        _recusar_desconhecidas(analise, _CHAVES_ANALISE, "analise", erros)
         for chave, valor in analise.items():
             if chave == "limiares" and isinstance(valor, dict):
-                saida["analise"]["limiares"].update(valor)
+                # Fechado a `media`/`alta`, que e o que `nivel_de_score` le.
+                # Um `leve` aqui era aceite e nunca decidia nada.
+                _recusar_desconhecidas(valor, LIMIARES_CHAVES,
+                                       "analise.limiares", erros)
+                saida["analise"]["limiares"].update(
+                    {k: v for k, v in valor.items() if k in LIMIARES_CHAVES})
             elif chave == "classificador":
                 limpo, erros_c = _analise_modelo().normalizar(valor)
                 saida["analise"]["classificador"] = limpo
@@ -849,6 +922,7 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         if not isinstance(pcfg, dict):
             erros.append(f"perfis.{nome} nao e um objecto")
             continue
+        _recusar_desconhecidas(pcfg, _CHAVES_PERFIL, f"perfis.{nome}", erros)
         # Estrategia do perfil: bloco opcional. Ausente = herda o global; com
         # chaves = sobrepoe-se chave a chave. Aceita a forma antiga (string mais
         # `rodizio.por`) e converte-a — sem isto, gravar apagava a estrategia de
@@ -890,8 +964,13 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         # classificador: qualquer chave herdada e a mesma armadilha.
         panalise: dict[str, Any] = {}
         if isinstance(pcfg.get("analise"), dict):
+            _recusar_desconhecidas(pcfg["analise"], _CHAVES_ANALISE,
+                                   f"perfis.{nome}.analise", erros)
             for chave, valor in pcfg["analise"].items():
                 if chave == "limiares" and isinstance(valor, dict):
+                    _recusar_desconhecidas(valor, LIMIARES_CHAVES,
+                                           f"perfis.{nome}.analise.limiares",
+                                           erros)
                     # So as chaves declaradas: o que falta vem do global.
                     globais = saida["analise"].get("limiares") or {}
                     declarados = {k: v for k, v in valor.items() if globais.get(k) != v}
@@ -946,6 +1025,8 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
             if not isinstance(tid, str) or not tid.strip() or not isinstance(regra, dict):
                 erros.append(f"perfis.{nome}.tarefas: regra invalida")
                 continue
+            _recusar_desconhecidas(regra, _CHAVES_TAREFA,
+                                   f"perfis.{nome}.tarefas.{tid}", erros)
             termos = regra.get("termos", [])
             prioridade = regra.get("prioridade", 0)
             if (not isinstance(termos, list) or not termos or
@@ -1060,8 +1141,102 @@ def _registar_quem(caminho: Path, antes: bytes, depois: bytes) -> None:
         }
         with (caminho.parent / "escritas-quem.log").open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(linha, ensure_ascii=False) + "\n")
+        _podar_registo(caminho.parent / "escritas-quem.log")
     except Exception:  # noqa: BLE001
         pass
+
+
+#: Tecto do log de auditoria. Uma linha tem ~200 B; 256 KiB dao ~1300 escritas,
+#: muito acima do pior incidente medido (nove escritas em dois minutos).
+_LIMITE_LOG_AUDITORIA = 256 * 1024
+_LINHAS_LOG_AUDITORIA = 400
+
+
+def _podar_registo(registo: Path) -> None:
+    """Corta o log de auditoria a 400 linhas quando passa de 256 KiB.
+
+    A cadeia de hashes so precisa do ultimo elo para dizer se a config foi
+    escrita pelo caminho unico; as linhas antigas sao contexto forense. Sem
+    tecto, um escritor em laco fazia crescer isto sem fim, no mesmo diretorio
+    onde ja houve 119 backups a encher o disco.
+    """
+    try:
+        if registo.stat().st_size <= _LIMITE_LOG_AUDITORIA:
+            return
+        linhas = registo.read_text(encoding="utf-8").splitlines()
+        if len(linhas) <= _LINHAS_LOG_AUDITORIA:
+            return
+        tmp = registo.with_suffix(registo.suffix + ".tmp")
+        tmp.write_text("\n".join(linhas[-_LINHAS_LOG_AUDITORIA:]) + "\n",
+                       encoding="utf-8")
+        os.replace(tmp, registo)
+    except OSError:
+        pass
+
+
+def verificar_cadeia(caminho: Path | None = None) -> dict[str, Any]:
+    """Diz se a config no disco foi escrita pelo caminho unico.
+
+    O `escritas-quem.log` atribui cada escrita — mas so as que passam por
+    `_escrever`. Uma edicao a mao do JSON, um `sed`, um script que escreva o
+    ficheiro diretamente nao deixam linha nenhuma, e ate agora isso lia-se como
+    "ninguem escreveu": o log provava autoria quando havia escrita, nunca
+    provava ausencia de escrita por fora.
+
+    A cadeia fecha esse buraco com o que ja estava gravado: cada linha leva
+    `depois_sha` e a seguinte leva o mesmo valor em `antes_sha`. Se o sha dos
+    bytes vivos nao for o `depois_sha` da ultima linha, o ficheiro foi mexido
+    fora do caminho unico — ou o log foi apagado. E a diferenca entre "o
+    utilizador mudou pelo painel" (linha 1 a 11 do log real: `api.py:modelo_post`,
+    pid do gateway) e "alguem escreveu o JSON por fora" (nenhuma linha).
+    """
+    caminho = Path(caminho) if caminho else ficheiro_config()
+    registo = caminho.parent / "escritas-quem.log"
+    saida: dict[str, Any] = {
+        "config": str(caminho),
+        "registo": str(registo),
+        "existe": registo.exists(),
+        "linhas": 0,
+        "ilegiveis": 0,
+        "quebras": [],
+        "ultimo_depois_sha": "",
+        "vivo_sha": "",
+        "cadeia_continua": True,
+        "fora_da_cadeia": False,
+    }
+    try:
+        saida["vivo_sha"] = hashlib.sha256(caminho.read_bytes()).hexdigest()[:16]
+    except OSError:
+        saida["vivo_sha"] = ""
+    if not registo.exists():
+        # Sem registo nao ha como atribuir: se ha config, ela veio de fora.
+        saida["fora_da_cadeia"] = bool(saida["vivo_sha"])
+        return saida
+    anterior = ""
+    try:
+        linhas = registo.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return saida
+    for numero, linha in enumerate(linhas, 1):
+        try:
+            dado = json.loads(linha)
+        except (json.JSONDecodeError, ValueError):
+            saida["ilegiveis"] += 1
+            continue
+        if not isinstance(dado, dict):
+            saida["ilegiveis"] += 1
+            continue
+        saida["linhas"] += 1
+        antes = str(dado.get("antes_sha") or "")
+        depois = str(dado.get("depois_sha") or "")
+        # A primeira escrita legitima de todas tem `antes_sha` vazio.
+        if anterior and antes and antes != anterior:
+            saida["quebras"].append(numero)
+        anterior = depois
+    saida["ultimo_depois_sha"] = anterior
+    saida["cadeia_continua"] = not saida["quebras"]
+    saida["fora_da_cadeia"] = bool(anterior) and saida["vivo_sha"] != anterior
+    return saida
 
 
 def rev(cfg: dict[str, Any]) -> str:

@@ -27,6 +27,7 @@ Regras de desenho (o que decide o resultado):
 """
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import re
@@ -190,6 +191,14 @@ PRESETS: dict[str, dict[str, Any]] = {
     # `max_completion_tokens` como nome do orcamento de saida.
     "raciocinio": {"temperatura": None, "max_tokens_campo": "max_completion_tokens"},
 }
+
+#: Chaves aceites no bloco do classificador. Derivada do `PADRAO` para nao
+#: divergir: uma chave nova acrescentada la entra aqui sozinha. Uma chave fora
+#: desta lista e ERRO, nunca descarte silencioso — medido a 2026-11-04, um
+#: `via2` ou um `provider_` escrito no bloco passava com zero erros e
+#: desaparecia na gravacao, deixando o utilizador convencido de que tinha
+#: mudado o classificador.
+CHAVES: frozenset[str] = frozenset(PADRAO)
 
 #: Prefixos de id de modelo -> preset inferido. A inferencia evita que um
 #: modelo novo exija configuracao para funcionar; quem souber melhor declara
@@ -489,6 +498,17 @@ def normalizar(bruto: Any, prefixo: str = "analise.classificador") -> tuple[dict
         nome_preset = preset_para(str(bruto.get("modelo") or ""))
     if nome_preset:
         bruto = {**PRESETS[nome_preset], **bruto}
+    # Lista fechada. O preset ja entrou, portanto as chaves que ele injecta
+    # (`via`, `temperatura`, `max_tokens_campo`) estao no `PADRAO` e passam.
+    # A sugestao do typo vale aqui mais do que em qualquer lado: `provider` e
+    # `modelo` sao as duas chaves que, erradas, deixam o classificador a correr
+    # com o id vazio e a devolver erro de credencial em vez de erro de config.
+    for chave in sorted(set(bruto) - set(CHAVES), key=str):
+        perto = difflib.get_close_matches(str(chave), sorted(CHAVES),
+                                          n=1, cutoff=0.75)
+        dica = (f"; queria dizer '{perto[0]}'?" if perto
+                else f" (aceita: {', '.join(sorted(CHAVES))})")
+        erros.append(f"{prefixo}.{chave} desconhecida{dica}")
     saida["preset"] = nome_preset
     saida["activo"] = bool(bruto.get("activo", False))
 

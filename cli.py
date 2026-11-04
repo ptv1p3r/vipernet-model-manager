@@ -906,6 +906,36 @@ def cmd_caminho(args) -> int:
     return 0
 
 
+def cmd_auditoria(args) -> int:
+    """Quem escreveu a config, e se o que esta no disco veio desse caminho.
+
+    `rc 1` quando ha prova de escrita fora do caminho unico ou uma quebra na
+    cadeia: e o sinal que um script de vigia pode ler. `--json` para consumo
+    por maquina, o texto para leitura humana.
+    """
+    info = g.verificar_cadeia(getattr(args, "caminho", None))
+    if args.json:
+        print(json.dumps(info, ensure_ascii=False, indent=2))
+    else:
+        print(f"config:  {info['config']}")
+        print(f"registo: {info['registo']}"
+              f" ({'existe' if info['existe'] else 'AUSENTE'})")
+        print(f"linhas:  {info['linhas']}"
+              + (f" ({info['ilegiveis']} ilegiveis)" if info["ilegiveis"] else ""))
+        print(f"vivo:    {info['vivo_sha'] or '-'}")
+        print(f"ultimo:  {info['ultimo_depois_sha'] or '-'}")
+        if info["fora_da_cadeia"]:
+            print("VEREDITO: escrita FORA do caminho unico "
+                  "(o config vivo nao e o que o ultimo escritor deixou)")
+        elif not info["existe"]:
+            print("VEREDITO: sem registo de escritas e sem config — nada a atribuir")
+        elif not info["cadeia_continua"]:
+            print(f"VEREDITO: cadeia quebrada nas linhas {info['quebras']}")
+        else:
+            print("VEREDITO: OK — a config viva foi escrita pelo caminho unico")
+    return 1 if (info["fora_da_cadeia"] or not info["cadeia_continua"]) else 0
+
+
 # --------------------------------------------------------------------------- main
 
 
@@ -1042,6 +1072,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("caminho", help="caminhos da config e do ledger")
     s.set_defaults(func=cmd_caminho)
+
+    # A auditoria le o que o caminho unico ja grava. `rc 1` quando ha prova de
+    # escrita por fora: um script de vigia pode limitar-se a olhar para o rc.
+    s = sub.add_parser("auditoria",
+                       help="quem escreveu a config e se o disco veio desse caminho")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--caminho", help="ficheiro de config alternativo (testes)")
+    s.set_defaults(func=cmd_auditoria)
 
     return p
 
