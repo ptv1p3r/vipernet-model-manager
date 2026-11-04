@@ -65,6 +65,23 @@ def _cfg() -> tuple[dict[str, Any], list[str]]:
     return g.carregar()
 
 
+def _gravar_cas(cfg: dict[str, Any], rev_lido: str) -> None:
+    """Grava so se a config no disco continuar na versao que este comando leu.
+
+    O CLI le, muda em memoria e grava o documento inteiro: se outra sessao
+    escreveu nesse intervalo, gravar reporia o passado e a escolha dela
+    desaparecia sem erro nenhum. Com `rev_esperado`, o `gestor` compara dentro
+    da trava e levanta `Conflito` em vez de ganhar.
+    """
+    try:
+        g.gravar(cfg, rev_esperado=rev_lido or None)
+    except g.Conflito as exc:
+        # Nao e falha de gravacao: e a outra escrita a ser respeitada. Dizer
+        # "recusada" com a versao actual e o que evita repetir as cegas.
+        raise ValueError(f"a config mudou no disco (rev {exc.rev_actual}); "
+                         f"releia com `vmm status` e repita o comando") from exc
+
+
 def _erro(msg: str, codigo: int = 1) -> int:
     print(f"vmm: {msg}", file=sys.stderr)
     return codigo
@@ -115,6 +132,7 @@ def cmd_status(args) -> int:
 
 def cmd_on_off(args) -> int:
     cfg, _ = _cfg()
+    rev_lido = g.rev(cfg)
     ligar = args.cmd == "on"
     if args.perfil:
         p = (cfg.get("perfis") or {}).get(args.perfil)
@@ -126,7 +144,7 @@ def cmd_on_off(args) -> int:
         cfg["activo"] = ligar
         alvo = "global"
     try:
-        g.gravar(cfg)
+        _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
         return _erro(f"config recusada: {exc}")
     print(f"{alvo}: {'ligado' if ligar else 'desligado'}")
@@ -142,6 +160,7 @@ def cmd_classificador(args) -> int:
     que declare o seu substitui-o por inteiro.
     """
     cfg, erros = _cfg()
+    rev_lido = g.rev(cfg)
     for erro in erros:
         print(f"aviso: {erro}", file=sys.stderr)
     perfis = cfg.get("perfis") or {}
@@ -270,7 +289,7 @@ def cmd_classificador(args) -> int:
             if not (bloco.get("provider") and bloco.get("modelo")):
                 return _erro("ligar exige --provider e --modelo", 2)
         try:
-            g.gravar(cfg)
+            _gravar_cas(cfg, rev_lido)
         except ValueError as exc:
             return _erro(f"config recusada: {exc}")
         print(f"{alvo}: classificador {'ligado' if args.cmd == 'on' else 'desligado'}"
@@ -307,6 +326,7 @@ def cmd_perfis(args) -> int:
 
 def cmd_perfil_add(args) -> int:
     cfg, _ = _cfg()
+    rev_lido = g.rev(cfg)
     perfis = cfg.setdefault("perfis", {})
     if args.nome in perfis:
         return _erro(f"perfil '{args.nome}' ja existe", 2)
@@ -319,7 +339,7 @@ def cmd_perfil_add(args) -> int:
         novo = {"activo": True, "catalogo": []}
     perfis[args.nome] = novo
     try:
-        g.gravar(cfg)
+        _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
         return _erro(f"config recusada: {exc}")
     print(f"perfil '{args.nome}' acrescentado"
@@ -336,6 +356,7 @@ def cmd_estrategia(args) -> int:
     hoje para sempre.
     """
     cfg, _ = _cfg()
+    rev_lido = g.rev(cfg)
     perfis = cfg.get("perfis") or {}
     if args.perfil and args.perfil not in perfis:
         return _erro(f"perfil '{args.perfil}' nao existe", 3)
@@ -381,7 +402,7 @@ def cmd_estrategia(args) -> int:
         alvo["estrategia"] = est
 
     try:
-        g.gravar(cfg)
+        _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
         # O `ValueError` traz a razao com os valores aceites: mostra-la e o que
         # ensina a lista fechada, um "invalido" seco nao.
@@ -400,12 +421,13 @@ def cmd_estrategia(args) -> int:
 
 def cmd_perfil_rm(args) -> int:
     cfg, _ = _cfg()
+    rev_lido = g.rev(cfg)
     perfis = cfg.get("perfis") or {}
     if args.nome not in perfis:
         return _erro(f"perfil '{args.nome}' nao existe", 3)
     del perfis[args.nome]
     try:
-        g.gravar(cfg)
+        _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
         return _erro(f"config recusada: {exc}")
     print(f"perfil '{args.nome}' removido (deixa de ser gerido)")
@@ -451,6 +473,7 @@ def _niveis(texto: str) -> list[str]:
 
 def cmd_rota_add(args) -> int:
     cfg, _ = _cfg()
+    rev_lido = g.rev(cfg)
     perfis = cfg.get("perfis") or {}
     p = perfis.get(args.perfil)
     if not isinstance(p, dict):
@@ -476,7 +499,7 @@ def cmd_rota_add(args) -> int:
         entrada["ordem"] = args.ordem
     p.setdefault("catalogo", []).append(entrada)
     try:
-        g.gravar(cfg)
+        _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
         return _erro(f"config recusada: {exc}")
     extras = [f"acesso={entrada['acesso']}"]
@@ -494,6 +517,7 @@ def cmd_rota_add(args) -> int:
 def cmd_rota_esforco(args) -> int:
     """Define (ou limpa com '-') o esforco de uma rota existente."""
     cfg, _ = _cfg()
+    rev_lido = g.rev(cfg)
     p = (cfg.get("perfis") or {}).get(args.perfil)
     if not isinstance(p, dict):
         return _erro(f"perfil '{args.perfil}' nao existe", 3)
@@ -510,7 +534,7 @@ def cmd_rota_esforco(args) -> int:
         alvo["esforco"] = esforco
         novo = esforco
     try:
-        g.gravar(cfg)
+        _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
         return _erro(f"config recusada: {exc}")
     print(f"rota '{args.id}' de {args.perfil}: esforco={novo}")
@@ -519,6 +543,7 @@ def cmd_rota_esforco(args) -> int:
 
 def cmd_rota_rm(args) -> int:
     cfg, _ = _cfg()
+    rev_lido = g.rev(cfg)
     p = (cfg.get("perfis") or {}).get(args.perfil)
     if not isinstance(p, dict):
         return _erro(f"perfil '{args.perfil}' nao existe", 3)
@@ -528,7 +553,7 @@ def cmd_rota_rm(args) -> int:
         return _erro(f"rota '{args.id}' nao existe em {args.perfil}", 3)
     p["catalogo"] = restantes
     try:
-        g.gravar(cfg)
+        _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
         return _erro(f"config recusada: {exc}")
     print(f"rota '{args.id}' removida de {args.perfil}")
@@ -591,6 +616,7 @@ def _alvo_superficie(valor: str, perfil: str) -> tuple[dict | None, str]:
 def cmd_superficie_add(args) -> int:
     """Liga uma superficie (cron, api_server, cli...) a uma rota do perfil."""
     cfg, _ = _cfg()
+    rev_lido = g.rev(cfg)
     p = (cfg.get("perfis") or {}).get(args.perfil)
     if not isinstance(p, dict):
         return _erro(f"perfil '{args.perfil}' nao existe", 3)
@@ -608,7 +634,7 @@ def cmd_superficie_add(args) -> int:
         return _erro(f"perfis.{args.perfil}.analise.superficies nao e um objecto", 3)
     superficies[sup] = regra
     try:
-        g.gravar(cfg)
+        _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
         return _erro(f"config recusada: {exc}")
     print(f"{args.perfil}: superficie '{sup}' -> {regra}")
@@ -617,6 +643,7 @@ def cmd_superficie_add(args) -> int:
 
 def cmd_superficie_rm(args) -> int:
     cfg, _ = _cfg()
+    rev_lido = g.rev(cfg)
     p = (cfg.get("perfis") or {}).get(args.perfil)
     if not isinstance(p, dict):
         return _erro(f"perfil '{args.perfil}' nao existe", 3)
@@ -628,7 +655,7 @@ def cmd_superficie_rm(args) -> int:
     if not superficies:
         (p.get("analise") or {}).pop("superficies", None)
     try:
-        g.gravar(cfg)
+        _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
         return _erro(f"config recusada: {exc}")
     print(f"{args.perfil}: regra da superficie '{sup}' removida")

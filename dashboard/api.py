@@ -112,9 +112,11 @@ def _rev(cfg: dict[str, Any]) -> str:
     11:27:52 repôs byte a byte o config que a pagina tinha carregado antes das
     11:18:47, apagando a correcao do perfil pessoal. O cliente envia o `rev` que
     leu; se nao for o actual, recusa-se a gravar e devolve o estado actual.
+
+    A definicao vive no `gestor`: se o painel, o CLI e os scripts calculassem
+    impressoes diferentes, um `rev` de um nao valia no outro.
     """
-    canonico = json.dumps(cfg, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-    return hashlib.sha256(canonico.encode("utf-8")).hexdigest()[:16]
+    return gestor.rev(cfg)
 
 
 def _conflito(rev_cliente: str, rev_actual: str) -> bool:
@@ -903,6 +905,15 @@ def config_post(request: Request, corpo: Any = Body(default=None)) -> JSONRespon
             status_code=400,
             detail="config sem nenhum perfil: recusado (o plugin ficaria sem rotas)",
         )
+    if envelope and not rev_cliente:
+        # Documento inteiro sem versao de origem e uma escrita as cegas: reporia
+        # o passado sobre o que outra sessao escreveu entretanto. O painel manda
+        # sempre o `rev` que leu; quem escreve por API tem de o mandar tambem.
+        raise HTTPException(
+            status_code=400,
+            detail="falta 'rev': substituir a config inteira exige a versão que foi lida "
+                   "(POST /config devolve-a em 'rev')",
+        )
     actual, _ = gestor.carregar()
     rev_actual = _rev(actual)
     try:
@@ -925,8 +936,19 @@ def config_post(request: Request, corpo: Any = Body(default=None)) -> JSONRespon
             },
         )
     try:
-        # gestor.gravar valida, faz backup e escreve com os.replace.
-        gestor.gravar(novo)
+        # `rev_esperado` repete a verificacao DENTRO da trava: entre a leitura
+        # acima e a escrita ha uma janela, e e nela que duas escritas simultaneas
+        # perdiam uma delas. Aqui a segunda leva `Conflito` em vez de ganhar.
+        gestor.gravar(novo, rev_esperado=rev_actual if rev_cliente else None)
+    except gestor.Conflito as exc:
+        _registar_escrita(
+            rev_antes=rev_actual, rev_depois="", rev_cliente=rev_cliente,
+            conflito=True, origem=origem,
+        )
+        return JSONResponse(
+            status_code=409,
+            content={"erro": "config mudou durante a gravação", "rev": exc.rev_actual},
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     cfg, _ = gestor.carregar()
@@ -1381,7 +1403,15 @@ def perfil_post(corpo: Any = Body(default=None)) -> JSONResponse:
                                      "erros": [], "rev": rev_antes})
 
     try:
-        gestor.gravar(limpa)
+        # O documento foi montado sobre a leitura desta requisicao; `rev_esperado`
+        # garante, ja dentro da trava, que ninguem escreveu entretanto — sem isso
+        # esta escrita reporia o estado lido ha milissegundos.
+        gestor.gravar(limpa, rev_esperado=rev_antes or None)
+    except gestor.Conflito as exc:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "detail": "a configuração mudou desde que esta página a leu",
+            "rev": exc.rev_actual,
+        })
     except ValueError as exc:
         return JSONResponse(status_code=400, content={
             "ok": False, "detail": "não gravou: " + str(exc),
