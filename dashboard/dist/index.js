@@ -487,6 +487,8 @@
       latencia_p95_ms: x.latencia_p95_ms == null ? "" : String(x.latencia_p95_ms),
       modalidades: Array.isArray(x.modalidades) ? x.modalidades.map(function (m) { return String(m); }) : [],
       json_nativo: x.json_nativo === true ? "sim" : (x.json_nativo === false ? "nao" : ""),
+      custo: x.custo == null ? "" : String(x.custo),
+      ordem: x.ordem == null ? "" : String(x.ordem),
       nota: x.nota == null ? "" : String(x.nota),
     };
   }
@@ -529,6 +531,12 @@
     if (mods.length) entrada.modalidades = mods;
     if (f.json_nativo === "sim") entrada.json_nativo = true;
     else if (f.json_nativo === "nao") entrada.json_nativo = false;
+    // Custo e ordem entram na chave de escolha (custo, depois ordem, depois id).
+    // Vazio e "nao declarado": a entrada ordena depois das que declaram custo.
+    var custo = numeroOuTexto(f.custo);
+    if (custo !== null) entrada.custo = custo;
+    var ordemEntrada = numeroOuTexto(f.ordem);
+    if (ordemEntrada !== null) entrada.ordem = ordemEntrada;
     var nota = String(f.nota == null ? "" : f.nota).trim();
     if (nota) entrada.nota = nota;
     return entrada;
@@ -742,7 +750,11 @@
                     opcoes: [{ valor: "nao", rotulo: "activo" }, { valor: "sim", rotulo: "desligado" }],
                     valor: form.desligado ? "sim" : "nao",
                     onChange: function (v) { props.onCampo("desligado", v === "sim"); },
-                  }))
+                  })),
+                h(Campo, { rotulo: "custo", ajuda: "preço por milhão de tokens; 0 é grátis. Em branco não é grátis: ordena depois das que declaram custo" },
+                  h(EntradaTexto, { tipo: "number", valor: form.custo, rotulo: "custo", placeholder: "0", onChange: mudar("custo") })),
+                h(Campo, { rotulo: "ordem", ajuda: "desempate entre custos iguais; o id fecha o empate, por isso a posição no ficheiro nunca conta" },
+                  h(EntradaTexto, { tipo: "number", valor: form.ordem, rotulo: "ordem", placeholder: "0", onChange: mudar("ordem") }))
               )
             ),
 
@@ -1448,7 +1460,10 @@
                     onClick: function () { props.onModelo(nome, m.id); },
                   }, "✎")),
                 h("td", null,
-                  h("span", { className: "vmm-mono vmm-mudo vmm-celula-provider" }, m.provider + " / " + m.modelo)),
+                  h("span", { className: "vmm-mono vmm-mudo vmm-celula-provider" }, m.provider + " / " + m.modelo),
+                  h("span", { className: "vmm-mudo vmm-celula-ordem" },
+                    " · " + (m.custo == null ? "custo —" : "custo " + m.custo)
+                    + (m.ordem == null ? "" : " · ordem " + m.ordem))),
                 h("td", null, cxLista.map(function (n) { return h(Chip, { key: n }, n); })),
                 h("td", null, (m.tarefas || []).length
                   ? (m.tarefas || []).map(function (t) { return h(Chip, { key: t, tone: "outline" }, t); })

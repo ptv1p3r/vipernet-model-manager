@@ -445,6 +445,9 @@ def escolher_com_rota(pcfg: dict[str, Any], nivel: str, *, perfil: str,
         if not viaveis:
             return None, None, falhadas
         lista = viaveis
+    # Ordem declarada (custo, `ordem`, `id`) antes de rodar: sem isto o
+    # desempate era a posicao no ficheiro. A rotacao fica intacta.
+    lista = gestor.ordenar_candidatos(lista)
     modo, por = _estrategia_do_perfil(pcfg)
     if modo == "rodizio" and len(lista) > 1:
         chave = gestor.chave_rodizio(perfil, sessao, nivel)

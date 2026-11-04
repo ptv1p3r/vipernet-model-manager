@@ -920,6 +920,7 @@ const rotaCompleta = {
   complexidade: ["alta"], acesso: "subscricao", esforco: "alto",
   tarefas: ["arquitetura"], desligado: true, contexto_max: 200000,
   latencia_p95_ms: 900, modalidades: ["texto", "imagem"], json_nativo: false,
+  custo: 0.28, ordem: 3,
   nota: "rota de arquitectura",
 };
 
@@ -932,14 +933,16 @@ check("entradaParaForm le todos os campos",
       && forma.desligado === true && forma.contexto_max === "200000"
       && forma.latencia_p95_ms === "900"
       && forma.modalidades.join(",") === "texto,imagem"
-      && forma.json_nativo === "nao" && forma.nota === "rota de arquitectura",
+      && forma.json_nativo === "nao" && forma.nota === "rota de arquitectura"
+      && forma.custo === "0.28" && forma.ordem === "3",
       JSON.stringify(forma));
 
 check("entradaParaForm sem campos nao inventa valores",
       (function () {
         const f = T.entradaParaForm({ id: "x", provider: "p", modelo: "m" });
         return f.complexidade.length === 0 && f.esforco === "" && f.json_nativo === ""
-          && f.desligado === false && f.nota === "" && f.modalidades.length === 0;
+          && f.desligado === false && f.nota === "" && f.modalidades.length === 0
+          && f.custo === "" && f.ordem === "";
       })(), JSON.stringify(T.entradaParaForm({ id: "x" })));
 
 check("entradaParaForm aceita `niveis` legado",
@@ -963,6 +966,24 @@ function canonico(obj) {
   Object.keys(obj).sort().forEach(function (k) { out[k] = canonico(obj[k]); });
   return out;
 }
+// Custo e ordem entram na chave de escolha do plugin: custo, depois ordem,
+// depois id. Duas coisas que se estragam em silencio: o custo 0 (gratis) nao
+// pode virar "nao declarado", e o vazio nao pode virar 0 — sao opostos.
+check("formParaEntrada: custo 0 e gratis, nao 'nao declarado'",
+      T.formParaEntrada({ id: "x", provider: "p", modelo: "m", complexidade: ["alta"],
+                          custo: "0" }, OPCOES).custo === 0);
+check("formParaEntrada: ordem 0 e declarada",
+      T.formParaEntrada({ id: "x", provider: "p", modelo: "m", complexidade: ["alta"],
+                          ordem: "0" }, OPCOES).ordem === 0);
+check("formParaEntrada: custo e ordem em branco nao sao escritos",
+      !("custo" in T.formParaEntrada({ id: "x", provider: "p", modelo: "m",
+                                       complexidade: ["alta"], custo: "", ordem: " " }, OPCOES))
+      && !("ordem" in T.formParaEntrada({ id: "x", provider: "p", modelo: "m",
+                                          complexidade: ["alta"], custo: "", ordem: " " }, OPCOES)));
+check("formParaEntrada: custo decimal sobrevive",
+      T.formParaEntrada({ id: "x", provider: "p", modelo: "m", complexidade: ["alta"],
+                          custo: "0.28" }, OPCOES).custo === 0.28);
+
 check("formParaEntrada devolve a rota igual ao que leu",
       JSON.stringify(canonico(volta)) === JSON.stringify(canonico(rotaCompleta)),
       JSON.stringify(volta) + " != " + JSON.stringify(rotaCompleta));
@@ -1054,6 +1075,22 @@ const arvoreModelo = renderModelo();
 const rotulosModelo = comTag(arvoreModelo, "button").map(function (b) {
   return textoPlano(b.filhos).trim();
 });
+// O harness nao executa componentes-funcao: o rotulo de um `Campo` vive nas
+// props, nao no texto achatado. Le-se pela prop, que e o que o browser mostra.
+const rotulosCampo = comTag(arvoreModelo, "Campo").map(function (n) {
+  return String((n.props && n.props.rotulo) || "").toLowerCase();
+});
+check("pagina do modelo: mostra o custo",
+      rotulosCampo.indexOf("custo") !== -1, rotulosCampo.join(" | "));
+check("pagina do modelo: mostra a ordem",
+      rotulosCampo.indexOf("ordem") !== -1, rotulosCampo.join(" | "));
+check("pagina do modelo: custo e ordem mostram o valor lido",
+      comTag(arvoreModelo, "Campo").some(function (n) {
+        if (!n.props || n.props.rotulo !== "custo") return false;
+        return (n.filhos || []).some(function (f) {
+          return f && f.props && String(f.props.valor) === "0.28";
+        });
+      }));
 check("pagina do modelo: tem validar, gravar e descartar",
       rotulosModelo.indexOf("Validar") !== -1
       && rotulosModelo.some(function (r) { return r.indexOf("Gravar e voltar") !== -1; })
