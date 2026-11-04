@@ -123,10 +123,21 @@ class Cenario:
         return {"model": "deepseek-flash", "messages": msgs}
 
     def passo(self, texto: str, indice: int, *, turn_id: Any, api: int) -> dict:
-        return self.plugin.middleware_llm_request(
+        pedido = self.plugin.middleware_llm_request(
             request=self.pedido_turno(texto, indice), session_id="s1",
             model="deepseek-flash", provider="deepseek",
             turn_id=turn_id, api_call_count=api)
+        # O ciclo completo, como o core o faz: depois da chamada escreve-se a
+        # `resposta`. Sem isto o harness media metade do caminho — e, desde que o
+        # `sem_troca` saiu, e na `resposta` que vivem o rasto e o `pin` de cada
+        # chamada (a unica prova de que o turno nao oscilou).
+        self.plugin.pos_resposta(
+            session_id="s1", model="deepseek-flash", provider="deepseek",
+            response_model=self.agente.model, finish_reason="stop",
+            usage={"input_tokens": 1000, "output_tokens": 40},
+            platform="api_server", turn_id=turn_id, api_call_count=api,
+            api_duration=0.4, context_length=128000)
+        return pedido
 
     def eventos(self) -> list[dict]:
         caminho = self.plugin.gestor.caminho_ledger()
@@ -136,8 +147,13 @@ class Cenario:
                 caminho.read_text(encoding="utf-8").splitlines() if linha.strip()]
 
     def decididos(self) -> list[dict]:
+        """Eventos de decisao por chamada: `troca*` e os `sem_*`."""
         return [e for e in self.eventos()
                 if str(e.get("evento") or "").startswith(("troca", "sem_"))]
+
+    def respostas(self) -> list[dict]:
+        """As linhas `resposta`, que desde 2026-11-04 levam o rasto e o `pin`."""
+        return [e for e in self.eventos() if e.get("evento") == "resposta"]
 
 
 def testes() -> None:
@@ -321,23 +337,28 @@ def testes() -> None:
     assert c8.plugin._analise_modelo_mod.classificar is classificar_mau
     for i in range(6):
         c8.passo("corrige isto", i, turn_id="sessao:sessao:f8e7d6c5", api=i)
-    ev8 = c8.decididos()
+    ev8 = c8.eventos()
+    resp8 = c8.respostas()
     com_erro = [e for e in ev8 if e.get("classificador_erro")]
     com_falha = [e for e in ev8 if (e.get("classificador") or {}).get("falhou")]
     check("o classificador corre uma vez num turno de 6 pedidos", chamadas["n"] == 1,
           f"classificar={chamadas['n']}")
-    check("seis eventos no ledger", len(ev8) == 6, f"{len(ev8)}")
-    check("a falha aparece num so evento", len(com_erro) == 1, f"{len(com_erro)}")
+    check("seis respostas no ledger", len(resp8) == 6, f"{len(resp8)}")
+    check("a falha aparece num so evento em todo o ledger", len(com_erro) == 1,
+          f"{len(com_erro)}")
     check("`classificador.falhou` tambem so num", len(com_falha) == 1, f"{len(com_falha)}")
-    check("o primeiro evento e o que a carrega",
-          bool(ev8 and ev8[0].get("classificador_erro")),
-          str([bool(e.get("classificador_erro")) for e in ev8]))
-    check("os passos seguintes declaram-na como herdada",
-          all(e.get("classificador_erro_herdado") for e in ev8[1:]),
-          str([bool(e.get("classificador_erro_herdado")) for e in ev8]))
-    niveis8 = {e.get("nivel") for e in ev8}
+    check("e o evento que a carrega e a primeira resposta do turno",
+          bool(resp8 and resp8[0].get("classificador_erro")),
+          str([bool(e.get("classificador_erro")) for e in resp8]))
+    check("as respostas seguintes nao repetem o rasto",
+          all("classificador_erro" not in e for e in resp8[1:]),
+          str([sorted(k for k in e if k.startswith("classificador")) for e in resp8]))
+    check("o `pin` de cada chamada continua na resposta",
+          [e.get("pin") for e in resp8] == ["novo"] + ["reutilizado"] * 5,
+          str([e.get("pin") for e in resp8]))
+    niveis8 = {e.get("nivel") for e in resp8}
     check("a falha nao desestabiliza o nivel: heuristica pinada nos seis",
-          len(niveis8) == 1 and ev8[0].get("pin") == "novo", str(niveis8))
+          len(niveis8) == 1, str(niveis8))
 
 
 def main() -> int:

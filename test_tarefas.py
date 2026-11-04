@@ -53,6 +53,12 @@ class Tarefas(unittest.TestCase):
         p.middleware_llm_request(request={'model': self.agent.model, 'messages':
             (history or []) + [{'role': 'user', 'content': text}]},
             session_id='tasks-test', provider=self.agent.provider)
+        # O desfecho da chamada: e na `resposta` que a decisao fica registada
+        # desde que o `sem_troca` saiu, e ela e o ultimo evento do turno.
+        p.pos_resposta(session_id='tasks-test', model=self.agent.model,
+                       provider=self.agent.provider, response_model=self.agent.model,
+                       finish_reason='stop', usage={'total_tokens': 10},
+                       platform='api_server')
         return self.events[-1]
 
     def test_task_priority_above_complexity(self):

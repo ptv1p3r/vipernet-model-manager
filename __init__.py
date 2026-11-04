@@ -180,8 +180,82 @@ _ultima_decisao: dict[str, dict[str, Any]] = {}
 # Decisao fixada por turno: nivel, tarefa, origem e rota do primeiro pedido.
 # A chave e o `turn_id` do core (sessao:sessao:8hex) ou, sem ele, um hash do
 # texto — nunca o texto, para o ledger continuar sem conversa.
-_turno: dict[str, dict[str, Any]] = {}
+_turno: dict[str, Any] = {}
 _TURNO_MAX = 500
+
+#: Rasto de decisao por turno. O rasto vivia no evento `sem_troca`, escrito em
+#: **cada** chamada de API com o mesmo conteudo: medido a 2026-11-04, 11 129
+#: linhas para 4 044 turnos, com o `classificador` repetido em 95% delas. Passa a
+#: viajar na linha `resposta` (que ja existe uma vez por turno), uma vez por
+#: turno e de novo quando a decisao muda; `sem_troca` deixa de existir.
+_trace_resposta: dict[str, str] = {}
+_TRACE_MAX = 800
+#: O que nunca viaja no rasto: `sessao`/`passo`/`turno` mudam por chamada (e
+#: `sessao`/`turno` ja estao na linha), `motor`/`inst` ja vaem na `resposta`.
+_TRACE_EXCLUI = frozenset({"sessao", "passo", "turno", "motor", "inst"})
+#: Subconjunto que define "a decisao mudou". Medidas que crescem so porque a
+#: conversa cresceu (`sinais`, `triagem`, `ms`) ficam de fora: dentro das que
+#: contam, a variacao real e de 13 transicoes (nivel), 42 (score), 45
+#: (classificador), 211 (tarefa) e 227 (sinais) em 11 129 linhas. Incluir as
+#: medidas volateis tornava o corte nulo (3% em vez de 100%).
+_TRACE_ESTAVEL = (
+    "nivel", "nivel_efetivo", "tarefa", "origem", "acesso", "score",
+    "classificador", "classificador_erro", "classificador_motivo", "esforco",
+    "superficie", "superficie_fonte", "superficie_regra",
+    "indecisao", "realimentacao", "excecao", "excecao_motivo", "degradado_de",
+    "escolhido_por_janela", "fonte_turno", "entrada", "exige",
+)
+#: `pin` e `rota_pin` ficam FORA de proposito: mudam em cada chamada
+#: (`novo` -> `reutilizado`) e dentro da assinatura faziam o rasto repetir-se em
+#: todas as chamadas do turno — exactamente o que se queria cortar. Medido a
+#: 2026-11-04: com eles, um turno de 2 chamadas escrevia o rasto 2 vezes.
+
+#: Campos que so a linha `resposta`/`erro` leva. Nos eventos de troca seriam uma
+#: segunda copia do mesmo rasto — e fizeram com que uma falha do classificador
+#: contasse duas vezes no painel (na `troca` e na primeira `resposta`). Os
+#: eventos de troca ficam com o resumo: nivel, tarefa, origem, score, esforco,
+#: de/para. Medido a 2026-11-04: `classificador` era 41,6% do peso do rasto.
+_TRACE_PESADO = frozenset({
+    "classificador", "classificador_erro", "classificador_erro_herdado",
+    "classificador_motivo", "sinais", "triagem", "superficie",
+    "superficie_fonte", "superficie_regra", "kw_platform", "plataforma_kw",
+    "exige", "escolhido_por_janela",
+})
+
+
+def resumo_de(base: dict[str, Any]) -> dict[str, Any]:
+    """O resumo da decisao para os eventos de troca (sem o rasto pesado)."""
+    return {k: v for k, v in base.items() if k not in _TRACE_PESADO}
+
+
+def trace_de(base: dict[str, Any]) -> dict[str, Any]:
+    """O rasto que explica a decisao do turno, sem o que muda por chamada."""
+    return {k: v for k, v in base.items()
+            if k not in _TRACE_EXCLUI and v is not None and v != ""}
+
+
+def _assinatura(valor: Any) -> str:
+    try:
+        bruto = json.dumps(valor, sort_keys=True, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        bruto = repr(valor)
+    return hashlib.sha256(bruto.encode("utf-8")).hexdigest()[:16]
+
+
+def trace_para_resposta(chave: str, trace: dict[str, Any]) -> bool:
+    """True quando esta e a primeira linha do turno a levar este rasto.
+
+    O estado e pequeno e limitado (800 chaves) e limpa-se de uma vez quando
+    enche: e deteccao de repeticao, nao historico.
+    """
+    assinatura = _assinatura(trace)
+    with _lock:
+        if _trace_resposta.get(chave) == assinatura:
+            return False
+        _trace_resposta[chave] = assinatura
+        if len(_trace_resposta) > _TRACE_MAX:
+            _trace_resposta.clear()
+        return True
 
 #: Identidade desta instancia do modulo. Uma recarga de plugins faz
 #: `sys.modules.pop` e reimporta, logo `_turno` nasce vazio a meio do que pode
@@ -1028,7 +1102,8 @@ def middleware_llm_request(
                 base["classificador_motivo"] = classificador_motivo
             if not nivel:
                 _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
-                                 origem=base["origem"], acesso="", entrada="")
+                                 origem=base["origem"], acesso="", entrada="",
+                                 trace=trace_de(base))
                 _registar({**base, "evento": "reset"}, registar=registar)
                 return None
             if associada:
@@ -1063,7 +1138,8 @@ def middleware_llm_request(
                     "classificador_erro": base.get("classificador_erro"),
                 })
         _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
-                         origem=base["origem"], acesso="", entrada="")
+                         origem=base["origem"], acesso="", entrada="",
+                         trace=trace_de(base))
         if not gestor.catalogo_utilizavel(pcfg):
             _registar({**base, "evento": "sem_catalogo"}, registar=registar)
             return None
@@ -1220,20 +1296,23 @@ def middleware_llm_request(
         _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
                          origem=base["origem"], acesso=entrada.get("acesso", ""),
                          entrada=entrada["id"], escolhido_provider=rota["provider"],
-                         escolhido_modelo=entrada["modelo"])
+                         escolhido_modelo=entrada["modelo"],
+                         pin=base.get("pin"), rota_pin=base.get("rota_pin"),
+                         turno=base.get("turno"), fonte_turno=base.get("fonte_turno"),
+                         trace=trace_de(base))
         atual = {"provider": (provider or "").strip().lower(),
                  "modelo": request.get("model") or model or ""}
         if agente is None:
             # Sem agente nao ha troca de provider: so reescreve o nome, e so quando
             # o destino pertence a rota actual — o limite da v1, mantido como rede.
             if rota["provider"].lower() != atual["provider"] or entrada["modelo"] == atual["modelo"]:
-                _registar({**base, "evento": "sem_agente", "entrada": entrada["id"],
+                _registar({**resumo_de(base), "evento": "sem_agente", "entrada": entrada["id"],
                            "acesso": entrada.get("acesso", ""),
                            "de": atual}, registar=registar)
                 return None
             pedido, esforco_fio = _pedido_com_esforco(
                 {**request, "model": entrada["modelo"]}, entrada, rota, session_id)
-            _registar({**base, "evento": "troca_so_modelo", "de": atual["modelo"],
+            _registar({**resumo_de(base), "evento": "troca_so_modelo", "de": atual["modelo"],
                        "para": entrada["modelo"], "entrada": entrada["id"],
                        "acesso": entrada.get("acesso", ""),
                        "esforco": esforco_fio or "nao_aplicado",
@@ -1247,10 +1326,10 @@ def middleware_llm_request(
             # repoe-se quando a entrada nao declara nenhum).
             esforco_agente = _aplicar_esforco(agente, entrada, session_id)
             pedido, esforco_fio = _pedido_com_esforco(request, entrada, rota, session_id)
-            _registar({**base, "evento": "sem_troca", "rota": destino,
-                       "entrada": entrada["id"], "acesso": entrada.get("acesso", ""),
-                       "esforco": esforco_agente or "nao_declarado",
-                       "ms": round((time.monotonic() - inicio) * 1000, 1)}, registar=registar)
+            # Aqui escrevia-se o evento `sem_troca` — em cada chamada de API, com
+            # o mesmo rasto. O rasto viaja agora na linha `resposta` (uma vez por
+            # turno, e de novo quando a decisao muda), e o desfecho "nao trocou"
+            # le-se de la pelo que a linha ja diz: `escolhido` == o modelo vivo.
             if esforco_fio:
                 return {"request": pedido, "source": NOME,
                         "reason": f"{perfil}:complexidade={nivel}:esforco={esforco_fio}"}
@@ -1261,7 +1340,7 @@ def middleware_llm_request(
             with _lock:
                 _maus_expira[(perfil, entrada["provider"].lower(), entrada["modelo"])] = \
                     time.monotonic() + _TTL_MAU
-            _registar({**base, "evento": "falha_troca", "entrada": entrada["id"],
+            _registar({**resumo_de(base), "evento": "falha_troca", "entrada": entrada["id"],
                        "acesso": entrada.get("acesso", ""),
                        "de": destino, "erro": f"{type(exc).__name__}: {exc}"[:300]},
                       registar=registar)
@@ -1271,7 +1350,7 @@ def middleware_llm_request(
         esforco_agente = _aplicar_esforco(agente, entrada, session_id)
         pedido, esforco_fio = _pedido_com_esforco(
             {**request, "model": entrada["modelo"]}, entrada, rota, session_id)
-        _registar({**base, "evento": "troca", "entrada": entrada["id"], "de": destino,
+        _registar({**resumo_de(base), "evento": "troca", "entrada": entrada["id"], "de": destino,
                    "acesso": entrada.get("acesso", ""),
                    "para": aplicado, "fonte_credencial": rota.get("source", ""),
                    "esforco": esforco_agente or "nao_declarado",
@@ -1370,6 +1449,11 @@ def pos_resposta(
             entrada["tarefa"] = decisao["tarefa"]
         if decisao.get("origem"):
             entrada["origem"] = decisao["origem"]
+        # Que entrada do catalogo serviu esta chamada. E um facto de cada chamada
+        # (nao do turno) e custa ~10 B: sem ele a linha diz o nivel mas nao o
+        # modelo escolhido, e ler o cartao obrigava a juntar com a linha da troca.
+        if decisao.get("entrada"):
+            entrada["entrada"] = decisao["entrada"]
         if decisao.get("escolhido_provider"):
             entrada["escolhido"] = {
                 "provider": decisao["escolhido_provider"],
@@ -1416,6 +1500,27 @@ def pos_resposta(
                 }
                 if len(_resultado) > 500:
                     _resultado.clear()
+        # O pin por chamada e a prova de que o turno nao oscilou: e nesta linha que
+        # a aritmetica `reutilizados == chamadas - turnos` se mede agora que o
+        # `sem_troca` deixou de existir. Dois campos curtos, sem repetir o rasto.
+        if decisao.get("pin"):
+            entrada["pin"] = decisao["pin"]
+        if decisao.get("rota_pin"):
+            entrada["rota_pin"] = decisao["rota_pin"]
+        # A chave do turno em todas as linhas: e o que permite medir
+        # `reutilizados == chamadas - turnos` sem depender do rasto.
+        if decisao.get("turno"):
+            entrada["turno"] = decisao["turno"]
+        if decisao.get("fonte_turno"):
+            entrada["fonte_turno"] = decisao["fonte_turno"]
+        # Rasto completo (score, sinais, classificador, triagem, superficie,
+        # excecoes): uma vez por turno e de novo quando a decisao muda. E a unica
+        # casa do rasto desde que o `sem_troca` deixou de ser escrito.
+        trace = decisao.get("trace")
+        if isinstance(trace, dict) and trace:
+            if trace_para_resposta(f"{session_id}\x1f{turn_id or ''}", trace):
+                for _campo, _valor in trace.items():
+                    entrada.setdefault(_campo, _valor)
         _registar(entrada, registar=True)
     except Exception:
         return
@@ -1518,6 +1623,13 @@ def ao_erro(
                 "provider": decisao["escolhido_provider"],
                 "modelo": decisao.get("escolhido_modelo", ""),
             }
+        # O pin por chamada e a prova de que o turno nao oscilou. Vive na linha
+        # `resposta` (ver `pos_resposta`); aqui so o rasto, como rede de seguranca.
+        trace = decisao.get("trace")
+        if isinstance(trace, dict) and trace:
+            if trace_para_resposta(f"{session_id}\x1f{turn_id or ''}", trace):
+                for _campo, _valor in trace.items():
+                    entrada.setdefault(_campo, _valor)
         _registar(entrada, registar=True)
     except Exception:
         return

@@ -30,6 +30,20 @@ from pathlib import Path
 from typing import Any
 
 AQUI = Path(__file__).resolve().parent
+
+
+def _ler_ledger(g: Any) -> list[dict]:
+    """As linhas do ledger de um cenario, tolerando a ausencia do ficheiro.
+
+    Desde 2026-11-04 o caminho do pedido so escreve quando ha desfecho
+    (`troca`/`sem_*`): um pedido sem troca deixa o rasto para a linha `resposta`,
+    e um cenario que so exercita o pedido pode nao ter ledger nenhum.
+    """
+    caminho = g.caminho_ledger()
+    if not caminho.exists():
+        return []
+    return [json.loads(l) for l in caminho.read_text(encoding="utf-8").splitlines()
+            if l.strip()]
 _RESULTADOS: list[tuple[str, bool, str]] = []
 
 
@@ -402,8 +416,17 @@ def testes_plugin() -> None:
     def chamar(agent=None, request=None, session_id="", provider="deepseek",
                model="deepseek-flash"):
         def _w(agent=None, request=None, session_id="", provider="", model=""):
-            return plugin.middleware_llm_request(
+            r = plugin.middleware_llm_request(
                 request=request, session_id=session_id, model=model, provider=provider)
+            # O ciclo completo, como o core o faz: depois da chamada escreve-se a
+            # `resposta`. Desde que o `sem_troca` saiu (2026-11-04) e nela que o
+            # rasto fica — nivel, degradacao, triagem, classificador, superficie.
+            # Sem isto o selftest media metade do ciclo e perdia a degradacao.
+            plugin.pos_resposta(
+                session_id=session_id, model=model, provider=provider,
+                response_model=model, finish_reason="stop",
+                usage={"total_tokens": 10}, platform="api_server")
+            return r
         return _w(agent=agent, request=request, session_id=session_id,
                   provider=provider, model=model)
 
@@ -423,7 +446,7 @@ def testes_plugin() -> None:
         ag = FakeAgent(sid="s1")
         r = chamar(agent=ag, request=pedido("Implementa isto. complexidade: alta"), session_id="s1")
         check("perfil ausente da config: pedido intacto", r is None and not ag.chamadas)
-        linhas = [json.loads(l) for l in g.caminho_ledger().read_text().splitlines()]
+        linhas = _ler_ledger(g)
         check("perfil ausente fica registado",
               any(l.get("evento") == "perfil_nao_gerido" and l.get("perfil") == "estranho"
                   for l in linhas), str(linhas[-3:]))
@@ -436,7 +459,7 @@ def testes_plugin() -> None:
         ag = FakeAgent(sid="s2")
         r = chamar(agent=ag, request=pedido("complexidade: alta"), session_id="s2")
         check("perfil desligado: pedido intacto", r is None and not ag.chamadas)
-        linhas = [json.loads(l) for l in g.caminho_ledger().read_text().splitlines()]
+        linhas = _ler_ledger(g)
         check("perfil desligado fica registado",
               any(l.get("evento") == "perfil_desligado" for l in linhas))
 
@@ -447,7 +470,7 @@ def testes_plugin() -> None:
         ag = FakeAgent(sid="s3")
         r = chamar(agent=ag, request=pedido("complexidade: alta"), session_id="s3")
         check("interruptor global: pedido intacto", r is None and not ag.chamadas)
-        linhas = [json.loads(l) for l in g.caminho_ledger().read_text().splitlines()]
+        linhas = _ler_ledger(g)
         check("interruptor global fica registado",
               any(l.get("evento") == "desligado" for l in linhas))
 
@@ -455,7 +478,7 @@ def testes_plugin() -> None:
         os.environ["VMM_DIR"] = str(_dir_com(_cfg_base()))
         ag = FakeAgent(sid="s4")
         r = chamar(agent=ag, request=pedido("complexidade: alta"), session_id="s4")
-        linhas = [json.loads(l) for l in g.caminho_ledger().read_text().splitlines()]
+        linhas = _ler_ledger(g)
         degradou = [l for l in linhas if l.get("degradado_de") == "alta"
                     and l.get("perfil") == "pessoal"]
         check("sem rota no nivel: degrada para o nivel abaixo em vez de desistir",
@@ -473,7 +496,7 @@ def testes_plugin() -> None:
         plugin.gestor.perfil_atual = lambda agente=None: "trabalho"
         ag = FakeAgent(sid="s5")
         chamar(agent=ag, request=pedido("x" * 120000 + " complexidade: alta"), session_id="s5")
-        linhas = [json.loads(l) for l in g.caminho_ledger().read_text().splitlines()]
+        linhas = _ler_ledger(g)
         tri = [l for l in linhas if l.get("triagem") and l.get("perfil") == "trabalho"]
         check("contexto acima do limiar fica registado na triagem", bool(tri), str(linhas[-2:]))
         check("triagem nao altera um nivel que ja era alto",
@@ -527,7 +550,7 @@ def testes_plugin() -> None:
         r = chamar(agent=ag, request=pedido("complexidade: alta"), session_id="s8")
         check("rota sem credencial e saltada", len(ag.chamadas) == 1 and ag.model == "deepseek-v4-pro",
               f"{ag.model} {ag.chamadas}")
-        linhas = [json.loads(l) for l in g.caminho_ledger().read_text().splitlines()]
+        linhas = _ler_ledger(g)
         check("salto por credencial fica registado",
               any(l.get("evento") == "sem_rota" and l.get("perfil") == "trabalho" for l in linhas))
 
@@ -538,12 +561,25 @@ def testes_plugin() -> None:
         plugin.gestor.perfil_atual = lambda agente=None: "pessoal"
         ag = FakeAgent(sid="s9")
         chamar(agent=ag, request=pedido("ola, bom dia"), session_id="s9")
-        linhas = [json.loads(l) for l in g.caminho_ledger().read_text().splitlines()]
-        decisao = [l for l in linhas if l.get("sessao") == "s9" and l.get("evento") in
-                   ("troca", "sem_troca")]
-        check("texto trivial e classificado leve",
-              bool(decisao) and decisao[-1].get("nivel") == "leve",
-              str(decisao[-1] if decisao else None))
+        caminho_ledger = g.caminho_ledger()
+        # O ledger pode nao existir: sem troca nada se escreve no caminho do
+        # pedido desde que o `sem_troca` saiu (o rasto vai na `resposta`), e o
+        # selftest exercita so o pedido.
+        linhas = ([json.loads(l) for l in caminho_ledger.read_text().splitlines()
+                   if l.strip()] if caminho_ledger.exists() else [])
+        # O rasto deixou de ser um evento por chamada: le-se a decisao memorizada,
+        # que e exactamente a fonte da linha `resposta`.
+        with plugin._lock:
+            decisao = dict(plugin._ultima_decisao.get("s9") or {})
+        check("texto trivial e classificado leve", decisao.get("nivel") == "leve",
+              str(decisao))
+        check("o rasto da decisao viaja na resposta, nao num evento por chamada",
+              isinstance(decisao.get("trace"), dict)
+              and (decisao.get("trace") or {}).get("nivel") == "leve",
+              str(sorted((decisao.get("trace") or {}))[:8]))
+        check("`sem_troca` deixou de ser escrito",
+              not any(l.get("evento") == "sem_troca" for l in linhas),
+              str([l.get("evento") for l in linhas][-4:]))
 
         # 10. histerese: alta e depois leves seguidos na mesma sessao.
         #     `descer_apos: 2` => a descida so se aplica na SEGUNDA avaliacao abaixo.
@@ -563,7 +599,7 @@ def testes_plugin() -> None:
         # 11. reset explicito
         ag = FakeAgent(sid="s11")
         chamar(agent=ag, request=pedido("complexidade: auto"), session_id="s11")
-        linhas = [json.loads(l) for l in g.caminho_ledger().read_text().splitlines()]
+        linhas = _ler_ledger(g)
         check("marcador auto regista reset",
               any(l.get("evento") == "reset" and l.get("sessao") == "s11" for l in linhas))
 
@@ -584,7 +620,7 @@ def testes_plugin() -> None:
         plugin.pos_resposta(session_id="s14", model="deepseek-flash",
                             response_model="deepseek-flash-2026", finish_reason="stop",
                             usage={"total_tokens": 7})
-        linhas = [json.loads(l) for l in g.caminho_ledger().read_text().splitlines()]
+        linhas = _ler_ledger(g)
         resp = [l for l in linhas if l.get("evento") == "resposta" and l.get("sessao") == "s14"]
         check("resposta registada com perfil e modelo do provider",
               bool(resp) and resp[-1].get("perfil") == "pessoal"
@@ -596,7 +632,8 @@ def testes_plugin() -> None:
         ag = FakeAgent(sid="s15")
         chamar(agent=ag, request=pedido(f"complexidade: leve {texto}"), session_id="s15")
         check("ledger nao contem texto de conversa",
-              texto not in g.caminho_ledger().read_text())
+              texto not in (g.caminho_ledger().read_text()
+                            if g.caminho_ledger().exists() else ""))
 
         # 16. resposta regista provider/modelo efectivos, superficie, acesso e correlacao
         os.environ["VMM_DIR"] = str(_dir_com(_cfg_base()))
@@ -607,7 +644,7 @@ def testes_plugin() -> None:
                             platform="cli", response_model="deepseek-flash-2026",
                             finish_reason="stop", api_request_id="req-42", turn_id="turn-7",
                             task_id="task-9", usage={"total_tokens": 3})
-        linhas = [json.loads(l) for l in g.caminho_ledger().read_text().splitlines()]
+        linhas = _ler_ledger(g)
         resp = [l for l in linhas if l.get("evento") == "resposta" and l.get("sessao") == "s16"]
         check("resposta regista provider efectivo",
               bool(resp) and resp[-1].get("provider") == "deepseek",
@@ -628,7 +665,7 @@ def testes_plugin() -> None:
         # 17. superficie desconhecida quando o hook nao a entrega
         plugin.pos_resposta(session_id="s16", model="deepseek-flash", provider="deepseek",
                             response_model="x", finish_reason="stop")
-        linhas = [json.loads(l) for l in g.caminho_ledger().read_text().splitlines()]
+        linhas = _ler_ledger(g)
         resp = [l for l in linhas if l.get("evento") == "resposta" and l.get("sessao") == "s16"]
         check("resposta sem platform usa 'desconhecido'",
               bool(resp) and resp[-1].get("superficie") == "desconhecido",
@@ -996,8 +1033,16 @@ def testes_classificador() -> None:
         return {"model": modelo, "messages": [{"role": "user", "content": texto}]}
 
     def chamar(agent, texto, sessao, provider="deepseek", model="deepseek-flash"):
-        return plugin.middleware_llm_request(
+        r = plugin.middleware_llm_request(
             request=pedido(texto, model), session_id=sessao, model=model, provider=provider)
+        # Ciclo completo: a `resposta` e escrita depois da chamada, e desde que o
+        # `sem_troca` saiu e nela que o rasto do classificador aparece.
+        plugin.pos_resposta(
+            session_id=sessao, model=getattr(agent, "model", model) or model,
+            provider=getattr(agent, "provider", provider) or provider,
+            response_model=getattr(agent, "model", model), finish_reason="stop",
+            usage={"total_tokens": 10}, platform="api_server")
+        return r
 
     def linhas() -> list[dict]:
         caminho = g.caminho_ledger()
