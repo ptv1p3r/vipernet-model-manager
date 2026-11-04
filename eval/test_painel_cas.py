@@ -54,7 +54,7 @@ def cfg_actual() -> dict:
 BASE = {
     "versao": 3, "activo": True, "registar": True,
     "estrategia": {"modo": "prioridade", "por": "sessao"},
-    "analise": {"limiares": {"leve": 0.35, "alta": 0.7}},
+    "analise": {"limiares": {"media": 0.35, "alta": 0.7}},
     "perfis": {
         "a": {"activo": True, "catalogo": [
             {"id": "m1", "provider": "deepseek", "modelo": "deepseek-flash",
@@ -102,7 +102,7 @@ try:
     # Escritor concorrente a MUDAR conteudo: gravar o mesmo conteudo nao muda o
     # `rev` (a impressao e do conteudo), e o teste mediria o nada.
     mover, _ = gestor.carregar()
-    mover["analise"]["histerese"] = 0.25
+    mover["analise"]["descer_apos"] = 3
     gestor.gravar(mover)
     r = cliente.post(f"{P}/estrategia", json={"ambito": "global", "rev": rev_velho,
                                               "modo": "rodizio"})
@@ -123,7 +123,7 @@ try:
     # 6. modelo com rev velho -> 409 (o painel nao aceita montar sobre o passado)
     rev_velho = gestor.rev(cfg_actual())
     mover, _ = gestor.carregar()
-    mover["analise"]["histerese"] = 0.3
+    mover["analise"]["descer_apos"] = 4
     gestor.gravar(mover)
     r = cliente.post(f"{P}/modelo", json={
         "perfil": "a", "rev": rev_velho,

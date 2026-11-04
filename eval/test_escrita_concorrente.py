@@ -33,7 +33,7 @@ def check(nome: str, cond: bool, detalhe: str = "") -> None:
 def _base(tmp: Path) -> Path:
     cfg = {
         "versao": 3, "activo": True, "registar": True,
-        "analise": {"limiares": {"leve": 0.35, "alta": 0.7}},
+        "analise": {"limiares": {"media": 0.35, "alta": 0.7}},
         "perfis": {
             "a": {"activo": True, "catalogo": [
                 {"id": "m1", "provider": "deepseek", "modelo": "deepseek-flash",
