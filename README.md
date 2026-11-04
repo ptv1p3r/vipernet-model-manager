@@ -1045,6 +1045,8 @@ vmm classificador [ver|on|off] [--perfil NOME] [--provider P] [--modelo M]
                  [--esforco baixo|medio|alto|-] [--formato auto|on|off]
 vmm classificador lote "texto1" "texto2" ...   N pedidos num só pedido (contexto longo)
 vmm log [-n N] [--perfil NOME] [--provider P] [--sessao S] [--evento E]
+vmm retencao [--dias N] [--aplicar]   ledger: tamanho e compactação do detalhe antigo
+vmm backups [--manter N] [--semanais N] [--aplicar]   backups do config: contagem e poda
 vmm caminho                          caminhos de config e ledger
 vmm recarregar                       recarrega plugins no gateway
 ```
@@ -1059,6 +1061,47 @@ chaves.
 
 Códigos de saída: `0` ok · `1` há problema · `2` uso inválido · `3` não
 encontrado.
+
+## Retenção: o ledger e os backups param de crescer
+
+O ledger cresce a cada chamada ao provider (~5,8 MB/dia medidos a 2026-11-04) e
+o `gravar` do config deixa um `config.json.bak-<carimbo>` por escrita — 132
+acumulados em dois dias e meio. Duas políticas independentes, ambas **aditivas**:
+nada desaparece sem deixar os agregados.
+
+**Ledger** (`vmm retencao`). As linhas de dias **completos** com mais de
+`dias_completo` dias são substituídas por um evento `resumo_dia` por dia, com
+contagens por evento, perfil, nível, modelo, origem e superfície, somas de
+tokens e leituras do classificador. Dia **cortado a meio não se dobra**: um
+resumo parcial lê-se como o total do dia e mente sobre o que falta — fica
+inteiro até à compactação seguinte e sai em `dias_parciais`. Linhas ilegíveis
+não se apagam. O resumo vai para o **início** do ficheiro; o painel lê do fim
+para trás e filtra por evento, por isso não o vê — os leitores actuais não
+mudam. Medido numa cópia do ledger real com o dia 2026-11-02 dobrado: 7 301
+linhas exactas, total preservado (23 084 = 23 084), 17,35 MB → 13,23 MB.
+
+**Backups** (`vmm backups`). Ficam os `backups_manter` mais recentes mais
+`backups_semanais` por semana ISO para lá desse número. Os marcos postos a mão
+(`config.json.bak-antes-dos-free-reais`) não são datados, não contam e nunca são
+tocados. Medido: 132 datados → 11, 121 removidos, 0,53 MB libertados, 3 marcos
+intactos.
+
+Os limites vivem no bloco opcional `retencao` do config — um número, uma casa:
+
+```json
+"retencao": { "dias_completo": 7, "backups_manter": 10, "backups_semanais": 1 }
+```
+
+Chaves fechadas: `retencao.lixo` é recusada, `dias_completo: -1` e
+`backups_manter: 0` também (um `0` explícito em `dias_completo` é legítimo — não
+compacta nada). Ausente, valem os padrões acima. Sem `--aplicar` nada é escrito:
+o tamanho mede-se primeiro. O job diário `/opt/data/scripts/vmm-retencao.py`
+corre os dois comandos e **cala-se quando não há nada a fazer** — um aviso
+diário a dizer que não fez nada é um aviso que ninguém lê.
+
+O append do ledger toma uma trava **partilhada** em `uso.jsonl.lock`; a
+compactação toma-a em modo exclusivo. Sem isso, o `os.replace` de uma
+compactação deitava fora as linhas escritas entre a leitura e a troca.
 
 ## Escolha, por turno
 

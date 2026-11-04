@@ -61,6 +61,14 @@ def _analise_modelo():
 g = _gestor()
 
 
+def _retencao():
+    """Compactacao do ledger e poda dos backups — outro modulo, outra casa."""
+    spec = importlib.util.spec_from_file_location("vmm_retencao", _AQUI / "retencao.py")
+    mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
+
+
 def _cfg() -> tuple[dict[str, Any], list[str]]:
     return g.carregar()
 
@@ -746,6 +754,92 @@ def cmd_superficie_rm(args) -> int:
     return 0
 
 
+def _retencao_efectiva(cfg: dict[str, Any]) -> dict[str, int]:
+    """Os numeros que valem: o declarado sobrepoe-se ao padrao, chave a chave."""
+    valores = dict(g.RETENCAO_PADRAO)
+    declarado = cfg.get("retencao")
+    if isinstance(declarado, dict):
+        for chave, valor in declarado.items():
+            if chave in valores and isinstance(valor, int) and not isinstance(valor, bool):
+                valores[chave] = valor
+    return valores
+
+
+def cmd_retencao(args) -> int:
+    """Estado do ledger; com `--aplicar`, dobra o detalhe antigo em resumo.
+
+    Sem `--aplicar` nao escreve nada — e o comando que se corre para ver o
+    tamanho antes de decidir. O padrao vem do bloco `retencao` do config.
+    """
+    cfg, erros = _cfg()
+    if erros:
+        return _erro("config com erros: " + "; ".join(erros))
+    rt = _retencao()
+    valores = _retencao_efectiva(cfg)
+    dias = args.dias if args.dias is not None else valores["dias_completo"]
+    if dias < 0:
+        return _erro("--dias tem de ser >= 0", 2)
+    caminho = g.caminho_ledger()
+    estado = rt.relatorio(caminho)
+    if "bytes" in estado:
+        print(f"ledger {caminho}")
+        print(f"  {estado['bytes'] / 1048576:.2f} MB, {estado['linhas']} linhas "
+              f"({estado['linhas_detalhe']} de detalhe, {estado['resumos']} resumos)")
+    else:
+        print(f"ledger {caminho} (inexistente)")
+        return 0
+    if not args.aplicar:
+        print(f"  politica: detalhe dos ultimos {dias} dias (correr --aplicar para compactar)")
+        return 0
+    resultado = rt.compactar(caminho, dias=dias)
+    if not resultado.get("aplicado"):
+        print(f"  nada a compactar (corte {resultado.get('corte')})")
+        return 0
+    antes = resultado.get("bytes_antes", 0)
+    depois = resultado.get("bytes_depois", 0)
+    print(f"  dobradas {resultado['dobradas']} linhas de {resultado['dias_dobrados']} dias "
+          f"em {resultado['resumos']} resumos")
+    print(f"  {antes / 1048576:.2f} MB -> {depois / 1048576:.2f} MB "
+          f"({100 * depois / max(antes, 1):.1f}%)")
+    if resultado.get("ilegiveis"):
+        print(f"  {resultado['ilegiveis']} linhas ilegiveis preservadas")
+    return 0
+
+
+def cmd_backups(args) -> int:
+    """Estado dos backups do config; com `--aplicar`, poda a rotina."""
+    cfg, erros = _cfg()
+    if erros:
+        return _erro("config com erros: " + "; ".join(erros))
+    rt = _retencao()
+    valores = _retencao_efectiva(cfg)
+    manter = args.manter if args.manter is not None else valores["backups_manter"]
+    semanais = args.semanais if args.semanais is not None else valores["backups_semanais"]
+    if manter < 1:
+        return _erro("--manter tem de ser >= 1", 2)
+    if semanais < 0:
+        return _erro("--semanais tem de ser >= 0", 2)
+    pasta = g.directorio()
+    estado = rt.relatorio(g.caminho_ledger(), pasta)
+    print(f"backups em {pasta}")
+    print(f"  {estado.get('backups_datados', 0)} datados, "
+          f"{estado.get('backups_manuais', 0)} a mao, "
+          f"{estado.get('backups_bytes', 0) / 1048576:.2f} MB")
+    if not args.aplicar:
+        print(f"  politica: ficam {manter} + {semanais}/semana (correr --aplicar para podar)")
+        return 0
+    resultado = rt.podar_backups(pasta, manter=manter, semanais=semanais)
+    if not resultado.get("aplicado"):
+        print("  nada a podar")
+        return 0
+    print(f"  removidos {resultado['removidos']} de {resultado['datados_antes']} datados "
+          f"({resultado['bytes_libertados'] / 1048576:.2f} MB livres), "
+          f"ficaram {resultado['datados_depois']}")
+    if resultado.get("semanais_guardados"):
+        print(f"  semanais preservados: {', '.join(resultado['semanais_guardados'])}")
+    return 0
+
+
 def cmd_simular(args) -> int:
     cfg, _ = _cfg()
     p = g.perfil_config(cfg, args.perfil)
@@ -1072,6 +1166,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("caminho", help="caminhos da config e do ledger")
     s.set_defaults(func=cmd_caminho)
+
+    # Retencao: sem `--aplicar` nada e escrito. O tamanho ve-se primeiro; so
+    # depois se decide. Os limites por omissao vem do bloco `retencao` do config,
+    # para o CLI e o job agendado usarem o mesmo numero.
+    s = sub.add_parser("retencao", help="ledger: tamanho e compactacao do detalhe antigo")
+    s.add_argument("--dias", type=int, help="dias de detalhe a manter (padrao: config)")
+    s.add_argument("--aplicar", action="store_true", help="compactar de facto")
+    s.set_defaults(func=cmd_retencao)
+
+    s = sub.add_parser("backups", help="backups do config: contagem e poda da rotina")
+    s.add_argument("--manter", type=int, help="quantos datados ficam (padrao: config)")
+    s.add_argument("--semanais", type=int, help="quantos por semana ISO para la dos primeiros")
+    s.add_argument("--aplicar", action="store_true", help="podar de facto")
+    s.set_defaults(func=cmd_backups)
 
     # A auditoria le o que o caminho unico ja grava. `rc 1` quando ha prova de
     # escrita por fora: um script de vigia pode limitar-se a olhar para o rc.

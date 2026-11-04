@@ -233,6 +233,43 @@ def teste_resumos_preservados() -> None:
 
 
 # ------------------------------------------------------------- 7. backups
+def teste_dia_parcial() -> None:
+    """Um dia cortado a meio nao se dobra: o resumo mentiria sobre o total."""
+    pasta = Path(tempfile.mkdtemp(prefix="vmm-ret-parc-"))
+    agora = datetime(2026, 11, 4, 12, 0, tzinfo=FUSO)
+    # Corte = 2026-11-03 12:00. O dia 3 tem eventos dos dois lados do corte.
+    linhas = [
+        _linha(datetime(2026, 11, 2, 10, 0, tzinfo=FUSO), "resposta", respondido_por="inteiro"),
+        _linha(datetime(2026, 11, 2, 23, 0, tzinfo=FUSO), "resposta", respondido_por="inteiro2"),
+        _linha(datetime(2026, 11, 3, 9, 0, tzinfo=FUSO), "resposta", respondido_por="antes"),
+        _linha(datetime(2026, 11, 3, 15, 0, tzinfo=FUSO), "resposta", respondido_por="depois"),
+        _linha(datetime(2026, 11, 4, 11, 0, tzinfo=FUSO), "resposta", respondido_por="hoje"),
+    ]
+    caminho = _ledger(pasta, linhas)
+    res = rt.compactar(caminho, dias=1, agora_=agora)
+    resumos = [e for e in _ler(caminho) if e.get("evento") == rt.EVENTO_RESUMO]
+    detalhe = [e for e in _ler(caminho) if e.get("evento") != rt.EVENTO_RESUMO]
+
+    check("so dobrou o dia inteiro", res.get("dias_dobrados") == 1,
+          str(res.get("dias_dobrados")))
+    check("o diainteiro foi o 2", [r["dia"] for r in resumos] == ["2026-11-02"],
+          str([r["dia"] for r in resumos]))
+    check("o dia 2 levou as duas linhas", resumos and resumos[0]["linhas"] == 2,
+          str(resumos[0]["linhas"] if resumos else None))
+    check("o dia cortado ficou inteiro no detalhe",
+          {e.get("respondido_por") for e in detalhe} == {"antes", "depois", "hoje"},
+          str(sorted(e.get("respondido_por", "") for e in detalhe)))
+    check("declarou o dia parcial", res.get("dias_parciais") == ["2026-11-03"],
+          str(res.get("dias_parciais")))
+
+    # E, passado o dia, ele dobra inteiro.
+    res2 = rt.compactar(caminho, dias=1, agora_=datetime(2026, 11, 5, 0, 5, tzinfo=FUSO))
+    resumos2 = {r["dia"]: r for r in _ler(caminho) if r.get("evento") == rt.EVENTO_RESUMO}
+    check("no dia seguinte o dia cortado dobra inteiro",
+          resumos2.get("2026-11-03", {}).get("linhas") == 2 and res2.get("aplicado") is True,
+          str(resumos2.get("2026-11-03", {}).get("linhas")))
+
+
 def teste_backups() -> None:
     pasta = Path(tempfile.mkdtemp(prefix="vmm-ret-bak-"))
     base = datetime(2026, 9, 1, 9, 0)
@@ -363,6 +400,7 @@ def main() -> int:
     teste_idempotente()
     teste_ilegiveis()
     teste_resumos_preservados()
+    teste_dia_parcial()
     teste_backups()
     teste_concorrencia()
     teste_relatorio()

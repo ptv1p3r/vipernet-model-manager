@@ -28,7 +28,9 @@ Regras de desenho:
 """
 from __future__ import annotations
 
+import contextlib
 import copy
+import fcntl
 import hashlib
 import importlib
 import importlib.util
@@ -230,6 +232,29 @@ def _config() -> dict[str, Any]:
         _cfg.update({"mtime": mtime, "dados": dados, "lido": agora,
                      "caminho": str(caminho)})
     return dados
+
+
+@contextlib.contextmanager
+def _trava_ledger(caminho: Path, *, exclusiva: bool = False):
+    """Trava cooperativa em ``<ficheiro>.lock`` — partilhada no append.
+
+    O `.lock` ao lado do ficheiro tem inode estavel; o proprio ledger nao, porque
+    a compactacao o troca com `os.replace`. Se a trava falhar (FS sem flock,
+    permissao), o append continua: perder a trava e degradar a compactacao, nao
+    perder o evento.
+    """
+    try:
+        fd = os.open(str(caminho) + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        yield
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX if exclusiva else fcntl.LOCK_SH)
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 def _append_linha(caminho: Path, linha: str) -> None:

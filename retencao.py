@@ -220,7 +220,9 @@ def compactar(caminho: str | Path, dias: int = DIAS_COMPLETO_PADRAO,
         resultado["bytes_antes"] = len(bruto)
         guardar: list[str] = []
         dobrar: list[dict[str, Any]] = []
+        por_linha: list[tuple[str, dict[str, Any], datetime]] = []
         ilegiveis = 0
+        sem_data = 0
         for linha in bruto.decode("utf-8", "replace").splitlines():
             if not linha.strip():
                 continue
@@ -240,13 +242,42 @@ def compactar(caminho: str | Path, dias: int = DIAS_COMPLETO_PADRAO,
                 guardar.append(linha)
                 continue
             instante = _instante(ev.get("ts"))
-            if instante is None or instante >= corte:
+            if instante is None:
+                # Sem `ts` nao se sabe de que dia e: fica e conta.
                 guardar.append(linha)
+                sem_data += 1
                 continue
-            dobrar.append(ev)
+            por_linha.append((linha, ev, instante))
+
+        # Um dia so se dobra **inteiro**. Um `resumo_dia` de um dia cortado a
+        # meio le-se como o total desse dia e mente sobre o que falta; o dia em
+        # que o corte cai fica de fora ate a compactacao seguinte. O criterio e
+        # o ultimo instante do dia, nao a linha.
+        maxima: dict[str, datetime] = {}
+        minima: dict[str, datetime] = {}
+        for _, _, instante in por_linha:
+            dia = _dia_local(instante)
+            if dia not in maxima or instante > maxima[dia]:
+                maxima[dia] = instante
+            if dia not in minima or instante < minima[dia]:
+                minima[dia] = instante
+        fechados = {dia for dia, fim in maxima.items() if fim < corte}
+
+        for linha, ev, instante in por_linha:
+            if _dia_local(instante) in fechados:
+                dobrar.append(ev)
+            else:
+                guardar.append(linha)
+        # «Parcial» e o dia que o corte atravessa — comeca antes e acaba depois.
+        # O dia de hoje, que comeca depois do corte, esta apenas aberto: chama-lo
+        # parcial seria ruido em todos os relatorios.
+        parcial = {dia for dia in maxima
+                   if dia not in fechados and minima[dia] < corte}
 
         if not dobrar:
-            resultado.update({"limpas": len(guardar), "dobradas": 0, "ilegiveis": ilegiveis})
+            resultado.update({"limpas": len(guardar), "dobradas": 0,
+                              "ilegiveis": ilegiveis, "sem_data": sem_data,
+                              "dias_parciais": sorted(parcial)})
             return resultado
 
         por_dia: dict[str, list[dict[str, Any]]] = {}
@@ -274,6 +305,8 @@ def compactar(caminho: str | Path, dias: int = DIAS_COMPLETO_PADRAO,
             "dias_dobrados": len(por_dia),
             "resumos": len(resumos_antigos) + len(resumos_novos),
             "ilegiveis": ilegiveis,
+            "sem_data": sem_data,
+            "dias_parciais": sorted(parcial),
             "bytes_depois": len(texto),
         })
     return resultado
