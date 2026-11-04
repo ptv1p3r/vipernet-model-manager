@@ -1542,6 +1542,27 @@ def testes_esforco() -> None:
         servidor.shutdown()
 
 
+def testes_rasto_do_turno() -> None:
+    """O rasto viaja uma vez por turno, e so quando a decisao muda.
+
+    Medido a 2026-11-04 num turno real: assinar o rasto inteiro fazia a
+    assinatura mudar em cada chamada (leva `sinais`, `triagem` e `ms`, que
+    crescem com a conversa) e o rasto repetia-se nas 6 chamadas do turno.
+    """
+    plugin = _mod("vmm_selftest_rasto", AQUI / "__init__.py")
+    decisao = {"nivel": "media", "origem": "modelo", "tarefa": None,
+               "sinais": {"chars": 10}, "ms": 5.0}
+    check("primeira chamada do turno leva o rasto",
+          plugin.trace_para_resposta("rasto-a", dict(decisao)))
+    outro = dict(decisao, sinais={"chars": 987}, ms=41.5)
+    check("medidas volateis nao repetem o rasto",
+          not plugin.trace_para_resposta("rasto-a", outro))
+    check("decisao diferente volta a escrever o rasto",
+          plugin.trace_para_resposta("rasto-a", dict(decisao, nivel="alta")))
+    check("turno diferente tem o seu proprio rasto",
+          plugin.trace_para_resposta("rasto-b", dict(decisao)))
+
+
 def testes_recarga_de_modulo() -> None:
     """O hot reload e a peca que evita reiniciar o gateway — prova-se a serio.
 
@@ -1612,6 +1633,7 @@ def main() -> int:
     testes_cli()
     testes_verificar()
     testes_recarga_de_modulo()
+    testes_rasto_do_turno()
     falhas = [n for n, ok, _ in _RESULTADOS if not ok]
     print(f"\n{len(_RESULTADOS) - len(falhas)}/{len(_RESULTADOS)} verificacoes OK")
     if falhas:

@@ -242,13 +242,24 @@ def _assinatura(valor: Any) -> str:
     return hashlib.sha256(bruto.encode("utf-8")).hexdigest()[:16]
 
 
+def _assinatura_decisao(trace: dict[str, Any]) -> str:
+    """A assinatura do que define a decisao — so os campos de `_TRACE_ESTAVEL`.
+
+    Assinar o rasto inteiro nao serve: leva medidas que crescem com a conversa
+    (`sinais`, `triagem`, `ms`) e a assinatura mudava em cada chamada, logo o
+    rasto repetia-se sempre. Medido a 2026-11-04 num turno real de 6 chamadas:
+    6 copias do rasto antes, 1 depois.
+    """
+    return _assinatura({k: trace.get(k) for k in _TRACE_ESTAVEL if k in trace})
+
+
 def trace_para_resposta(chave: str, trace: dict[str, Any]) -> bool:
     """True quando esta e a primeira linha do turno a levar este rasto.
 
     O estado e pequeno e limitado (800 chaves) e limpa-se de uma vez quando
     enche: e deteccao de repeticao, nao historico.
     """
-    assinatura = _assinatura(trace)
+    assinatura = _assinatura_decisao(trace)
     with _lock:
         if _trace_resposta.get(chave) == assinatura:
             return False

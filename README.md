@@ -1152,8 +1152,10 @@ intacto e a razão vai para `uso.err`.
 ## Ledger
 
 `uso.jsonl` (append-only, uma linha JSON por evento) e `uso.err`. Eventos:
-`troca`, `sem_troca`, `sem_rota`, `falha_troca`, `reset`, `desligado`,
+`troca`, `sem_rota`, `falha_troca`, `reset`, `desligado`,
 `perfil_desligado`, `perfil_nao_gerido`, `sem_catalogo`, `resposta`.
+O `sem_troca` **saiu na 3.31.0**: era uma linha por chamada de API a repetir a
+mesma decisão (ver o rasto, abaixo).
 O `resposta` regista o que **de facto respondeu**: `provider` e `modelo`
 efectivos do agente (não o escolhido no catálogo), `respondido_por`
 (`response_model` que o provider devolveu), `perfil`, `sessao`, `superficie`
@@ -1173,6 +1175,30 @@ vezes este turno mudou de modelo", sem junção nenhuma:
 - `excecao` + `excecao_motivo` — só quando a decisão mudou por necessidade
   (`capacidade`, `rota`);
 - `fonte_turno` — `turn_id` ou `hash`, para se saber quanto vale a prova.
+
+### O rasto da decisão vive na `resposta` (3.31.0)
+
+Até à 3.30.0 o rasto que explica a decisão (`classificador`, `sinais`,
+`triagem`, `score`, `esforco`, `superficie*`, `entrada`) ia num `sem_troca` por
+**chamada de API** — e um turno tem, em média, 2,8 chamadas. Medido a
+2026-11-04: 11 129 linhas, 9,59 MB dos 17,11 MB do ledger, com o
+`classificador` repetido em 95,4% das linhas do mesmo turno.
+
+Agora viaja na linha `resposta`, **uma vez por turno**, e de novo só quando a
+decisão muda: a assinatura é calculada sobre `_TRACE_ESTAVEL` (nível, tarefa,
+origem, score, classificador, superfície, exceção…), que deixa de fora as
+medidas que crescem com a conversa (`sinais`, `triagem`, `ms`) e as que mudam em
+cada chamada (`pin`, `rota_pin`). Sem essa separação o corte era nulo: assinar o
+rasto inteiro faz um turno de 6 chamadas escrever 6 cópias.
+
+- O `pin`/`rota_pin` continuam a ser escritos em **todas** as `resposta`, logo a
+  aritmética `reutilizados == chamadas - turnos` mede-se sem o `sem_troca`.
+- Um turno que só produza erros nunca escreve `resposta`: o evento de erro leva
+  o mesmo rasto, com a mesma chave, e por isso sai uma só vez.
+- Os eventos `troca*` levam o **resumo** da decisão (`nivel`, `tarefa`,
+  `origem`, `score`, `esforco`, de/para), não uma segunda cópia do rasto pesado.
+- O painel não precisou de mudar: lê o ledger sem filtrar por evento e guarda, por
+  perfil, o rasto mais recente que encontra.
 
 A verificação aritmética que apanha um pin que não está a pegar:
 `pin: reutilizado` tem de ser igual a `pedidos − turnos`.

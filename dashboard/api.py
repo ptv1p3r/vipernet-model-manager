@@ -444,9 +444,9 @@ def _resumo_por_perfil(
                         "classif_ultima_falha": "",
                     },
                 )
-                # O rasto do classificador vive nos eventos de troca/sem_troca, que
-                # sao anteriores a `resposta` no ficheiro; a primeira ocorrencia que
-                # se ve aqui e a mais recente.
+                # O rasto do classificador viaja na linha `resposta` desde a 3.31.0
+                # (antes vivia nos eventos de troca/sem_troca). Le-se de tras para a
+                # frente, logo a primeira ocorrencia que se ve e a mais recente.
                 if reg["classificador"] is None and isinstance(ev.get("classificador"), dict):
                     c = ev["classificador"]
                     reg["classificador"] = {
