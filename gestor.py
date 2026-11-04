@@ -414,6 +414,94 @@ def regra_de_superficie(pcfg: dict[str, Any], superficie: str) -> dict[str, Any]
     return None
 
 
+# Chave que vale como "todas as outras" dentro do mapa de superficie de um
+# modelo: com `"*": false` o modelo so serve as superficies que nomear a `true`.
+CORINGA_SUPERFICIE = "*"
+
+
+def normalizar_superficies_modelo(
+    valor: Any,
+    contexto: str,
+    erros: list[str],
+) -> dict[str, bool]:
+    """Valida `catalogo[i].superficies`: superficie -> permitido (booleano).
+
+    Duas camadas, com proposito diferente, e por isso com forma diferente:
+
+    - No **perfil** (`analise.superficies`) a regra diz *quem serve* a
+      superficie: mapeia superficie -> rota (entrada, niveau ou provider/modelo).
+    - No **modelo** (`catalogo[i].superficies`) a regra diz *se pode servir*:
+      mapeia superficie -> booleano. E um filtro de elegibilidade, nao um router.
+      Um modelo nunca aponta para outro — isso seria uma terceira copia da
+      decisao, e o desempate e do perfil.
+
+    Heranca: o modelo que nao declara `superficies` herda o comportamento do
+    perfil (a regra do perfil decide a rota e o modelo nao restringe). Uma
+    superficie ausente do mapa declarado tambem herda; para inverter o sentido
+    usa-se a chave `*` (`{"*": false, "cron": true}` = so cron).
+
+    Nome parecido com uma superficie real e erro, e nao aviso: uma regra para
+    `crom` nunca dispara e o silencio e o pior resultado — o utilizador fica
+    convencido de ter limitado o cron.
+    """
+    if isinstance(valor, list):
+        # Acucar: lista de superficies permitidas vale por todas a `true`.
+        valor = {str(v): True for v in valor if str(v).strip()}
+    if not isinstance(valor, dict):
+        erros.append(f"{contexto}.superficies tem de ser um objecto "
+                     f"(superficie -> true/false)")
+        return {}
+    saida: dict[str, bool] = {}
+    for bruto, permitido in valor.items():
+        nome = str(bruto or "").strip().lower()
+        if not nome:
+            erros.append(f"{contexto}.superficies: superficie com nome vazio")
+            continue
+        if not isinstance(permitido, bool):
+            erros.append(f"{contexto}.superficies.{nome} tem de ser true ou false "
+                         f"(recebido {permitido!r})")
+            continue
+        if nome != CORINGA_SUPERFICIE and nome not in SUPERFICIES_CONHECIDAS \
+                and nome.isalpha():
+            parecida = difflib.get_close_matches(
+                nome, SUPERFICIES_CONHECIDAS, n=1, cutoff=0.75)
+            if parecida:
+                erros.append(f"{contexto}.superficies.{nome}: superficie parecida "
+                             f"com '{parecida[0]}' — corrija o nome ou use uma "
+                             f"superficie real")
+                continue
+        saida[nome] = permitido
+    return saida
+
+
+def serve_superficie(entrada: dict[str, Any], superficie: str) -> bool:
+    """O modelo aceita servir esta superficie? Ausente = herda (sim).
+
+    Le-se de forma tolerante: um mapa mal escrito nao pode calar o turno todo.
+    So o `false` explicito exclui — a ausencia e heranca, nao uma proibicao.
+    """
+    nome = str(superficie or "").strip().lower()
+    if not nome:
+        return True
+    mapa = entrada.get("superficies")
+    if not isinstance(mapa, dict) or not mapa:
+        return True
+    if nome in mapa:
+        return bool(mapa[nome])
+    if CORINGA_SUPERFICIE in mapa:
+        return bool(mapa[CORINGA_SUPERFICIE])
+    return True
+
+
+def superficies_do_modelo(pcfg: dict[str, Any], entrada_id: str) -> dict[str, bool] | None:
+    """O mapa declarado por um modelo, ou `None` quando herda do perfil."""
+    for entrada in (pcfg.get("catalogo") or []):
+        if isinstance(entrada, dict) and str(entrada.get("id")) == str(entrada_id):
+            mapa = entrada.get("superficies")
+            return dict(mapa) if isinstance(mapa, dict) and mapa else None
+    return None
+
+
 def normalizar_limites(entrada: dict[str, Any], indice: int, erros: list[str]) -> dict[str, Any]:
     """Valida e normaliza os limites de uma rota (janela, modalidades, json, latencia)."""
     saida: dict[str, Any] = {}
@@ -593,6 +681,14 @@ def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str
             return None
         saida["ordem"] = valor_ordem
     saida.update(normalizar_limites(entrada, indice, erros))
+    # Superficies do modelo: filtro de elegibilidade por superficie de sessao.
+    # Ausente = herda do perfil (o modelo nao restringe nada).
+    bruto_sup = entrada.get("superficies")
+    if bruto_sup not in (None, {}, []):
+        mapa = normalizar_superficies_modelo(
+            bruto_sup, f"catalogo[{indice}] ({provider}:{modelo})", erros)
+        if mapa:
+            saida["superficies"] = mapa
     for chave in ("nota",):
         if entrada.get(chave):
             saida[chave] = str(entrada[chave])

@@ -418,7 +418,8 @@ def escolher(pcfg: dict[str, Any], nivel: str, *, perfil: str, sessao: str) -> d
 
 def escolher_com_rota(pcfg: dict[str, Any], nivel: str, *, perfil: str,
                       sessao: str, tarefa: str | None = None,
-                      needs: dict[str, Any] | None = None) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str]]:
+                      needs: dict[str, Any] | None = None,
+                      superficie: str = "") -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str]]:
     """Primeira entrada utilizavel do nivel, na ordem da estrategia; devolve as falhadas.
 
     A ordem e construida **uma vez** e percorrida: repetir `escolher()` a cada
@@ -428,6 +429,11 @@ def escolher_com_rota(pcfg: dict[str, Any], nivel: str, *, perfil: str,
     `needs` (janela, modalidades, JSON, latencia) filtra antes de tentar
     credenciais: uma rota que declarou nao caber nao se tenta, e a razao fica
     no registo como `inviavel` em vez de `sem_rota`.
+
+    `superficie` filtra primeiro pelo que o **modelo** declarou em
+    `catalogo[i].superficies` — a camada de modelo, herdada do perfil quando o
+    modelo nao declara nada. Vem antes de `needs` porque e mais barata e mais
+    deterministica: nao depende do pedido, so da superficie da sessao.
     """
     catalogo = gestor.catalogo_utilizavel(pcfg)
     lista = ([e for e in catalogo if tarefa in e.get("tarefas", [])] if tarefa
@@ -435,6 +441,17 @@ def escolher_com_rota(pcfg: dict[str, Any], nivel: str, *, perfil: str,
     if not lista:
         return None, None, []
     falhadas: list[str] = []
+    if superficie:
+        permitidas = []
+        for entrada_s in lista:
+            if gestor.serve_superficie(entrada_s, superficie):
+                permitidas.append(entrada_s)
+            else:
+                falhadas.append(
+                    f"{entrada_s['id']}:inviavel:superficie:{superficie}")
+        if not permitidas:
+            return None, None, falhadas
+        lista = permitidas
     if needs:
         viaveis = []
         for entrada_n in lista:
@@ -512,7 +529,8 @@ def ajustar_por_resultado(sessao: str, nivel: str) -> tuple[str, str]:
 
 
 def degradar_nivel(pcfg: dict[str, Any], nivel: str, *, perfil: str,
-                   sessao: str, needs: dict[str, Any] | None = None) -> tuple[str | None, dict[str, Any] | None,
+                   sessao: str, needs: dict[str, Any] | None = None,
+                   superficie: str = "") -> tuple[str | None, dict[str, Any] | None,
                                       dict[str, Any] | None, list[str]]:
     """C: desce um nivel quando o decidido nao tem rota utilizavel.
 
@@ -525,7 +543,8 @@ def degradar_nivel(pcfg: dict[str, Any], nivel: str, *, perfil: str,
     while i >= 0:
         abaixo = NIVEIS[i]
         entrada, rota, falhadas = escolher_com_rota(
-            pcfg, abaixo, perfil=perfil, sessao=sessao, needs=needs)
+            pcfg, abaixo, perfil=perfil, sessao=sessao, needs=needs,
+            superficie=superficie)
         if entrada is not None and rota is not None:
             return abaixo, entrada, rota, falhadas
         i -= 1
@@ -533,8 +552,9 @@ def degradar_nivel(pcfg: dict[str, Any], nivel: str, *, perfil: str,
 
 
 def escolher_por_janela(pcfg: dict[str, Any], needs: dict[str, Any] | None, *,
-                        perfil: str = "", sessao: str = "") -> tuple[dict[str, Any] | None,
-                                                                    dict[str, Any] | None, list[str]]:
+                        perfil: str = "", sessao: str = "",
+                        superficie: str = "") -> tuple[dict[str, Any] | None,
+                                                       dict[str, Any] | None, list[str]]:
     """Ultimo recurso: a rota viavel com a maior janela declarada.
 
     Descer de nivel nao resolve um pedido que nao cabe: se o texto ocupa mais do
@@ -545,6 +565,9 @@ def escolher_por_janela(pcfg: dict[str, Any], needs: dict[str, Any] | None, *,
     catalogo = gestor.catalogo_utilizavel(pcfg)
     viaveis, falhadas = [], []
     for entrada in catalogo:
+        if not gestor.serve_superficie(entrada, superficie):
+            falhadas.append(f"{entrada['id']}:inviavel:superficie:{superficie}")
+            continue
         motivo = gestor.rota_serve(entrada, needs)
         if motivo:
             falhadas.append(f"{entrada['id']}:inviavel:{motivo}")
@@ -1049,7 +1072,15 @@ def middleware_llm_request(
                               candidata["modelo"])
                 with _lock:
                     morta = _maus_expira.get(chave_rota, 0.0) > time.monotonic()
-                if motivo_cap:
+                if superficie and not gestor.serve_superficie(candidata, superficie):
+                    # O modelo fixado no turno nao serve esta superficie: a
+                    # camada de modelo manda sobre o pin. Cai para a escolha
+                    # normal, com o motivo declarado — senao parecia que o pin
+                    # nunca falhou.
+                    base["excecao"] = "superficie"
+                    base["excecao_motivo"] = (f"rota_pinada:nao_serve_superficie:"
+                                              f"{superficie}")
+                elif motivo_cap:
                     base["excecao"] = "capacidade"
                     base["excecao_motivo"] = f"rota_pinada:{motivo_cap}"
                 elif morta:
@@ -1078,7 +1109,14 @@ def middleware_llm_request(
                           candidata["modelo"])
             with _lock:
                 morta = _maus_expira.get(chave_rota, 0.0) > time.monotonic()
-            if motivo_cap:
+            if not gestor.serve_superficie(candidata, superficie):
+                # A regra do perfil aponta para um modelo que declarou nao
+                # servir esta superficie. A camada de modelo ganha: a ordem do
+                # perfil nao pode sobrepor-se ao que o proprio modelo recusa.
+                base["excecao"] = "superficie"
+                base["excecao_motivo"] = (f"superficie:{nome_sup}:"
+                                          "modelo_nao_serve")
+            elif motivo_cap:
                 base["excecao"] = "capacidade"
                 base["excecao_motivo"] = f"superficie:{nome_sup}:{motivo_cap}"
             elif morta:
@@ -1098,17 +1136,19 @@ def middleware_llm_request(
         if entrada is None or rota is None:
             entrada, rota, falhadas = escolher_com_rota(
                 pcfg, nivel, perfil=perfil, sessao=session_id, tarefa=associada,
-                needs=needs)
+                needs=needs, superficie=superficie)
         if associada and (entrada is None or rota is None):
             base["origem"] = "analise_fallback_tarefa"
             base["falhadas_tarefa"] = falhadas
             entrada, rota, falhadas = escolher_com_rota(
-                pcfg, nivel, perfil=perfil, sessao=session_id, needs=needs)
+                pcfg, nivel, perfil=perfil, sessao=session_id, needs=needs,
+                superficie=superficie)
         if entrada is None or rota is None:
             # C: sem rota no nivel decidido, desce um nivel em vez de nao decidir.
             if not associada:
                 nivel_ef, entrada_ef, rota_ef, falhadas_ef = degradar_nivel(
-                    pcfg, nivel, perfil=perfil, sessao=session_id, needs=needs)
+                    pcfg, nivel, perfil=perfil, sessao=session_id, needs=needs,
+                    superficie=superficie)
                 if entrada_ef is not None and rota_ef is not None:
                     base["degradado_de"] = nivel
                     base["nivel_efetivo"] = nivel_ef
@@ -1123,7 +1163,8 @@ def middleware_llm_request(
                 # da complexidade.
                 if any(":inviavel:" in f for f in falhadas):
                     entrada_j, rota_j, falhadas_j = escolher_por_janela(
-                        pcfg, needs, perfil=perfil, sessao=session_id)
+                        pcfg, needs, perfil=perfil, sessao=session_id,
+                        superficie=superficie)
                     if entrada_j is not None and rota_j is not None:
                         base["escolhido_por_janela"] = entrada_j["id"]
                         entrada, rota = entrada_j, rota_j
@@ -1139,6 +1180,11 @@ def middleware_llm_request(
                              "provider": rota["provider"],
                              "modelo": entrada["modelo"], "passo": passo})
             _pin_gravar(chave_turno, guardado)
+        mapa_sup = entrada.get("superficies")
+        if isinstance(mapa_sup, dict) and mapa_sup:
+            # Rasto da camada de modelo: sem isto, uma escolha filtrada por
+            # superficie ficava indistinguivel de uma escolha por nivel.
+            base["superficies_modelo"] = mapa_sup
         _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
                          origem=base["origem"], acesso=entrada.get("acesso", ""),
                          entrada=entrada["id"], escolhido_provider=rota["provider"],

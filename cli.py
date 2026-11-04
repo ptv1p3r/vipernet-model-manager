@@ -589,8 +589,92 @@ def cmd_superficie_list(args) -> int:
             else:
                 alvo = f"{regra.get('provider')}/{regra.get('modelo')}"
             print(f"  {sup:14s} -> {alvo:28s} [{origem}]")
+        # Camada de modelo: um modelo que declara superficies restringe-se a
+        # elas; quem nao declara herda o comportamento do perfil.
+        declarados = [(e.get("id"), e.get("superficies"))
+                      for e in (p.get("catalogo") or [])
+                      if isinstance(e.get("superficies"), dict) and e["superficies"]]
+        if declarados:
+            print(f"  {'modelos':14s} (superficie -> permitido)")
+            for mid, mapa in declarados:
+                regras_m = " ".join(f"{s}={'sim' if v else 'nao'}"
+                                    for s, v in sorted(mapa.items()))
+                print(f"    {str(mid)[:24]:24s} {regras_m}")
         saida = True
     return 0 if saida else 0
+
+
+def cmd_superficie_modelo(args) -> int:
+    """Liga/desliga uma superficie para um modelo, ou devolve-o a heranca.
+
+    A camada de modelo nunca aponta para outro modelo: so diz se este pode
+    servir a superficie. A escolha de qual serve continua a ser do perfil.
+    """
+    valor = str(args.valor or "").strip().lower()
+    mapa_permitido = {"on": True, "sim": True, "true": True,
+                      "off": False, "nao": False, "false": False}
+    if valor in ("herdar", "herda", "reset"):
+        novo = None
+    elif valor in mapa_permitido:
+        novo = mapa_permitido[valor]
+    else:
+        return _erro(f"valor invalido '{args.valor}' (use on|off|herdar)", 2)
+    sup = str(args.superficie or "").strip().lower()
+    if not sup:
+        return _erro("superficie vazia", 2)
+    cfg, _ = _cfg()
+    rev = g.rev(cfg)
+    p = g.perfil_config(cfg, args.perfil)
+    if p is None:
+        return _erro(f"perfil '{args.perfil}' nao e gerido por este config", 3)
+    candidatos = g.catalogo_utilizavel(p)
+    alvo = next((e for e in candidatos if str(e.get("id")) == args.id), None)
+    if alvo is None:
+        # Aceita tambem o provider/modelo, para nao obrigar a decorar ids.
+        alvo = next((e for e in candidatos
+                     if f"{e['provider']}/{e['modelo']}" == args.id), None)
+    if alvo is None:
+        ids = ", ".join(str(e.get("id")) for e in candidatos) or "(catalogo vazio)"
+        return _erro(f"modelo '{args.id}' nao existe em {args.perfil}: {ids}", 3)
+    # Escreve-se na entrada DECLARADA no perfil, nao na copia fundida que
+    # `perfil_config` devolve: mutar a copia e uma escrita que se perde em
+    # silencio (o comando dizia "recusado" e o ficheiro ficava igual).
+    entrada = None
+    for e in ((cfg.get("perfis", {}).get(args.perfil) or {}).get("catalogo") or []):
+        if str(e.get("id")) == str(alvo.get("id")):
+            entrada = e
+            break
+    if entrada is None:
+        return _erro(f"modelo '{args.id}' vem do catalogo global, nao de "
+                     f"{args.perfil}: declare-o no perfil antes de o limitar", 3)
+    mapa = entrada.get("superficies")
+    mapa = dict(mapa) if isinstance(mapa, dict) else {}
+    if novo is None:
+        mapa.pop(sup, None)
+        if not mapa:
+            entrada.pop("superficies", None)
+        else:
+            entrada["superficies"] = mapa
+        estado = "herda do perfil"
+    else:
+        mapa[sup] = novo
+        entrada["superficies"] = mapa
+        estado = "permitido" if novo else "recusado"
+    try:
+        _gravar_cas(cfg, rev)
+    except ValueError as exc:
+        return _erro(str(exc))
+    # Releitura do disco: o rc do `gravar` nao e prova de que a chave ficou.
+    depois, _ = _cfg()
+    ficou = g.superficies_do_modelo(
+        {"catalogo": ((depois.get("perfis", {}).get(args.perfil) or {})
+                      .get("catalogo") or [])}, str(alvo.get("id")))
+    if novo is None and ficou is not None:
+        return _erro("a escrita nao ficou no disco (mapa ainda presente)", 1)
+    if novo is not None and (ficou or {}).get(sup) is not novo:
+        return _erro("a escrita nao ficou no disco (valor diferente)", 1)
+    print(f"{args.perfil}: {alvo.get('id')} superficie '{sup}' -> {estado}")
+    return 0
 
 
 def _alvo_superficie(valor: str, perfil: str) -> tuple[dict | None, str]:
@@ -930,6 +1014,14 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("perfil")
     a.add_argument("superficie")
     a.set_defaults(func=cmd_superficie_rm)
+
+    a = ss.add_parser("modelo",
+                      help="dizer se um MODELO pode servir uma superficie (on|off|herdar)")
+    a.add_argument("perfil")
+    a.add_argument("id", help="id do modelo no catalogo (ou provider/modelo)")
+    a.add_argument("superficie", help="cron, api_server, cli, whatsapp... ou * para todas")
+    a.add_argument("valor", help="on (pode servir) | off (nao serve) | herdar (volta ao perfil)")
+    a.set_defaults(func=cmd_superficie_modelo)
 
     s = sub.add_parser("simular", help="classificar um texto e ver a rota")
     s.add_argument("perfil")
