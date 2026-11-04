@@ -82,6 +82,31 @@
     );
   }
 
+  // Aviso de config lida com erros: o ficheiro no disco tem algo que esta
+  // versao nao conhece (editado a mao, ou escrito por uma versao futura) e o
+  // painel mostra o valor NORMALIZADO, nao o do ficheiro. Sem este aviso o
+  // utilizador grava por cima e nunca sabe o que perdeu — era o ultimo ponto
+  // cego da guarda de chaves. Aparece nas duas paginas.
+  function AvisoConfig(props) {
+    const erros = (props.estado && props.estado.erros_config) || [];
+    if (!erros.length) return null;
+    return h(
+      "div",
+      { className: "vmm-erro vmm-erros-lista", role: "alert" },
+      h(
+        "div",
+        null,
+        "O config no disco tem " + erros.length + " problema(s) que esta versão "
+          + "não reconhece — o painel está a mostrar a versão validada, que pode não "
+          + "coincidir com o ficheiro, e gravar por cima vai ser recusado. "
+          + "Corrija o ficheiro."
+      ),
+      erros.slice(0, 6).map(function (e, i) {
+        return h("div", { key: i }, "• " + e);
+      })
+    );
+  }
+
   function pedir(caminho, opcoes) {
     var opts = Object.assign({}, opcoes || {});
     // O SDK.fetchJSON entrega o init tal e qual ao fetch(): um body objecto vira a
@@ -2023,6 +2048,7 @@
     return h(
       "div",
       { className: "vmm-pagina vmm-pagina-config" },
+      h(AvisoConfig, { estado: estado }),
       h(
         "div",
         { className: "vmm-topo" },
@@ -2733,6 +2759,7 @@
     return h(
       "div",
       { className: "vmm-pagina" },
+      h(AvisoConfig, { estado: estado }),
       h(
         "div",
         { className: "vmm-topo" },
@@ -2872,6 +2899,9 @@
     window.__VMM_TEST__.rotuloRegra = rotuloRegra;
     window.__VMM_TEST__.metaPlugin = metaPlugin;
     window.__VMM_TEST__.linhaIdentidade = linhaIdentidade;
+    // O aviso de config lida com erros: e a unica superficie que denuncia que o
+    // ficheiro no disco nao e o que o painel mostra. Testado sem browser.
+    window.__VMM_TEST__.AvisoConfig = AvisoConfig;
     // Componentes expostos para o teste de render: um erro de referencia no
     // corpo do cartao so aparecia no browser do dono (ja aconteceu — o cartao
     // referia `perfil.superficies` sem binding). Chamar o componente em node
