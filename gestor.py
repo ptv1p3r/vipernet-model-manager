@@ -567,6 +567,28 @@ def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str
         saida["tarefas"] = list(dict.fromkeys(t.strip() for t in tarefas))
     if entrada.get("desligado"):
         saida["desligado"] = True
+    if entrada.get("custo") not in (None, ""):
+        bruto_custo = entrada.get("custo")
+        try:
+            valor_custo = float(str(bruto_custo).strip())
+        except (TypeError, ValueError):
+            erros.append(f"catalogo[{indice}].custo deve ser numero (recebido {bruto_custo!r})")
+            return None
+        if valor_custo < 0:
+            erros.append(f"catalogo[{indice}].custo deve ser >= 0 (recebido {valor_custo})")
+            return None
+        saida["custo"] = valor_custo
+    if entrada.get("ordem") not in (None, ""):
+        bruto_ordem = entrada.get("ordem")
+        try:
+            valor_ordem = int(str(bruto_ordem).strip())
+        except (TypeError, ValueError):
+            erros.append(f"catalogo[{indice}].ordem deve ser inteiro (recebido {bruto_ordem!r})")
+            return None
+        if valor_ordem < 0:
+            erros.append(f"catalogo[{indice}].ordem deve ser >= 0 (recebido {valor_ordem})")
+            return None
+        saida["ordem"] = valor_ordem
     saida.update(normalizar_limites(entrada, indice, erros))
     for chave in ("nota",):
         if entrada.get(chave):
@@ -1293,6 +1315,37 @@ def catalogo_utilizavel(pcfg: dict[str, Any]) -> list[dict[str, Any]]:
 
 def candidatos(catalogo: list[dict[str, Any]], nivel: str) -> list[dict[str, Any]]:
     return [e for e in catalogo if nivel in (e.get("complexidade") or [])]
+
+
+def _chave_ordem(entrada: dict[str, Any]) -> tuple:
+    """Chave total e determinista de um candidato: custo declarado, `ordem`, `id`.
+
+    A entrada **sem** custo declarado ordena depois das que o declaram. Ler a
+    ausencia como zero fazia o nao-classificado ganhar a todos os pagos — a
+    armadilha inversa da que se quer fechar.
+    """
+    custo = entrada.get("custo")
+    if custo is None:
+        primeira = (1, 0.0)
+    else:
+        try:
+            primeira = (0, float(custo))
+        except (TypeError, ValueError):
+            primeira = (1, 0.0)
+    try:
+        ordem = int(entrada.get("ordem") or 0)
+    except (TypeError, ValueError):
+        ordem = 0
+    return (primeira, ordem, str(entrada.get("id") or ""))
+
+
+def ordenar_candidatos(lista: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ordem declarada dos candidatos: custo, `ordem` e `id`. Nao roda nada.
+
+    O `id` fecha a chave: e unico e nao depende da posicao no ficheiro, portanto
+    dois candidatos empatados resolvem-se sempre da mesma maneira.
+    """
+    return sorted(lista, key=_chave_ordem)
 
 
 # --------------------------------------------------------------------------- estado

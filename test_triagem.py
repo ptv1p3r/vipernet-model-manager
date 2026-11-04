@@ -206,9 +206,9 @@ def testes_necessidades() -> None:
 
 def testes_selecao() -> None:
     catalogo = [
-        {"id": "pequeno", "provider": "deepseek", "modelo": "flash",
+        {"id": "pequeno", "provider": "deepseek", "modelo": "flash", "ordem": 1,
          "complexidade": ["alta"], "contexto_max": 32000, "modalidades": ["texto"]},
-        {"id": "grande", "provider": "openrouter", "modelo": "janela",
+        {"id": "grande", "provider": "openrouter", "modelo": "janela", "ordem": 2,
          "complexidade": ["alta"], "contexto_max": 1000000, "modalidades": ["texto", "imagem"]},
     ]
     c = cfg(catalogo)
@@ -225,6 +225,25 @@ def testes_selecao() -> None:
         p, "alta", perfil="default", sessao="s", needs={"tokens_entrada": 1000})
     check("selecao: com tudo viavel respeita a ordem declarada",
           entrada2 is not None and entrada2["id"] == "pequeno", str(entrada2))
+
+    # A posicao no ficheiro deixou de ser desempate: sem `custo` nem `ordem`,
+    # decide o `id` e a ordem do JSON e irrelevante.
+    invertido = cfg([
+        {"id": "zulu", "provider": "deepseek", "modelo": "a", "complexidade": ["alta"]},
+        {"id": "alfa", "provider": "deepseek", "modelo": "b", "complexidade": ["alta"]},
+    ])["perfis"]["default"]
+    e_alfa, _, _ = plugin.escolher_com_rota(
+        invertido, "alta", perfil="default", sessao="s", needs={"tokens_entrada": 10})
+    normal = cfg([
+        {"id": "alfa", "provider": "deepseek", "modelo": "b", "complexidade": ["alta"]},
+        {"id": "zulu", "provider": "deepseek", "modelo": "a", "complexidade": ["alta"]},
+    ])["perfis"]["default"]
+    e_alfa2, _, _ = plugin.escolher_com_rota(
+        normal, "alta", perfil="default", sessao="s", needs={"tokens_entrada": 10})
+    check("selecao: sem custo/ordem o desempate e o id, nao o ficheiro",
+          e_alfa is not None and e_alfa2 is not None
+          and e_alfa["id"] == e_alfa2["id"] == "alfa",
+          f"{e_alfa and e_alfa['id']} / {e_alfa2 and e_alfa2['id']}")
 
     # Nenhuma rota serve: devolve None com as razoes, nao uma rota impossivel.
     entrada3, rota3, falhadas3 = plugin.escolher_com_rota(

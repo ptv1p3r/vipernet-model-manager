@@ -8,7 +8,7 @@ Uso:
   vmm perfil add NOME [--copiar-de X]
   vmm perfil rm NOME
   vmm rota list [PERFIL] [--json]
-  vmm rota add PERFIL PROVIDER MODELO --complexidade leve,media [--id ID] [--acesso api|subscricao] [--esforco baixo|medio|alto]
+  vmm rota add PERFIL PROVIDER MODELO --complexidade leve,media [--id ID] [--acesso api|subscricao] [--esforco baixo|medio|alto] [--custo N] [--ordem N]
   vmm rota esforco PERFIL ID baixo|medio|alto|-
   vmm rota rm PERFIL ID
   vmm simular PERFIL "texto"          classifica o texto e mostra a rota escolhida
@@ -468,14 +468,26 @@ def cmd_rota_add(args) -> int:
         if erro_e:
             return _erro(erro_e, 2)
         entrada["esforco"] = esforco
+    # Custo e ordem entram na chave de escolha (custo, ordem, id). Sem custo
+    # declarado a rota ordena depois das que o declaram — nao vale zero.
+    if getattr(args, "custo", None) is not None:
+        entrada["custo"] = args.custo
+    if getattr(args, "ordem", None) is not None:
+        entrada["ordem"] = args.ordem
     p.setdefault("catalogo", []).append(entrada)
     try:
         g.gravar(cfg)
     except ValueError as exc:
         return _erro(f"config recusada: {exc}")
+    extras = [f"acesso={entrada['acesso']}"]
+    if entrada.get("esforco"):
+        extras.append(f"esforco={entrada['esforco']}")
+    if entrada.get("custo") is not None:
+        extras.append(f"custo={entrada['custo']}")
+    if entrada.get("ordem") is not None:
+        extras.append(f"ordem={entrada['ordem']}")
     print(f"rota '{entrada['id']}' acrescentada a {args.perfil} para {','.join(niveis)}"
-          f" (acesso={entrada['acesso']}"
-          + (f", esforco={entrada['esforco']})" if entrada.get("esforco") else ")"))
+          f" ({', '.join(extras)})")
     return 0
 
 
@@ -857,6 +869,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "(openai-codex=subscricao, restantes=api)")
     a.add_argument("--esforco", choices=["baixo", "medio", "alto"],
                    help="esforco de raciocinio da rota (omisso: nao declarado)")
+    a.add_argument("--custo", type=float,
+                   help="preco por milhao de tokens; 0 e gratis. "
+                        "Sem custo a rota ordena depois das que o declaram")
+    a.add_argument("--ordem", type=int,
+                   help="desempate entre custos iguais (o id fecha o empate)")
     a.set_defaults(func=cmd_rota_add)
     a = sr.add_parser("esforco", help="mudar o esforco de uma rota existente")
     a.add_argument("perfil")

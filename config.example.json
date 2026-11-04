@@ -40,7 +40,9 @@
           "provider": "deepseek",
           "modelo": "deepseek-flash",
           "complexidade": ["leve", "media"],
-          "acesso": "api"
+          "acesso": "api",
+          "custo": 0.28,
+          "ordem": 1
         },
         {
           "id": "gpt-sol",
@@ -48,6 +50,8 @@
           "modelo": "openai/gpt-6.1-sol",
           "complexidade": "media",
           "acesso": "api",
+          "custo": 3.0,
+          "ordem": 10,
           "contexto_max": 1000000,
           "modalidades": ["texto", "imagem"],
           "json_nativo": true,

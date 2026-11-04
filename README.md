@@ -695,11 +695,23 @@ Três consequências, todas com teste:
  "modalidades": ["texto", "imagem"], "json_nativo": true, "latencia_p95_ms": 2500}
 ```
 
-**O que não está feito, e não se afirma:** ordenar por custo (a ordem do
-catálogo já é a preferência do dono; reordenar em silêncio sobrepunha-se a uma
-decisão explícita), medir TTFT (só existe `latencia_p95_ms` declarada, não
-medida), e reaproveitar decisões para perguntas *semelhantes* (o cache do
-classificador é por texto normalizado e `cache_ttl_s`; semelhança difusa
+**Ordem determinística entre candidatos do mesmo nível (3.22).** Quando o
+nível tem várias rotas, elas são ordenadas antes de qualquer escolha pela chave
+`custo` → `ordem` → `id`. O `id` fecha o empate por ordem lexicográfica, único e
+estável: a sequência em que as entradas aparecem no JSON **nunca** conta. Uma
+rota sem `custo` declarado **não vale zero** — ordena depois das que declaram
+custo, porque tratar o desconhecido como grátis faria o não-medido ganhar a
+todos os pagos. O custo é o preço por milhão de tokens (`0` é grátis, número
+igual ou maior que zero); `ordem` é um inteiro para separar rotas do mesmo
+custo. A rotação continua a ser `md5(perfil|sessao|nivel) % n` sobre a lista já
+ordenada: `por: sessao` mantém a sessão presa ao mesmo modelo dentro do nível.
+
+**O que não está feito, e não se afirma:** medir TTFT (só existe
+`latencia_p95_ms` declarada, não medida), o custo não é lido de nenhuma API (é
+declarado à mão e não se atualiza sozinho), a rotação ainda é módulo — uma
+entrada acrescentada ou removida reindexa as sessões e troca-as de modelo no
+primeiro turno — e reaproveitar decisões para perguntas *semelhantes* (o cache
+do classificador é por texto normalizado e `cache_ttl_s`; semelhança difusa
 arriscava reutilizar a classificação errada).
 
 ## Tarefas por perfil (3.2)

@@ -81,10 +81,10 @@ def _cfg_base() -> dict:
             "trabalho": {
                 "activo": True, "estrategia": "prioridade", "rodizio": {"por": "sessao"},
                 "catalogo": [
-                    {"id": "sol", "provider": "openrouter", "modelo": "openai/gpt-6.1-sol",
-                     "complexidade": "alta"},
-                    {"id": "pro", "provider": "deepseek", "modelo": "deepseek-v4-pro",
-                     "complexidade": "alta"},
+                    {"id": "sol", "ordem": 1, "provider": "openrouter",
+                     "modelo": "openai/gpt-6.1-sol", "complexidade": "alta"},
+                    {"id": "pro", "ordem": 2, "provider": "deepseek",
+                     "modelo": "deepseek-v4-pro", "complexidade": "alta"},
                 ],
             },
         },
