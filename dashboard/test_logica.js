@@ -1555,6 +1555,45 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
         /pedir\("\/perfil\?nome=" \+ encodeURIComponent\(perfil\)\)/.test(fonte));
 })();
 
+// ---------------------------------------------------------- aviso de config
+(function () {
+  // O painel lia o config normalizado e mostrava-o como se fosse o do disco.
+  // Um ficheiro com uma chave desconhecida (editado a mao, ou escrito por uma
+  // versao futura) nao produzia uma unica palavra de aviso: gravava-se por
+  // cima sem saber o que se perdia.
+  const vazio = T.AvisoConfig({ estado: {} });
+  check("aviso de config: sem problemas nao desenha nada", vazio === null);
+  check("aviso de config: estado sem a chave tambem nao desenha",
+        T.AvisoConfig({ estado: { erros_config: [] } }) === null);
+
+  const comErro = T.AvisoConfig({
+    estado: { erros_config: ["analise.coisa desconhecida (quis dizer ...)"] },
+  });
+  const texto = textoPlano(comErro);
+  check("aviso de config: diz que o painel mostra a versao validada",
+        texto.indexOf("versão validada") !== -1);
+  check("aviso de config: avisa que gravar vai ser recusado",
+        texto.indexOf("recusado") !== -1);
+  check("aviso de config: lista o erro por extenso",
+        texto.indexOf("analise.coisa desconhecida") !== -1);
+  check("aviso de config: e um alerta acessivel", comErro.props.role === "alert");
+
+  // A lista completa pode ser longa: mostra no maximo seis, para o cabecalho
+  // nao empurrar o painel todo para fora do ecra.
+  const muitos = T.AvisoConfig({
+    estado: { erros_config: ["a", "b", "c", "d", "e", "f", "g", "h"] },
+  });
+  const itens = muitos.filhos[1];
+  check("aviso de config: mostra no maximo seis erros", itens.length === 6,
+        String(itens.length));
+
+  // E tem de estar montado nas DUAS paginas: o aviso existe para ser visto.
+  check("aviso de config: montado no painel principal",
+        /className: "vmm-pagina" \},\s*\n\s*h\(AvisoConfig/.test(srcPainel));
+  check("aviso de config: montado na pagina de configuracao",
+        /"vmm-pagina vmm-pagina-config" \},\s*\n\s*h\(AvisoConfig/.test(srcPainel));
+})();
+
 console.log("");
 if (falhas) {
   console.log(falhas + " de " + total + " verificacoes FALHARAM");

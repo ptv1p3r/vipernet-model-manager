@@ -99,8 +99,20 @@ LIMITE_LOG_OMISSAO = 50
 # --------------------------------------------------------------------------- leitura
 
 
+#: Erros da ultima leitura do config.
+#:
+#: `gestor.carregar()` devolve o config normalizado **e** a lista de erros. A
+#: normalizacao descarta o que nao conhece, logo um ficheiro editado a mao (ou
+#: escrito por uma versao futura) produzia um painel a mostrar uma config que
+#: nao existe no disco, sem uma unica palavra de aviso. Engolir a lista era o
+#: ultimo ponto cego da guarda de chaves: o `validar` passou a recusar, mas
+#: ninguem via a recusa.
+_ERROS_CONFIG: list[str] = []
+
+
 def _cfg() -> dict[str, Any]:
-    cfg, _erros = gestor.carregar()
+    cfg, erros = gestor.carregar()
+    _ERROS_CONFIG[:] = list(erros or [])
     return cfg
 
 
@@ -610,6 +622,11 @@ def estado() -> dict[str, Any]:
             "niveis": list(gestor.NIVEIS),
         },
         "rev": _rev(cfg),
+        # Erros da leitura deste config. Vazio no caso normal. Nao-vazio quer
+        # dizer que o ficheiro no disco tem algo que esta versao nao conhece e
+        # que o painel esta a mostrar o valor normalizado, nao o do disco — o
+        # utilizador tem de o ver antes de gravar por cima.
+        "erros_config": list(_ERROS_CONFIG),
         "perfis": saida_perfis,
         "perfil_servido": _perfil_servido(),
         "ledger": {

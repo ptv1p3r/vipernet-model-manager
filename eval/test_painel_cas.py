@@ -146,6 +146,41 @@ try:
           "a chave de analise escrita pelo outro escritor desapareceu")
     check("modelo_acrescentou", any(e["id"] == "m4" for e in estado["perfis"]["b"]["catalogo"]))
 
+    # --- o painel tem de denunciar um config que nao consegue ler -------------
+    # O `_cfg()` do painel descartava a lista de erros do `carregar`: um
+    # ficheiro com uma chave desconhecida (editado a mao, ou escrito por uma
+    # versao futura) aparecia no painel como se fosse o do disco. Passa a vir
+    # em /estado.erros_config, e o painel desenha um aviso com isso.
+    r = cliente.get(f"{P}/estado")
+    check("estado_limpo_sem_erros",
+          r.status_code == 200 and r.json().get("erros_config") == [],
+          f"{r.status_code} {str(r.json().get('erros_config'))[:120]}")
+    caminho_cfg = gestor.ficheiro_config()
+    bruto = json.loads(caminho_cfg.read_text(encoding="utf-8"))
+    bruto["perfis"]["a"].setdefault("analise", {})["coisa_estranha"] = 1
+    caminho_cfg.write_text(json.dumps(bruto, ensure_ascii=False, indent=2) + "\n",
+                           encoding="utf-8")
+    r = cliente.get(f"{P}/estado")
+    erros_cfg = r.json().get("erros_config") or []
+    check("estado_denuncia_chave_desconhecida_no_disco", len(erros_cfg) >= 1,
+          str(erros_cfg)[:200])
+    check("estado_denuncia_com_o_caminho_da_chave",
+          any("coisa_estranha" in e for e in erros_cfg), str(erros_cfg)[:200])
+    # O aviso do painel promete que gravar e recusado: prova-se no HTTP, nao na prosa.
+    rev_actual = cliente.get(f"{P}/estado").json().get("rev")
+    r = cliente.post(f"{P}/config", json={"config": bruto, "rev": rev_actual})
+    check("config_recusa_gravar_com_chave_desconhecida", r.status_code == 400,
+          f"{r.status_code} {r.text[:160]}")
+    check("config_recusa_diz_qual_a_chave",
+          "coisa_estranha" in r.text, r.text[:200])
+    # Nao e um sinal pegajoso: depois de o config voltar a estar limpo, cala-se.
+    bruto["perfis"]["a"]["analise"].pop("coisa_estranha", None)
+    caminho_cfg.write_text(json.dumps(bruto, ensure_ascii=False, indent=2) + "\n",
+                           encoding="utf-8")
+    r = cliente.get(f"{P}/estado")
+    check("estado_cala_depois_de_corrigir", (r.json().get("erros_config") or []) == [],
+          str(r.json().get("erros_config"))[:160])
+
     print(f"\n{OK} verificacoes, {len(FALHAS)} falhas")
     for f in FALHAS:
         print("FALHA:", f)
