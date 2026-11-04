@@ -1808,6 +1808,33 @@ def estrategia_efectiva(cfg: dict[str, Any], perfil: str) -> dict[str, str]:
             "origem": str(pcfg.get("estrategia_origem") or "padrao")}
 
 
+def tarefa_persistente_efectiva(cfg: dict[str, Any], perfil: str) -> dict[str, Any]:
+    """O bloco da tarefa persistente em vigor neste perfil, com a origem.
+
+    Tres camadas pela mesma regra da estrategia: o perfil sobrepoe-se ao global
+    **chave a chave**, e o que ninguem declarar fica no valor por omissao. A
+    origem e o que o painel mostra ao lado do bloco — sem ela, um perfil que
+    herda parece ter escolhido, e o dono muda o global sem saber o que mudou.
+    """
+    pcfg = perfil_config(cfg, perfil) or {}
+    bloco = (pcfg.get("analise") or {}).get("tarefa_persistente")
+    saida: dict[str, Any] = dict(TAREFA_PERSISTENTE_PADRAO)
+    if isinstance(bloco, dict):
+        saida.update({k: bloco[k] for k in TAREFA_PERSISTENTE_CHAVES if k in bloco})
+    nome_cfg = str(pcfg.get("origem_config") or perfil)
+    cru = (((cfg.get("perfis") or {}).get(nome_cfg) or {}).get("analise") or {})
+    proprio = cru.get("tarefa_persistente") if isinstance(cru, dict) else None
+    global_tp = (cfg.get("analise") or {}).get("tarefa_persistente")
+    if isinstance(proprio, dict) and proprio:
+        origem = "proprio"
+    elif isinstance(global_tp, dict) and global_tp:
+        origem = "global"
+    else:
+        origem = "padrao"
+    saida["origem"] = origem
+    return saida
+
+
 def classificador_efectivo(cfg: dict[str, Any], perfil: str) -> dict[str, Any]:
     """O que decide a complexidade neste perfil: um modelo (qual) ou a heuristica.
 
