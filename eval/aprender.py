@@ -53,7 +53,11 @@ EVAL = Path(__file__).resolve().parent
 REPO = EVAL.parent
 RAIZ = Path("/opt/data")
 DADOS = RAIZ / "plugin-data/vipernet-model-manager"
-LEDGER = DADOS / "uso.jsonl"
+#: O ciclo NAO le o ledger vivo: os casos vem dos `gold*.jsonl` e o pool dos
+#: `state.db` (`extrair_amostra._pool_de_sessoes`). Havia aqui um
+#: `LEDGER = DADOS / "uso.jsonl"` sem uma unica referencia, que dava a impressao
+#: de que rodar ou comprimir o ledger podia partir a aprendizagem: nao pode.
+#:
 #: Ficheiro de config do plugin. Injectável por ambiente para os testes e o
 #: `--self-test` poderem exercer a promoção e a reversão sem tocar na config
 #: viva: medido a 2026-11-02, sem isto o caminho `promover()`/`reverter()` nunca

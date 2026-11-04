@@ -32,6 +32,18 @@ from pathlib import Path
 
 RAIZ = Path("/opt/data")
 LEDGER = RAIZ / "plugin-data/vipernet-model-manager/uso.jsonl"
+#: Eventos que valem como decisao no ledger. Duas condicoes no filtro, e nao
+#: so `"nivel" in e`: um evento novo que herde o `nivel` (o caso real e `erro`,
+#: que o levanta da ultima decisao em memoria) entrava como se fosse uma
+#: decisao, ligava-se ao ultimo prompt e inflacionava `decisoes_no_ledger` e
+#: `razao_decisoes_por_prompt` -- numeros errados com ar de medidos. E o
+#: contrario tambem acontece: medido a 2026-11-04, 344 `resposta` nao levam
+#: `nivel` (turno em perfil desligado) e o evento sozinho as deixaria entrar
+#: para o `x["nivel"]` do estrato rebentar. Com as duas condicoes o conjunto e
+#: exactamente o de hoje: os quatro eventos com `nivel` somam 19 958 iguais as
+#: linhas com `nivel`. `decisao` e o nome legado: zero ocorrencias, fica aceite
+#: para um ledger antigo ler igual.
+EVENTOS_DECISAO = ("resposta", "sem_troca", "troca", "sem_rota", "decisao")
 BASES = {
     "default": RAIZ / "state.db",
     "pessoal": RAIZ / "profiles/pessoal/state.db",
@@ -86,7 +98,7 @@ def _ler_ledger() -> list[dict]:
                 e = json.loads(linha)
             except json.JSONDecodeError:
                 continue
-            if "nivel" in e:
+            if "nivel" in e and e.get("evento") in EVENTOS_DECISAO:
                 out.append(e)
     return out
 

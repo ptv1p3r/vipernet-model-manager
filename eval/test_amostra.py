@@ -6,6 +6,7 @@ temporario. Corre: python3 test_amostra.py
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
@@ -136,6 +137,42 @@ def main() -> int:
         check("manifesto_unidade", "prompt" in man.get("unidade", ""))
     else:
         check("pool_gerado", False, r.stderr[:200])
+
+    # 10. filtro positivo do ledger: `erro` herda o nivel e NAO e decisao
+    spec = importlib.util.spec_from_file_location("extrair_mod", EXTRAIR)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    led = tmp / "ledger.jsonl"
+    base = {"perfil": "default", "sessao": "s1", "nivel": "media"}
+    escrever(led, [
+        dict(base, evento="resposta", ts="2026-11-04T10:00:00+00:00"),
+        dict(base, evento="sem_troca", ts="2026-11-04T10:00:01+00:00"),
+        dict(base, evento="erro", classe="timeout", ts="2026-11-04T10:00:02+00:00"),
+    ])
+    setattr(mod, "LEDGER", led)
+    lidos = mod._ler_ledger()
+    check("ledger_erro_fora",
+          [x["evento"] for x in lidos] == ["resposta", "sem_troca"],
+          str([x.get("evento") for x in lidos]))
+
+    # 11. o filtro exige as duas condicoes: sem `nivel` nao entra (344
+    # `resposta` de perfil desligado nao o levam), evento desconhecido tambem
+    # nao, e o nome legado `decisao` continua a entrar
+    escrever(led, [
+        {"perfil": "default", "sessao": "s1", "nivel": "alta",
+         "ts": "2026-11-04T10:00:03+00:00"},
+        {"evento": "resposta", "perfil": "default", "sessao": "s1",
+         "ts": "2026-11-04T10:00:03+00:00"},
+        {"evento": "evento_futuro", "nivel": "alta", "ts": "2026-11-04T10:00:04+00:00"},
+        {"evento": "decisao", "perfil": "default", "sessao": "s1", "nivel": "leve",
+         "ts": "2026-11-04T10:00:05+00:00"},
+    ])
+    lidos = mod._ler_ledger()
+    check("ledger_sem_evento_fora", [x["evento"] for x in lidos] == ["decisao"],
+          str([x.get("evento") for x in lidos]))
+    check("ledger_so_decisoes",
+          all(x.get("evento") in mod.EVENTOS_DECISAO and "nivel" in x for x in lidos))
 
     print(f"{OK}/{OK + len(FALHAS)} verificacoes OK")
     for f in FALHAS:
