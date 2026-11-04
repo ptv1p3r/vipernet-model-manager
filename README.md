@@ -931,11 +931,15 @@ utilizador fica convencido de ter mudado o que nunca mudou.
 ```
 
 O perfil de `trabalho` decide `prioridade` **e continua a herdar** o `por` do
-global. A herança é resolvida na **leitura** (`gestor.estrategia_efectiva`), e o
-`validar` grava **só o delta** — um perfil que repete o valor do global não fica
-com uma cópia que o prende ao dia em que foi gravada. É a mesma regra da
-`analise`, e a razão pela qual mudar o global muda de facto todos os perfis que
-não escolheram nada.
+global. A herança é resolvida na **leitura** (`gestor.estrategia_efectiva`), e a
+regra é: **ausência da chave = herda; presença = declaração**. Uma escolha
+explícita grava-se tal e qual, mesmo quando coincide hoje com o valor do global.
+Sem isso o painel respondia 200 e o bloco era descartado pelo *delta*, o perfil
+continuava a herdar e uma alteração posterior do global arrastava um perfil que
+o dono tinha declarado independente. Para voltar a herdar há um gesto próprio
+(«herdar do global»), que apaga o bloco. A regra do *delta* continua a valer na
+`analise` (limiares, janela, superfícies), onde o que chega das páginas são
+cópias do formulário e não escolhas.
 
 **Forma antiga migrada, não descartada.** A config viva foi escrita como
 `"estrategia": "rodizio"` + `"rodizio": {"por": "sessao"}`; `normalizar_estrategia`
@@ -943,11 +947,11 @@ lê as duas formas, e um valor inválido na forma antiga (`por: "hora"`) é recu
 com o caminho novo (`perfis.X.estrategia.por`). Um `gravar` sem esta conversão
 apagava a estratégia do perfil sem ninguém notar.
 
-**No painel.** Há um cartão «estratégia global» antes dos perfis e, em cada
-cartão, os dois `select` com a origem ao lado («herdada do global», «própria do
-perfil», «por omissão»). Escolher num perfil cria o delta; o botão «herdar do
-global» apaga-o — é o único gesto que exprime «volta a herdar», sem ele o bloco
-ficava a fixar o valor de hoje para sempre. As opções dos `select` vêm de
+**No painel.** A estratégia edita-se na página de configuração, no bloco
+«Complexidade e estratégia», com uma linha por âmbito (global e cada perfil) e a
+origem declarada ao lado («herdado do global», «próprio», «por omissão»).
+Escolher num perfil grava a declaração desse perfil; «herdar do global» apaga-a —
+é o único gesto que exprime «volta a herdar». As opções dos `select` vêm de
 `GET /estado` → `opcoes.estrategia` (as mesmas listas que validam, incluindo os
 rótulos), não de uma cópia em JS que envelhece.
 

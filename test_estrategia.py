@@ -98,12 +98,35 @@ class Heranca(unittest.TestCase):
         self.assertEqual(ef['por'], 'sessao')        # proprio
         self.assertEqual(ef['origem'], 'proprio')
 
-    def test_copia_igual_ao_global_nao_e_gravada(self):
+    def test_declaracao_igual_ao_global_fica_gravada(self):
+        """Uma escolha explicita nao pode desaparecer por coincidir com o global.
+
+        Era o defeito medido a 2026-11-04: o painel gravava, respondia 200 e o
+        bloco era descartado pelo delta — o perfil continuava a herdar e uma
+        alteracao posterior do global arrastava-o.
+        """
         limpo, erros = g.validar(config({'modo': 'rodizio', 'por': 'sessao'},
                                         perfil_est={'modo': 'rodizio', 'por': 'sessao'}))
         self.assertEqual(erros, [])
-        self.assertNotIn('estrategia', limpo['perfis']['p'])
-        self.assertEqual(g.estrategia_efectiva(limpo, 'p')['origem'], 'herdado')
+        self.assertEqual(limpo['perfis']['p']['estrategia'],
+                         {'modo': 'rodizio', 'por': 'sessao'})
+        self.assertEqual(g.estrategia_efectiva(limpo, 'p')['origem'], 'proprio')
+
+    def test_mudar_o_global_nao_mexe_no_perfil_declarado(self):
+        """Alterar o global afecta so quem herda — nunca quem declarou."""
+        base = config({'modo': 'rodizio', 'por': 'sessao'},
+                      perfil_est={'modo': 'rodizio', 'por': 'sessao'})
+        base['perfis']['q'] = {'activo': True, 'catalogo': [rota('q')]}
+        limpo, erros = g.validar(copy.deepcopy(base))
+        self.assertEqual(erros, [])
+        # O dono muda o global para prioridade/turno.
+        limpo['estrategia'] = {'modo': 'prioridade', 'por': 'turno'}
+        depois, erros = g.validar(copy.deepcopy(limpo))
+        self.assertEqual(erros, [])
+        self.assertEqual(g.estrategia_efectiva(depois, 'p'),
+                         {'modo': 'rodizio', 'por': 'sessao', 'origem': 'proprio'})
+        self.assertEqual(g.estrategia_efectiva(depois, 'q'),
+                         {'modo': 'prioridade', 'por': 'turno', 'origem': 'herdado'})
 
     def test_sem_global_nem_perfil_usa_o_padrao(self):
         limpo, erros = g.validar(config())

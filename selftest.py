@@ -1186,9 +1186,14 @@ def testes_heranca_classificador() -> None:
               (efectiva(g.validar(cfg(LIGADO, {"activo": True, "provider": "openrouter",
                                                "modelo": "x/y"}))[0], "pessoal") or {}
                ).get("provider") == "openrouter")
-        check("perfil que declara igual ao global nao fica com copia",
-              not ((g.validar(cfg(LIGADO, dict(LIGADO)))[0]["perfis"]["pessoal"]
-                    .get("analise") or {}).get("classificador")))
+        # Uma declaracao identica ao global tem de sobreviver: a ausencia da
+        # chave e que significa herdar. (Ate 2026-11-04 era descartada, e o
+        # perfil voltava a seguir o global sem o dono saber.)
+        igual = g.validar(cfg(LIGADO, dict(LIGADO)))[0]["perfis"]["pessoal"]
+        bloco = (igual.get("analise") or {}).get("classificador") or {}
+        check("perfil que declara igual ao global fica com o bloco proprio",
+              (bloco.get("provider"), bloco.get("modelo")) == ("deepseek", "deepseek-flash"),
+              str(bloco))
 
         # limiares: o perfil declara so o que quer mudar
         parcial = _cfg_base()

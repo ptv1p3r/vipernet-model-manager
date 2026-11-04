@@ -735,8 +735,6 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
     # transformava "nao escolhi" numa escolha, e a origem passava a ser
     # `herdado` para toda a gente — o painel deixava de poder dizer "por
     # omissao", que e a informacao util quando nada foi decidido.
-    base_est = dict(ESTRATEGIA_PADRAO)
-    base_est.update(est_global)
     if est_global:
         saida["estrategia"] = dict(est_global)
 
@@ -759,6 +757,10 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         bruto_est = pcfg.get("estrategia")
         por_antigo = (pcfg.get("rodizio") or {}).get("por") \
             if isinstance(pcfg.get("rodizio"), dict) else None
+        # Migracao da forma antiga (string + `rodizio.por`): a semente escrevia
+        # `rodizio`/`sessao` em todos os perfis, portanto esse valor nao e uma
+        # escolha — converter sem distinguir fixava cada perfil ao padrao.
+        migrada = isinstance(bruto_est, str) or (bruto_est is None and por_antigo is not None)
         if isinstance(bruto_est, str):
             bruto_est = {"modo": bruto_est, "por": por_antigo}
         elif bruto_est is None and por_antigo is not None:
@@ -766,11 +768,16 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         est_limpa, erros_est = normalizar_estrategia(
             bruto_est, f"perfis.{nome}.estrategia")
         erros.extend(erros_est)
-        # Grava-se so o delta: um valor igual ao global nao e uma declaracao, e
-        # uma copia que fixa o perfil ao dia em que foi gravada (a mesma regra
-        # da `analise`, e a razao pela qual os perfis nao devem repetir valores).
-        delta_est = {k: v for k, v in est_limpa.items()
-                     if base_est.get(k) != v}
+        # A estrategia declarada grava-se tal e qual, mesmo quando hoje coincide
+        # com o global. A heranca e a AUSENCIA da chave; a presenca e uma
+        # declaracao. A regra do delta (que se mantem na `analise`) engolia uma
+        # escolha explicita: o painel respondia 200, o perfil continuava a
+        # herdar, e uma alteracao posterior do global arrastava um perfil que o
+        # dono tinha declarado independente. As paginas de edicao inicializam
+        # sempre de `pcfg["estrategia"]` (nunca do valor efectivo), portanto nao
+        # geram copias por acidente.
+        est_declarada = {} if (migrada and est_limpa == dict(ESTRATEGIA_PADRAO)) \
+            else dict(est_limpa)
         # `teto_latencia` e tolerante em tempo de execucao (0 = sem teto), mas
         # um valor declarado e invalido tem de aparecer no editor, senao o
         # utilizador grava um teto que nao existe e nunca sabe por que.
@@ -798,10 +805,12 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
                     limpo, erros_c = _analise_modelo().normalizar(
                         valor, prefixo=f"perfis.{nome}.analise.classificador")
                     erros.extend(erros_c)
-                    if limpo == saida["analise"].get("classificador"):
-                        # Igual ao global: nao se grava copia (ver acima).
-                        continue
-                    panalise["classificador"] = limpo
+                    # Grava-se o que o perfil declara, mesmo que coincida hoje
+                    # com o global: o painel abre em "herdar" quando a chave nao
+                    # existe, por isso uma declaracao so aparece quando o dono a
+                    # escolhe. Um bloco vazio continua a significar herdar.
+                    if limpo:
+                        panalise["classificador"] = limpo
                 elif chave == "superficies":
                     # Guardado bruto: a validacao estreita precisa do
                     # catalogo, que so existe depois deste laco.
@@ -880,10 +889,10 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         saida["perfis"][nome] = {
             "tarefas": tarefas,
             "activo": bool(pcfg.get("activo", True)),
-            # Sem delta nao se grava `estrategia`: a ausencia da chave e o que
-            # significa "herda o global" (e o que permite mudar o global sem
-            # tocar nos perfis).
-            **(lambda e: {"estrategia": e} if e else {})(delta_est),
+            # Sem bloco declarado nao se grava `estrategia`: a ausencia da chave
+            # e o que significa "herda o global" (e o que permite mudar o global
+            # sem tocar nos perfis que nunca declararam nada).
+            **(lambda e: {"estrategia": e} if e else {})(est_declarada),
             # Teto de latencia do perfil: so se grava quando declarado, pela
             # mesma razao que a `analise` — ausencia e "sem teto", e um valor
             # herdado do global fixaria o perfil ao numero do dia.
