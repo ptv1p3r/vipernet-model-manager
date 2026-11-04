@@ -955,6 +955,7 @@ const OPCOES = {
   modalidades: ["texto", "imagem", "audio", "ferramentas"],
   tarefas: [{ valor: "arquitetura", rotulo: "arquitetura · prioridade 10" }],
   providers: ["deepseek", "openrouter"],
+  superficies: ["cron", "api_server", "cli", "whatsapp"],
 };
 
 const volta = T.formParaEntrada(forma, OPCOES);
@@ -980,6 +981,41 @@ check("formParaEntrada: custo e ordem em branco nao sao escritos",
                                        complexidade: ["alta"], custo: "", ordem: " " }, OPCOES))
       && !("ordem" in T.formParaEntrada({ id: "x", provider: "p", modelo: "m",
                                           complexidade: ["alta"], custo: "", ordem: " " }, OPCOES)));
+// Superficies por modelo: o mapa e superficie -> booleano. A armadilha e a
+// heranca: a ausencia da chave e o que herda, por isso um mapa vazio NAO pode
+// ser escrito, e a copia nao pode partilhar a referencia do estado.
+check("entradaParaForm: superficies vem copiadas, nao por referencia",
+      (function () {
+        const origem = { cron: false };
+        const f = T.entradaParaForm({ id: "x", superficies: origem });
+        f.superficies.cron = true;
+        return origem.cron === false;
+      })());
+check("entradaParaForm: sem superficies devolve mapa vazio",
+      Object.keys(T.entradaParaForm({ id: "x" }).superficies).length === 0);
+check("formParaEntrada: superficies booleanas sobrevivem",
+      (function () {
+        const e = T.formParaEntrada({ id: "x", provider: "p", modelo: "m",
+                                     complexidade: ["alta"],
+                                     superficies: { cron: false, cli: true } }, OPCOES);
+        return e.superficies.cron === false && e.superficies.cli === true;
+      })());
+check("formParaEntrada: mapa vazio nao escreve a chave (heranca)",
+      !("superficies" in T.formParaEntrada({ id: "x", provider: "p", modelo: "m",
+                                            complexidade: ["alta"], superficies: {} }, OPCOES)));
+check("formParaEntrada: valores nao booleanos sao descartados",
+      (function () {
+        const e = T.formParaEntrada({ id: "x", provider: "p", modelo: "m",
+                                     complexidade: ["alta"],
+                                     superficies: { cron: "nao", cli: true } }, OPCOES);
+        return !("cron" in e.superficies) && e.superficies.cli === true;
+      })());
+check("superficies: ida e volta preserva o mapa",
+      JSON.stringify(canonico(T.formParaEntrada(
+        T.entradaParaForm({ id: "x", provider: "p", modelo: "m",
+                            complexidade: ["alta"], superficies: { "*": false, cron: true } }),
+        OPCOES).superficies)) === JSON.stringify({ "*": false, cron: true }));
+
 check("formParaEntrada: custo decimal sobrevive",
       T.formParaEntrada({ id: "x", provider: "p", modelo: "m", complexidade: ["alta"],
                           custo: "0.28" }, OPCOES).custo === 0.28);
@@ -1140,8 +1176,21 @@ check("grupo de opcao: o escolhido anuncia-se com aria-pressed",
       }).map(function (b) { return textoPlano(b.filhos).trim(); }).join(",") === "alta");
 
 const seletores = comTag(arvoreModelo, "Seletor");
-check("pagina do modelo: cinco listas fechadas em Seletor (provider, acesso, esforco, estado, JSON)",
-      seletores.length === 5, String(seletores.length));
+// Cinco selectores fixos (provider, acesso, esforço, estado, JSON) e, mais
+// recente, um por superficie declarada + o das nao nomeadas. Conta-se pela
+// lista, nao por um numero magico: acrescentar uma superficie nao parte isto.
+const ESPERADOS_SELETORES = 5 + OPCOES.superficies.length + 1;
+check("pagina do modelo: cinco listas fechadas + uma por superficie",
+      seletores.length === ESPERADOS_SELETORES,
+      String(seletores.length) + " != " + ESPERADOS_SELETORES);
+check("pagina do modelo: cada superficie tem o seu selector tri-estado",
+      (function () {
+        const tri = seletores.filter(function (s) {
+          const vals = ((s.props && s.props.opcoes) || []).map(function (o) { return o.valor; });
+          return vals.length === 3 && vals[0] === "herdar";
+        });
+        return tri.length === OPCOES.superficies.length + 1;
+      })(), String(seletores.length));
 check("pagina do modelo: o provider e lista fechada vinda de opcoes.providers",
       (function () {
         const doProv = seletores.filter(function (s) {
@@ -1154,7 +1203,7 @@ check("pagina do modelo: os Seletor so recebem valores das listas",
       seletores.every(function (s) {
         const vals = ((s.props && s.props.opcoes) || []).map(function (o) { return o.valor; });
         return vals.every(function (v) {
-          return v === "" || v === "sim" || v === "nao"
+          return v === "" || v === "sim" || v === "nao" || v === "herdar"
             || OPCOES.acessos.indexOf(v) !== -1 || OPCOES.esforcos.indexOf(v) !== -1
             || OPCOES.providers.indexOf(v) !== -1;
         });

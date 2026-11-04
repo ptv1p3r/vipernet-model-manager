@@ -542,6 +542,11 @@
       custo: x.custo == null ? "" : String(x.custo),
       ordem: x.ordem == null ? "" : String(x.ordem),
       nota: x.nota == null ? "" : String(x.nota),
+      // Superficies: mapa superficie -> booleano. Copia propria (nao a
+      // referencia do estado) porque apagar uma chave no formulario nao pode
+      // mexer no resumo que o painel mostra por tras da pagina.
+      superficies: (x.superficies && typeof x.superficies === "object"
+        && !Array.isArray(x.superficies)) ? Object.assign({}, x.superficies) : {},
     };
   }
 
@@ -591,6 +596,15 @@
     if (ordemEntrada !== null) entrada.ordem = ordemEntrada;
     var nota = String(f.nota == null ? "" : f.nota).trim();
     if (nota) entrada.nota = nota;
+    // Superficies do modelo: so booleanos. Uma chave ausente e heranca (o
+    // perfil decide); `false` e uma recusa explicita. Nao se escreve o mapa
+    // quando fica vazio — declarar nada nao proibe nada.
+    var mapaSup = f.superficies || {};
+    var limpoSup = {};
+    Object.keys(mapaSup).forEach(function (k) {
+      if (typeof mapaSup[k] === "boolean") limpoSup[k] = mapaSup[k];
+    });
+    if (Object.keys(limpoSup).length) entrada.superficies = limpoSup;
     return entrada;
   }
 
@@ -668,6 +682,21 @@
       return function (valor) { props.onCampo(campo, valor); };
     };
     const listaTarefas = (opcoes.tarefas || []);
+    // Superficies do modelo: tri-estado por superficie — herdar (nao escreve
+    // nada), pode servir (true), nao serve (false). A heranca e a ausencia da
+    // chave; gravar o valor herdado como se fosse proprio matava a heranca.
+    const mapaSup = form.superficies || {};
+    const mudarSup = function (sup, valor) {
+      var novoMapa = Object.assign({}, mapaSup);
+      if (valor === "herdar") delete novoMapa[sup];
+      else novoMapa[sup] = (valor === "sim");
+      props.onCampo("superficies", novoMapa);
+    };
+    const opcoesTri = [
+      { valor: "herdar", rotulo: "herdar do perfil" },
+      { valor: "sim", rotulo: "pode servir" },
+      { valor: "nao", rotulo: "não serve" },
+    ];
 
     return h(
       "div",
@@ -807,6 +836,38 @@
                   h(EntradaTexto, { tipo: "number", valor: form.custo, rotulo: "custo", placeholder: "0", onChange: mudar("custo") })),
                 h(Campo, { rotulo: "ordem", ajuda: "desempate entre custos iguais; o id fecha o empate, por isso a posição no ficheiro nunca conta" },
                   h(EntradaTexto, { tipo: "number", valor: form.ordem, rotulo: "ordem", placeholder: "0", onChange: mudar("ordem") }))
+              )
+            ),
+
+            h(
+              "div",
+              { className: "vmm-bloco" },
+              h("div", { className: "vmm-bloco-titulo" }, h("strong", null, "Superfícies")),
+              h("div", { className: "vmm-mudo vmm-campo-ajuda" },
+                "Quem serve a superfície continua a ser o perfil; aqui só se diz se ESTE modelo a pode servir. "
+                + "«Herdar do perfil» não escreve nada — é a ausência da regra que herda."),
+              h(
+                "div",
+                { className: "vmm-modelo-campos" },
+                (opcoes.superficies || []).map(function (sup) {
+                  var v = mapaSup[sup];
+                  return h(Campo, {
+                    rotulo: sup,
+                    ajuda: v === undefined ? "herda do perfil" : (v ? "pode servir" : "não serve"),
+                  }, h(Seletor, {
+                    rotulo: "superfície " + sup,
+                    opcoes: opcoesTri,
+                    valor: v === undefined ? "herdar" : (v ? "sim" : "nao"),
+                    onChange: function (val) { mudarSup(sup, val); },
+                  }));
+                }),
+                h(Campo, { rotulo: "todas as outras", ajuda: "«não serve» aqui fecha o modelo às superfícies que não estão marcadas «pode servir»" },
+                  h(Seletor, {
+                    rotulo: "superfícies não nomeadas",
+                    opcoes: opcoesTri,
+                    valor: mapaSup["*"] === undefined ? "herdar" : (mapaSup["*"] ? "sim" : "nao"),
+                    onChange: function (val) { mudarSup("*", val); },
+                  }))
               )
             ),
 
