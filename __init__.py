@@ -411,7 +411,8 @@ def escolher(pcfg: dict[str, Any], nivel: str, *, perfil: str, sessao: str) -> d
     chave = gestor.chave_rodizio(perfil, sessao, nivel)
     with _lock:
         indice = gestor.indice_rodizio(chave, len(lista), por=por, perfil=perfil,
-                                       sessao=sessao, nivel=nivel, contadores=_contadores)
+                                       sessao=sessao, nivel=nivel, contadores=_contadores,
+                                       ids=[str(e.get("id") or "") for e in lista])
     return lista[indice % len(lista)]
 
 
@@ -453,7 +454,8 @@ def escolher_com_rota(pcfg: dict[str, Any], nivel: str, *, perfil: str,
         chave = gestor.chave_rodizio(perfil, sessao, nivel)
         with _lock:
             indice = gestor.indice_rodizio(chave, len(lista), por=por, perfil=perfil,
-                                           sessao=sessao, nivel=nivel, contadores=_contadores)
+                                           sessao=sessao, nivel=nivel, contadores=_contadores,
+                                           ids=[str(e.get("id") or "") for e in lista])
         ordenada = lista[indice % len(lista):] + lista[:indice % len(lista)]
     else:
         ordenada = list(lista)

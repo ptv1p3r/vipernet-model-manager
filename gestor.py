@@ -1369,12 +1369,41 @@ def chave_rodizio(perfil: str, sessao: str, nivel: str) -> str:
     return f"{perfil}\x1f{sessao}\x1f{nivel}"
 
 
+def _hash_candidato(semente: str, entrada_id: str) -> str:
+    """Hash estavel de (semente, id). Nao depende do numero de candidatos."""
+    return hashlib.md5(f"{semente}\x1f{entrada_id}".encode("utf-8")).hexdigest()
+
+
+def indice_consistente(perfil: str, sessao: str, nivel: str, ids: list[str]) -> int:
+    """Hash consistente: o candidato com o menor md5(semente|id).
+
+    Ao contrario de `semente % n`, acrescentar ou remover um modelo nao muda o
+    divisor de ninguem: so se deslocam as sessoes que caem perto da entrada nova.
+    """
+    if not ids:
+        return 0
+    semente = f"{perfil}|{sessao}|{nivel}"
+    melhor, melhor_hash = 0, None
+    for posicao, entrada_id in enumerate(ids):
+        h = _hash_candidato(semente, str(entrada_id))
+        if melhor_hash is None or h < melhor_hash:
+            melhor_hash, melhor = h, posicao
+    return melhor
+
+
 def indice_rodizio(chave: str, n: int, *, por: str, perfil: str, sessao: str,
-                   nivel: str, contadores: dict[str, int]) -> int:
-    """Indice estavel: por sessao usa hash, por turno incrementa. Nunca negativo."""
+                   nivel: str, contadores: dict[str, int],
+                   ids: list[str] | None = None) -> int:
+    """Indice estavel: por sessao usa hash, por turno incrementa. Nunca negativo.
+
+    Com `ids` preenchido e `por="sessao"`, usa hash consistente em vez de modulo;
+    sem `ids` mantem a formula antiga, para nao partir quem so conhece `n`.
+    """
     if n <= 0:
         return 0
     if por == "sessao":
+        if ids:
+            return indice_consistente(perfil, sessao, nivel, ids) % n
         semente = int(hashlib.md5(f"{perfil}|{sessao}|{nivel}".encode("utf-8")).hexdigest()[:8], 16)
         return semente % n
     atual = contadores.get(chave, 0)
