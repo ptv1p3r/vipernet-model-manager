@@ -456,6 +456,53 @@ def _pin_gravar(chave: str, valores: dict[str, Any]) -> None:
             _turno.clear()
 
 
+#: Tarefa associada por sessao (3.32.0): `perfil\x1fsessao` -> `{tarefa, ts,
+#: idade_turnos}`. Vive ao lado do pin porque e a mesma familia de chave: o pin
+#: dura um turno, a tarefa dura a sessao. Sem isto, o detector — que le so a
+#: ultima mensagem, de proposito — perdia a associacao no primeiro "continua".
+_tarefa_sessao: dict[str, dict[str, Any]] = {}
+_TAREFA_MAX = 500
+
+
+def _tarefa_fixar(chave: str, tarefa: str) -> None:
+    """Detectada neste turno: substitui a anterior e reinicia o prazo."""
+    with _lock:
+        _tarefa_sessao[chave] = {"tarefa": tarefa, "ts": time.time(),
+                                 "idade_turnos": 0}
+        if len(_tarefa_sessao) > _TAREFA_MAX:
+            _tarefa_sessao.clear()
+
+
+def _tarefa_herdar(chave: str, expira_min: int,
+                   expira_turnos: int) -> tuple[str, int]:
+    """(tarefa viva, idade em turnos), ou `("", 0)` quando o prazo passou.
+
+    O prazo conta desde a ultima **deteccao**: herdar nao o renova. Renovar
+    deixava um "sim" de oito em oito turnos manter um modelo pago vivo sem fim,
+    e o custo aparecia na fatura sem motivo visivel.
+    """
+    agora = time.time()
+    with _lock:
+        guardado = _tarefa_sessao.get(chave)
+        if not guardado:
+            return "", 0
+        idade_min = (agora - float(guardado.get("ts") or 0.0)) / 60.0
+        if expira_min > 0 and idade_min > expira_min:
+            _tarefa_sessao.pop(chave, None)
+            return "", 0
+        idade = int(guardado.get("idade_turnos") or 0) + 1
+        if expira_turnos > 0 and idade > expira_turnos:
+            _tarefa_sessao.pop(chave, None)
+            return "", 0
+        guardado["idade_turnos"] = idade
+        return str(guardado.get("tarefa") or ""), idade
+
+
+def _tarefa_apagar(chave: str) -> None:
+    with _lock:
+        _tarefa_sessao.pop(chave, None)
+
+
 # --------------------------------------------------------------------------- rotas
 
 
@@ -1015,6 +1062,8 @@ def middleware_llm_request(
                     "motor": _VERSAO_MOTOR, "inst": _INSTANCIA,
                     "origem": pin.get("origem") or "",
                     "tarefa": tarefa, "score": None, "sinais": None,
+                    "tarefa_origem": pin.get("tarefa_origem") or None,
+                    "tarefa_idade_turnos": pin.get("tarefa_idade_turnos") or None,
                     "turno": identificador_turno, "passo": passo,
                     "pin": "reutilizado", "fonte_turno": fonte_turno,
                     "superficie": superficie or None,
@@ -1044,6 +1093,31 @@ def middleware_llm_request(
                 pesos=analise.get("pesos"),
             )
             tarefa = _analise_mod.detectar_tarefa(mensagens, pcfg.get("tarefas") or {})
+            # (3.32.0) A tarefa vive na sessao, nao no turno. O detector le so a
+            # ultima mensagem — um "continua" ou "agora escreve o parecer" nao
+            # tem nenhum dos termos — e o pin morre com o turno: a associacao
+            # durava um turno e o seguinte caia na complexidade, trocando de
+            # modelo a meio da conversa.
+            tarefa_origem = "detectada" if tarefa else ""
+            tarefa_idade = 0
+            chave_tarefa = f"{perfil}\x1f{session_id}" if session_id else ""
+            persist = analise.get("tarefa_persistente")
+            if not isinstance(persist, dict):
+                persist = gestor.TAREFA_PERSISTENTE_PADRAO
+            persistente = bool(persist.get("activo", True)) and bool(chave_tarefa)
+            if tarefa and persistente:
+                _tarefa_fixar(chave_tarefa, str(tarefa))
+            elif persistente and decisao.get("origem") != "reset":
+                # `complexidade: auto` sem tarefa no texto e o fim explicito: nao
+                # se herda nada. Sem esta guarda a heranca repunha a tarefa antes
+                # do reset e o marcador nunca conseguiu larga-la.
+                herdada, tarefa_idade = _tarefa_herdar(
+                    chave_tarefa,
+                    int(persist.get("expira_min") or 0),
+                    int(persist.get("expira_turnos") or 0))
+                if herdada:
+                    tarefa = herdada
+                    tarefa_origem = "herdada"
             associada = tarefa if any(tarefa in e.get("tarefas", [])
                                      for e in gestor.catalogo_utilizavel(pcfg)) else None
             # A superficie manda sobre a tarefa e sobre a analise, mas nunca
@@ -1091,6 +1165,8 @@ def middleware_llm_request(
                     "origem": "tarefa" if associada else decisao["origem"],
                     "tarefa": tarefa, "score": decisao.get("score"),
                     "sinais": decisao.get("sinais"),
+                    "tarefa_origem": tarefa_origem or None,
+                    "tarefa_idade_turnos": tarefa_idade or None,
                     "turno": identificador_turno, "passo": passo,
                     "pin": "novo", "fonte_turno": fonte_turno,
                     "superficie": superficie or None,
@@ -1112,6 +1188,13 @@ def middleware_llm_request(
             if classificador_motivo:
                 base["classificador_motivo"] = classificador_motivo
             if not nivel:
+                # Fim da tarefa por marcador: `complexidade: auto` sem tarefa no
+                # texto larga a associacao desta sessao. E a unica saida manual
+                # — sem ela, o utilizador nao tinha como voltar ao modelo barato
+                # sem esperar pelo prazo.
+                if persistente:
+                    _tarefa_apagar(chave_tarefa)
+                    base["tarefa_limpa"] = True
                 _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
                                  origem=base["origem"], acesso="", entrada="",
                                  trace=trace_de(base))
@@ -1147,6 +1230,8 @@ def middleware_llm_request(
                     "origem": base["origem"], "passo": passo,
                     "classificador": base.get("classificador"),
                     "classificador_erro": base.get("classificador_erro"),
+                    "tarefa_origem": base.get("tarefa_origem"),
+                    "tarefa_idade_turnos": base.get("tarefa_idade_turnos"),
                 })
         _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
                          origem=base["origem"], acesso="", entrada="",
@@ -1470,6 +1555,17 @@ def pos_resposta(
                 "provider": decisao["escolhido_provider"],
                 "modelo": decisao.get("escolhido_modelo", ""),
             }
+        # (3.32.0) De onde veio a tarefa e ha quantos turnos vive. Sem estes dois
+        # o registo diz que houve tarefa mas nao distingue "detectada neste
+        # pedido" de "herdada de um pedido anterior" — e e essa a medida de se a
+        # heranca esta a colar demais.
+        rasto = decisao.get("trace") or {}
+        if rasto.get("tarefa_origem"):
+            entrada["tarefa_origem"] = rasto["tarefa_origem"]
+        if rasto.get("tarefa_idade_turnos"):
+            entrada["tarefa_idade_turnos"] = rasto["tarefa_idade_turnos"]
+        if rasto.get("tarefa_limpa"):
+            entrada["tarefa_limpa"] = True
         if isinstance(usage, dict):
             entrada["tokens"] = {k: usage.get(k) for k in
                                  ("input_tokens", "output_tokens", "prompt_tokens",

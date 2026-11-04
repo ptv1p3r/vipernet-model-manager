@@ -37,6 +37,10 @@ class Tarefas(unittest.TestCase):
         self.cfg = config()
         p._historico.clear()
         p._contadores.clear()
+        p._turno.clear()
+        # (3.32.0) A tarefa passou a viver na sessao: sem limpar, um teste
+        # herdava a tarefa do anterior e media a coisa errada.
+        p._tarefa_sessao.clear()
         self.patches = [
             patch.object(p, '_config', side_effect=lambda: p.gestor.validar(self.cfg)[0]),
             patch.object(p.gestor, 'perfil_atual', return_value='trabalho'),
@@ -107,13 +111,18 @@ class Tarefas(unittest.TestCase):
         self.assertEqual(e['origem'], 'analise_fallback_tarefa')
         self.assertTrue(e['falhadas_tarefa'])
 
-    def test_next_task_returns_immediately_to_flash(self):
+    def test_task_persists_across_turns(self):
+        # (3.32.0) A associacao vive na sessao: o turno seguinte, que nao fala de
+        # arquitetura, continua no modelo da tarefa em vez de cair na
+        # complexidade. Antes desta versao este teste exigia o contrario — era
+        # exactamente o defeito reportado (o modelo mudava a meio da conversa).
         self.run_turn('Faz uma análise de arquitetura.')
         e = self.run_turn('Diz apenas bom dia.', [
             {'role': 'user', 'content': 'Faz uma análise de arquitetura.'},
             {'role': 'assistant', 'content': 'Resultado da análise de arquitetura.'}])
-        self.assertEqual(self.agent.model, 'deepseek-flash')
-        self.assertEqual(e['origem'], 'analise')
+        self.assertEqual(self.agent.model, 'openai/gpt-6.1-sol')
+        self.assertEqual(e['origem'], 'tarefa')
+        self.assertEqual(e['tarefa_origem'], 'herdada')
 
     def test_unassociated_task_uses_complexity(self):
         self.cfg['perfis']['trabalho']['tarefas']['traducao'] = {'termos': ['traduz'], 'prioridade': 0}

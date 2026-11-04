@@ -104,6 +104,25 @@ _ESFORCO_SINONIMOS = {
 # restantes providers sao rota de API. A inferencia retrocompativel apoia-se nisto.
 _PROVIDERS_SUBSCRICAO = frozenset({"openai-codex"})
 
+# Tarefa persistente por sessao (3.32.0). O detector
+# (`analise.detectar_tarefa`) le **so** a ultima mensagem do utilizador — de
+# proposito, para nao classificar historico nem contexto injectado — e o pin
+# fixa a decisao por turno. Juntas, as duas coisas davam isto: o turno que traz
+# "analise de arquitetura" associava a rota certa, e o turno seguinte
+# ("continua", "agora escreve o parecer") nao tinha nenhum dos termos, a
+# associacao desaparecia e quem decidia era a complexidade. O turno trocava de
+# modelo a meio da conversa.
+#
+# `expira_turnos` e `expira_min` contam a partir da ultima **deteccao**, nunca
+# da ultima heranca: se herdar renovasse o prazo, um "sim" de oito em oito
+# turnos mantinha um modelo pago vivo indefinidamente e ninguem dava por isso.
+TAREFA_PERSISTENTE_PADRAO: dict[str, Any] = {
+    "activo": True,
+    "expira_turnos": 6,
+    "expira_min": 90,
+}
+TAREFA_PERSISTENTE_CHAVES = frozenset(TAREFA_PERSISTENTE_PADRAO)
+
 ANALISE_PADRAO: dict[str, Any] = {
     "janela_mensagens": 8,
     "varredura_max_mensagens": 60,
@@ -122,6 +141,10 @@ ANALISE_PADRAO: dict[str, Any] = {
     # `cli` 27. Uma regra aqui ganha a tarefa e a analise de complexidade —
     # so o marcador explicito do utilizador (`complexidade: alta`) manda mais.
     "superficies": {},
+    # A tarefa associada vive na **sessao**, com prazo — ver
+    # `TAREFA_PERSISTENTE_PADRAO`. Herda-se do global chave a chave, como a
+    # estrategia: declarar so o prazo nao obriga a repetir o `activo`.
+    "tarefa_persistente": dict(TAREFA_PERSISTENTE_PADRAO),
     # `classificador` e preenchido mais abaixo, a partir de
     # `analise_modelo.PADRAO`: os limites do classificador (timeout, tokens,
     # cache) tem UMA casa. Duplica-los aqui foi o que deixou a config viva com
@@ -804,6 +827,50 @@ def normalizar_retencao(valor: Any, prefixo: str = "retencao",
     return saida, erros
 
 
+def normalizar_tarefa_persistente(valor: Any,
+                                 prefixo: str = "analise.tarefa_persistente",
+                                 erros: list[str] | None = None
+                                 ) -> dict[str, Any]:
+    """Normaliza o bloco da tarefa persistente; devolve **so** o declarado.
+
+    Devolver so o declarado e o que mantem a heranca: em `perfil_config` uma
+    chave ausente cai no global, e preencher aqui as que faltam transformava
+    todo o perfil numa copia fixa do dia em que foi gravado.
+
+    Chave desconhecida e erro. Os numeros tem limites porque `0` e o valor que
+    parece inocente e desliga a heranca com o `activo` ainda a `true`: o dono
+    julgaria que a tarefa persistia enquanto o modelo continuava a mudar a meio
+    da conversa — o defeito que este bloco existe para corrigir.
+    """
+    if erros is None:
+        erros = []
+    if valor is None or valor == "":
+        return {}
+    if not isinstance(valor, dict):
+        erros.append(f"{prefixo} tem de ser um objecto")
+        return {}
+    _recusar_desconhecidas(valor, TAREFA_PERSISTENTE_CHAVES, prefixo, erros)
+    limite = {"expira_turnos": 50, "expira_min": 1440}
+    saida: dict[str, Any] = {}
+    for chave, valor_chave in valor.items():
+        if chave not in TAREFA_PERSISTENTE_CHAVES:
+            continue
+        if chave == "activo":
+            if isinstance(valor_chave, bool):
+                saida[chave] = valor_chave
+            else:
+                erros.append(f"{prefixo}.activo tem de ser booleano")
+            continue
+        if isinstance(valor_chave, bool) or not isinstance(valor_chave, int):
+            erros.append(f"{prefixo}.{chave} tem de ser inteiro")
+            continue
+        if not 1 <= valor_chave <= limite[chave]:
+            erros.append(f"{prefixo}.{chave} fora de [1, {limite[chave]}]")
+            continue
+        saida[chave] = valor_chave
+    return saida
+
+
 def normalizar_estrategia(valor: Any, prefixo: str = "estrategia",
                           erros: list[str] | None = None
                           ) -> tuple[dict[str, str], list[str]]:
@@ -944,6 +1011,12 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
             elif chave == "superficies":
                 saida["analise"]["superficies"] = normalizar_superficies(
                     valor, "'analise.superficies'", erros)
+            elif chave == "tarefa_persistente":
+                # Funde sobre o padrao: um global que declare so o prazo mantem
+                # o `activo` do padrao, que e o que o dono espera.
+                saida["analise"]["tarefa_persistente"].update(
+                    normalizar_tarefa_persistente(
+                        valor, "'analise.tarefa_persistente'", erros))
             else:
                 saida["analise"][chave] = valor
 
@@ -1050,6 +1123,17 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
                     # Guardado bruto: a validacao estreita precisa do
                     # catalogo, que so existe depois deste laco.
                     panalise["superficies"] = valor
+                elif chave == "tarefa_persistente":
+                    # Chave a chave, e so o que difere do global: repetir o
+                    # valor global era fixar o perfil ao dia (a mesma armadilha
+                    # dos `limiares`).
+                    limpo_tp = normalizar_tarefa_persistente(
+                        valor, f"perfis.{nome}.analise.tarefa_persistente", erros)
+                    globais_tp = saida["analise"].get("tarefa_persistente") or {}
+                    declarados_tp = {k: v for k, v in limpo_tp.items()
+                                     if globais_tp.get(k) != v}
+                    if declarados_tp:
+                        panalise["tarefa_persistente"] = declarados_tp
                 else:
                     # Mesma regra para as chaves simples: um valor igual ao
                     # global nao e uma declaracao, e uma copia que fixa o perfil
@@ -1671,6 +1755,12 @@ def perfil_config(cfg: dict[str, Any], perfil: str) -> dict[str, Any] | None:
                     base = dict(analise.get("superficies") or {})
                     base.update(copy.deepcopy(valor))
                     analise["superficies"] = base
+                elif chave == "tarefa_persistente" and isinstance(valor, dict):
+                    # Chave a chave, como a estrategia: um perfil que declare
+                    # so o prazo herda o `activo` do global.
+                    base = dict(analise.get("tarefa_persistente") or {})
+                    base.update(valor)
+                    analise["tarefa_persistente"] = base
                 else:
                     analise[chave] = copy.deepcopy(valor)
         saida["analise"] = analise

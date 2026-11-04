@@ -1210,6 +1210,42 @@ tempos e tokens. A escrita é uma linha por `write` com `O_APPEND` e o
 ficheiro nasce `0600`, para coexistir com o CLI e o gateway a escrever em
 processos diferentes.
 
+### A tarefa vive na sessão, não no turno (3.32.0)
+
+Até à 3.31.0 a associação de tarefa durava **um turno**. `analise.detectar_tarefa`
+lê só a última mensagem do utilizador — de propósito, para não classificar
+histórico nem contexto injectado — e o `pin` fixa a decisão por `turn_id`. As duas
+coisas juntas produziam o drift: o turno que traz «faz uma análise de arquitetura»
+acerta na rota cara, o turno seguinte («continua», «agora escreve o parecer») não
+tem nenhum dos termos, a associação desaparece e quem decide é a complexidade. O
+modelo muda a meio da conversa, e o custo com ele.
+
+Agora a tarefa é guardada por **`perfil|sessão`**, ao lado do histórico de
+histerese e com a mesma trava:
+
+    "analise": {"tarefa_persistente": {"activo": true, "expira_turnos": 6, "expira_min": 90}}
+
+- Tarefa detectada no texto **substitui** sempre a anterior e reinicia o prazo.
+- Sem detecção e com tarefa viva, o turno **herda-a** e regista
+  `tarefa_origem: herdada` com `tarefa_idade_turnos` — é o que permite medir se a
+  herança está a colar demais sem ler a conversa.
+- O prazo conta desde a última **detecção**: herdar não o renova. Renovar deixava
+  um «sim» de oito em oito turnos manter um modelo pago vivo sem fim.
+- Termina por tarefa nova, por prazo (`expira_turnos` **ou** `expira_min`), ou por
+  `complexidade: auto` sem tarefa no texto — o único fim manual, registado com
+  `tarefa_limpa: true`. O marcador continua a ganhar a tudo quando o texto traz
+  uma tarefa: nesse caso manda o pedido actual.
+- `activo: false` devolve o comportamento antigo, sem mais nada.
+- O bloco herda do global chave a chave, como a estratégia: um perfil que declare
+  só `expira_turnos` mantém o `activo` do global; repetir o valor do global não é
+  gravado (fixava o perfil ao dia).
+- A chave é da mesma família do pin, mas não é a mesma: o pin dura um turno, a
+  tarefa dura a sessão. Sessão vazia não persiste nada — sem ela a chave colaria
+  todas as conversas e duas sessões partilhavam a rota.
+
+Prova: `test_tarefa_persistente.py` (12 casos, com os negativos — sessão
+diferente, prazo esgotado, marcador de fim, desligado, validação).
+
 ## Limites conhecidos
 
 - Importa funções internas do Hermes (`resolve_runtime_provider`,
