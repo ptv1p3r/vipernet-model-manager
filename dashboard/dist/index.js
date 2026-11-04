@@ -1877,10 +1877,13 @@
                 + (estGlobal && estGlobal.modo ? " (" + (curtoModo[estGlobal.modo] || estGlobal.modo) + ")" : "") }];
         const porModo = (est && est.modo) || (perfil === null ? "" : (estGlobal && estGlobal.modo) || "");
         return h("div", { key: perfil === null ? "@global" : perfil, className: "vmm-classif-linha vmm-linha-estrategia" },
-          h("span", { className: "vmm-classif-nome" },
+          h("span", { className: "vmm-classif-nome",
+                      title: perfil === null
+                        ? "O global não é um perfil: vale para todos os que não declaram nada. Mudar aqui move quem herda."
+                        : "Só este perfil. Os outros não são tocados." },
             (perfil === null ? "global" : perfil),
             h("span", { className: "vmm-mudo" },
-              perfil === null ? " · todos os perfis" : origemDaEstrategia(cfg, perfil))
+              perfil === null ? " · aplica-se a quem não declara" : origemDaEstrategia(cfg, perfil))
           ),
           h(Seletor, {
             key: "est-modo",
