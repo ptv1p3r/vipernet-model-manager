@@ -1318,25 +1318,30 @@ def candidatos(catalogo: list[dict[str, Any]], nivel: str) -> list[dict[str, Any
 
 
 def _chave_ordem(entrada: dict[str, Any]) -> tuple:
-    """Chave total e determinista de um candidato: custo declarado, `ordem`, `id`.
+    """Chave total e determinista de um candidato: `ordem`, custo declarado, `id`.
 
-    A entrada **sem** custo declarado ordena depois das que o declaram. Ler a
-    ausencia como zero fazia o nao-classificado ganhar a todos os pagos — a
-    armadilha inversa da que se quer fechar.
+    A `ordem` declarada **manda** sobre o custo, e a entrada que a declara ordena
+    antes da que nao a declara: sem essa precedencia, um pago nunca podia ser
+    escolhido a frente de um gratuito, por muito que o dono o escrevesse. Dentro
+    do mesmo patamar, a entrada **sem** custo ordena depois das que o declaram —
+    ler a ausencia como zero fazia o nao-classificado ganhar a todos os pagos.
     """
     custo = entrada.get("custo")
     if custo is None:
-        primeira = (1, 0.0)
+        patamar_custo = (1, 0.0)
     else:
         try:
-            primeira = (0, float(custo))
+            patamar_custo = (0, float(custo))
         except (TypeError, ValueError):
-            primeira = (1, 0.0)
+            patamar_custo = (1, 0.0)
+    bruto_ordem = entrada.get("ordem")
+    if bruto_ordem in (None, ""):
+        return ((1, 0), patamar_custo, str(entrada.get("id") or ""))
     try:
-        ordem = int(entrada.get("ordem") or 0)
+        ordem = int(str(bruto_ordem).strip())
     except (TypeError, ValueError):
-        ordem = 0
-    return (primeira, ordem, str(entrada.get("id") or ""))
+        return ((1, 0), patamar_custo, str(entrada.get("id") or ""))
+    return ((0, ordem), patamar_custo, str(entrada.get("id") or ""))
 
 
 def ordenar_candidatos(lista: list[dict[str, Any]]) -> list[dict[str, Any]]:

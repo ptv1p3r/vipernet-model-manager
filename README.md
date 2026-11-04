@@ -695,16 +695,24 @@ Três consequências, todas com teste:
  "modalidades": ["texto", "imagem"], "json_nativo": true, "latencia_p95_ms": 2500}
 ```
 
-**Ordem determinística entre candidatos do mesmo nível (3.22).** Quando o
-nível tem várias rotas, elas são ordenadas antes de qualquer escolha pela chave
-`custo` → `ordem` → `id`. O `id` fecha o empate por ordem lexicográfica, único e
-estável: a sequência em que as entradas aparecem no JSON **nunca** conta. Uma
-rota sem `custo` declarado **não vale zero** — ordena depois das que declaram
+**Ordem determinística entre candidatos do mesmo nível (3.22, precedência corrigida em 3.23).**
+Quando o nível tem várias rotas, elas são ordenadas antes de qualquer escolha pela
+chave `ordem` → `custo` → `id`. A `ordem` declarada **manda sobre o custo**: sem
+essa precedência um pago nunca podia ser escolhido à frente de um gratuito, por
+muito que o dono o escrevesse na config — e `ordem` seria decorativa. Uma rota
+que declara `ordem` ordena antes da que não declara. Dentro do mesmo patamar,
+uma rota sem `custo` declarado **não vale zero**: ordena depois das que declaram
 custo, porque tratar o desconhecido como grátis faria o não-medido ganhar a
-todos os pagos. O custo é o preço por milhão de tokens (`0` é grátis, número
-igual ou maior que zero); `ordem` é um inteiro para separar rotas do mesmo
-custo. A rotação continua a ser `md5(perfil|sessao|nivel) % n` sobre a lista já
-ordenada: `por: sessao` mantém a sessão presa ao mesmo modelo dentro do nível.
+todos os pagos. O `id` fecha o empate por ordem lexicográfica, único e estável:
+a sequência em que as entradas aparecem no JSON **nunca** conta. O custo é o
+preço por milhão de tokens (`0` é grátis, número igual ou maior que zero);
+`ordem` é um inteiro, começando em 1, para declarar a preferência. A rotação
+continua a ser `md5(perfil|sessao|nivel) % n` sobre a lista já ordenada: `por:
+sessao` mantém a sessão presa ao mesmo modelo dentro do nível. Em
+`modo: prioridade` a escolha é o primeiro da lista ordenada — é o modo em que a
+`ordem` determina a rota servida, e não apenas a sequência de onde a rotação
+parte; em `rodizio` a ordem define o conjunto e a sequência, e o índice do hash
+escolhe dentro dele.
 
 **O que não está feito, e não se afirma:** medir TTFT (só existe
 `latencia_p95_ms` declarada, não medida), o custo não é lido de nenhuma API (é

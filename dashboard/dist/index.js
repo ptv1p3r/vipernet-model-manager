@@ -149,6 +149,58 @@
   // escrita aqui. Assim um valor novo aparece no `select` sem mexer no painel,
   // e nunca aparece uma opcao que a validacao recusaria — a lista que se ve e
   // a lista que o `gestor` aceita.
+
+  // ---- ConfigEditor: edicao completa do perfil ----------------------------
+  function ConfigEditor(props) {
+    const [config, setConfig] = useState(props.config || {});
+    const [validado, setValidado] = useState(false);
+
+    function gravar() {
+      props.onGravar && props.onGravar(config);
+    }
+
+    function cancelar() {
+      props.onCancelar && props.onCancelar();
+    }
+
+    function validar() {
+      setValidado(true);
+    }
+
+    return h(
+      "div",
+      { className: "vmm-config-editor" },
+      h("h3", {}, "Configuracao do Perfil: " + (props.perfil || "global")),
+      h("div", { className: "vmm-config-campos" },
+        h("label", {}, "Activo"),
+        h(Interruptor, { activo: !!config.activo, onClick: function() {
+          setConfig(Object.assign({}, config, { activo: !config.activo }));
+        }}),
+        h("label", {}, "Classificador"),
+        h(Seletor, {
+          opcoes: props.opcoes || [],
+          valor: config.classificador || "",
+          onChange: function(v) {
+            setConfig(Object.assign({}, config, { classificador: v }));
+          }
+        }),
+        h("label", {}, "Estrategia"),
+        h(Seletor, {
+          opcoes: props.opcoesEstrategia || [],
+          valor: config.estrategia || "",
+          onChange: function(v) {
+            setConfig(Object.assign({}, config, { estrategia: v }));
+          }
+        })
+      ),
+      h("div", { className: "vmm-config-botoes" },
+        h(Button, { size: "sm", variant: "outline", onClick: validar }, "Validar"),
+        h(Button, { size: "sm", variant: "default", onClick: gravar }, "Gravar"),
+        h(Button, { size: "sm", variant: "secondary", onClick: cancelar }, "Cancelar")
+      ),
+      validado ? h("div", { className: "vmm-config-resultado" }, "Configuracao validada com sucesso.") : null
+    );
+  }
   function Seletor(props) {
     const opcoes = props.opcoes || [];
     const valor = props.valor == null ? "" : String(props.valor);

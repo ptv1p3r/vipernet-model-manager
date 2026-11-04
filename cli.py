@@ -661,7 +661,7 @@ def cmd_simular(args) -> int:
             print(f"rota: nenhuma — o catalogo de {args.perfil} nao cobre '{nivel}'")
             return 1
         # o rodizio real depende da sessao; a ordem mostrada e a que o plugin usa
-        print("candidatas (ordem efetiva: custo, ordem, id):")
+        print("candidatas (ordem efetiva: ordem, custo, id):")
         for r in g.ordenar_candidatos(lista):
             print(f"  {r['id']}: {r['provider']} / {r['modelo']}")
     return 0

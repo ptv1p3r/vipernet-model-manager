@@ -245,6 +245,32 @@ def testes_selecao() -> None:
           and e_alfa["id"] == e_alfa2["id"] == "alfa",
           f"{e_alfa and e_alfa['id']} / {e_alfa2 and e_alfa2['id']}")
 
+    # A `ordem` declarada manda sobre o custo: um pago com ordem 1 tem de ser
+    # escolhido a frente de um gratuito sem ordem. Sem esta precedencia a
+    # `ordem` seria decorativa e um pago nunca podia ser preferido.
+    misto = cfg([
+        {"id": "gratis", "provider": "deepseek", "modelo": "f:free",
+         "complexidade": ["alta"], "custo": 0},
+        {"id": "pago", "provider": "deepseek", "modelo": "p",
+         "complexidade": ["alta"], "custo": 0.3, "ordem": 1},
+    ])["perfis"]["default"]
+    e_pago, _, _ = plugin.escolher_com_rota(
+        misto, "alta", perfil="default", sessao="s", needs={"tokens_entrada": 10})
+    check("selecao: ordem declarada manda sobre o custo",
+          e_pago is not None and e_pago["id"] == "pago", str(e_pago))
+
+    # Duas entradas com ordem: a menor primeiro; sem ordem, o custo decide.
+    duas = cfg([
+        {"id": "a", "provider": "deepseek", "modelo": "x", "complexidade": ["alta"],
+         "custo": 0, "ordem": 5},
+        {"id": "b", "provider": "deepseek", "modelo": "y", "complexidade": ["alta"],
+         "custo": 0.9, "ordem": 2},
+    ])["perfis"]["default"]
+    e_b, _, _ = plugin.escolher_com_rota(
+        duas, "alta", perfil="default", sessao="s", needs={"tokens_entrada": 10})
+    check("selecao: entre ordens declaradas vence a menor",
+          e_b is not None and e_b["id"] == "b", str(e_b))
+
     # Nenhuma rota serve: devolve None com as razoes, nao uma rota impossivel.
     entrada3, rota3, falhadas3 = plugin.escolher_com_rota(
         p, "alta", perfil="default", sessao="s", needs={"modalidades": ["audio"]})
