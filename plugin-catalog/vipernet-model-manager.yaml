@@ -32,18 +32,20 @@ maintainer: ptv1p3r
 tier: community
 category: models
 requires_hermes: ">=0.22.0"
-version: 3.34.1
+version: 3.37.0
 title: Vipernet Model Manager
 readme: true
 
-# Capacidades declaradas = o que o plugin regista de facto em
-# `__init__.py:1750-1755` (regra 6 do catalogo: uma capacidade por declarar e'
-# falha de validacao, uma capacidade declarada a mais e' deriva).
+# Capacidades declaradas = o que o plugin regista de facto em `__init__.py`.
+# Regra 6 do catalogo: uma capacidade por declarar e' falha de validacao, uma
+# capacidade declarada a mais e' deriva. `post_tool_call` entrou na 3.35.0 (mede
+# o `exit_code` de cada chamada) e ficou por declarar ate' 2026-11-05.
 capabilities:
   provides_tools: []
   provides_hooks:
     - post_api_request
     - api_request_error
+    - post_tool_call
   provides_middleware:
     - llm_request
   requires_env: []

@@ -50,6 +50,7 @@ try:  # carregado como pacote do Hermes
     from . import analise as _analise_mod
     from . import analise_modelo as _analise_modelo_mod
     from . import resultado as _resultado_mod
+    from . import sombra as _sombra_mod
 except Exception:  # import directo (selftest / CLI fora do Hermes)
     import importlib.util as _ilu
 
@@ -69,6 +70,7 @@ except Exception:  # import directo (selftest / CLI fora do Hermes)
     _analise_mod = _mod("analise")
     _analise_modelo_mod = _mod("analise_modelo")
     _resultado_mod = _mod("resultado")
+    _sombra_mod = _mod("sombra")
 
 NIVEIS = _analise_mod.NIVEIS
 
@@ -370,6 +372,49 @@ def _append_linha(caminho: Path, linha: str) -> None:
             os.write(fd, linha.encode("utf-8"))
     finally:
         os.close(fd)
+
+
+_ensaio_cache: dict[str, Any] = {}
+
+
+def _pre_registo_ensaio() -> dict[str, Any] | None:
+    """Pre-registo do ensaio em sombra, selado; `None` se ausente ou corrompido.
+
+    Le o ficheiro mais recente de `aprendiz/sombra/pre-registo-*.json` e verifica
+    o `sha256` que o proprio ficheiro carrega. Um pre-registo cujo selo nao bate
+    foi editado depois de escrito, e decidir sobre ele e decidir sobre numeros
+    que ninguem assinou — logo vale `None`, nao vale "quase".
+    """
+    try:
+        base = gestor.directorio() / "aprendiz" / "sombra"
+        ficheiros = sorted(base.glob("pre-registo-*.json"))
+        if not ficheiros:
+            return None
+        caminho = ficheiros[-1]
+        chave = f"{caminho}:{caminho.stat().st_mtime_ns}"
+        if chave in _ensaio_cache:
+            return _ensaio_cache[chave]
+        registo = json.loads(caminho.read_text(encoding="utf-8"))
+        if not isinstance(registo, dict) or not _sombra_mod.verificar(registo):
+            _ensaio_cache.clear()
+            _ensaio_cache[chave] = None
+            return None
+        _ensaio_cache.clear()
+        _ensaio_cache[chave] = registo
+        return registo
+    except Exception:  # noqa: BLE001 - medicao nunca parte um turno
+        return None
+
+
+def _braco_da_resposta(modelo: str) -> str | None:
+    """Braco do turno, derivado do modelo que respondeu — nunca do desejado."""
+    registo = _pre_registo_ensaio()
+    if not registo or not modelo:
+        return None
+    try:
+        return _sombra_mod.braco_do_modelo(registo, modelo)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _registar(entrada: dict[str, Any], *, registar: bool = True) -> None:
@@ -1539,6 +1584,13 @@ def pos_resposta(
             entrada["request_id"] = api_request_id
         if turn_id is not None:
             entrada["turn_id"] = turn_id
+        # Braco do ensaio em sombra, so quando o modelo que serviu e um dos dois
+        # do pre-registo selado. Fora do ensaio a chave nao existe, e a analise
+        # conta esses turnos como nao atribuidos em vez de os somar ao braco
+        # errado.
+        _braco = _braco_da_resposta(efectivo_modelo)
+        if _braco:
+            entrada["braco"] = _braco
         if task_id is not None:
             entrada["task_id"] = task_id
         if decisao.get("nivel"):

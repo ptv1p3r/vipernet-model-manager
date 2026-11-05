@@ -1488,6 +1488,56 @@ def _trava(caminho: Path):
                 pass
 
 
+def _podar_backups(caminho: Path, manter: int = 10,
+                   semanas: int = 8) -> list[Path]:
+    """Poda os backups de config: `manter` recentes mais um por semana.
+
+    Politica decidida a 2026-11-04 e ate agora nunca implementada: cada gravacao
+    copiava o ficheiro e nada apagava, e a directoria chegou a 21 copias. O que
+    se mantem e o que serve para repor: as ultimas `manter` gravacoes (o
+    historico curto que se usa a seguir a um erro) e a copia mais recente de
+    cada uma das ultimas `semanas` semanas ISO (a rede para "voltar a semana
+    passada").
+
+    O tecto de semanas e deliberado: "uma por semana" sem limite cresce 52
+    ficheiros por ano e volta ao mesmo problema por outra porta. Com 10 + 8 o
+    maximo e 18.
+
+    Duas guardas: so se apagam ficheiros com o carimbo exato que `_escrever`
+    produz (`<nome>.bak-AAAAMMDDTHHMMSS`), para nao tocar em copias nomeadas a
+    mao, e o ficheiro recem-criado nunca sai porque esta entre os mais recentes.
+    """
+    padrao = re.compile(rf"^{re.escape(caminho.name)}\.bak-\d{{8}}T\d{{6}}$")
+    copias = [p for p in caminho.parent.glob(caminho.name + ".bak-*")
+              if p.is_file() and padrao.match(p.name)]
+    copias.sort(key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+    if len(copias) <= manter:
+        return []
+    manter_set = {p.name for p in copias[:manter]}
+    semanas_vistas: list[str] = [
+        time.strftime("%G-%V", time.localtime(p.stat().st_mtime))
+        for p in copias[:manter]
+    ]
+    for copia in copias[manter:]:
+        chave = time.strftime("%G-%V", time.localtime(copia.stat().st_mtime))
+        if chave in semanas_vistas:
+            continue
+        if len(semanas_vistas) >= manter + semanas:
+            continue
+        semanas_vistas.append(chave)
+        manter_set.add(copia.name)
+    apagadas: list[Path] = []
+    for copia in copias:
+        if copia.name in manter_set:
+            continue
+        try:
+            copia.unlink()
+            apagadas.append(copia)
+        except OSError:
+            continue
+    return apagadas
+
+
 def _escrever(cfg: dict[str, Any], caminho: Path) -> Path:
     """Valida, faz backup, escreve em `.tmp` e troca com `os.replace`."""
     limpo, erros = validar(cfg)
@@ -1498,6 +1548,11 @@ def _escrever(cfg: dict[str, Any], caminho: Path) -> Path:
     if caminho.exists():
         carimbo = time.strftime("%Y%m%dT%H%M%S")
         shutil.copy2(caminho, caminho.with_suffix(f".json.bak-{carimbo}"))
+        # Poda logo a seguir a copiar: a politica "10 mais um semanal" so vale
+        # se for aplicada na gravacao. Deixar a limpeza para um job externo
+        # significa que o dia em que o job nao correr volta o lixo todo.
+        with contextlib.suppress(Exception):
+            _podar_backups(caminho)
         try:
             antes = caminho.read_bytes()
         except OSError:

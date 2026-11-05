@@ -179,6 +179,126 @@ def decidir(registo: dict[str, Any], *, falhas_a: int, n_a: int,
     }
 
 
+def braco_do_turno(registo: dict[str, Any], perfil: str, sessao: str,
+                   turno: str) -> str:
+    """Braco atribuido a um turno, deterministico e selado pelo pre-registo.
+
+    A unidade de randomizacao e o turno (declarado em
+    `unidade_de_randomizacao`), nao a chamada: as chamadas de ferramenta de um
+    mesmo turno nao sao independentes (mesmo modelo, mesmo contexto), e
+    randomizar por chamada misturava os dois bracos dentro do mesmo turno.
+
+    A semente inclui o `sha256` do pre-registo, logo o mesmo turno cai no mesmo
+    braco enquanto o desenho nao mudar, e um pre-registo novo (numeros
+    differentes, selo differente) re-embaralha. Sem isso, um turno podia mudar
+    de braco a meio de uma recolha e as contagens deixavam de fechar.
+    """
+    if not verificar(registo):
+        raise ValueError("pre-registo alterado: o sha256 não bate")
+    semente = "|".join([str(registo.get("sha256", "")), perfil or "",
+                        sessao or "", turno or ""])
+    h = hashlib.md5(semente.encode("utf-8")).hexdigest()
+    return "a" if int(h[:8], 16) < 0x80000000 else "b"
+
+
+def braco_do_modelo(registo: dict[str, Any], modelo: str) -> str | None:
+    """Braco a que pertence o modelo que respondeu, ou None se for outro.
+
+    O braco gravado e um facto, nao uma intencao: deriva-se do modelo que
+    efectivamente serviu o turno e so vale se esse modelo for um dos dois do
+    desenho. Marcar um turno com um braco que nao serviu era pior do que nao
+    marcar nada — a analise contava como ensaio um turno que nunca o foi.
+    """
+    if not verificar(registo):
+        raise ValueError("pre-registo alterado: o sha256 não bate")
+
+    def _chave(valor: Any) -> str:
+        return str(valor or "").strip().lower()
+
+    alvo = _chave(modelo)
+    if not alvo:
+        return None
+    for braco in ("a", "b"):
+        declarado = _chave(registo.get(f"braco_{braco}"))
+        if not declarado:
+            continue
+        if alvo == declarado or alvo.split("/")[-1] == declarado.split("/")[-1]:
+            return braco
+    return None
+
+
+def veredicto_do_turno(linhas: list[dict[str, Any]]) -> str:
+    """Resultado de um turno a partir das linhas de efeito das suas chamadas.
+
+    `falha` se alguma chamada medida falhou — um turno que rebentou a meio nao
+    e um bom resultado mesmo que as outras dez tenham corrido bem. `pass` so
+    quando ha pelo menos uma chamada medida e todas correram. `sem_efeito`
+    quando nenhuma chamada do turno e medivel (leituras, por exemplo): nao e
+    sucesso nem falha, e conta-lo como sucesso inflacionava o braco que faz
+    menos trabalho de shell.
+    """
+    medidas = [l for l in linhas if l.get("efeito") in ("ok", "falha")]
+    if not medidas:
+        return "sem_efeito"
+    if any(l.get("efeito") == "falha" for l in medidas):
+        return "falha"
+    return "pass"
+
+
+def recolher(linhas: list[dict[str, Any]],
+             registo: dict[str, Any]) -> dict[str, Any]:
+    """Agrega o ledger em contagens por braco, prontas para `decidir`.
+
+    O braco de cada turno vem da linha `resposta` (o modelo que serviu); o
+    desfecho vem das linhas `efeito` desse turno. As linhas de efeito sem braco
+    — anteriores ao ensaio, ou de turnos servidos por um modelo fora do desenho
+    — ficam de fora com a contagem declarada: inclui-las num dos bracos seria
+    inventar atribuicao.
+    """
+    if not verificar(registo):
+        raise ValueError("pre-registo alterado: o sha256 não bate")
+    braco_por_turno: dict[str, str] = {}
+    for linha in linhas:
+        if linha.get("evento") != "resposta":
+            continue
+        braco = linha.get("braco")
+        turno = linha.get("turno") or linha.get("turn_id")
+        if braco in ("a", "b") and turno:
+            braco_por_turno[str(turno)] = braco
+
+    por_turno: dict[str, list[dict[str, Any]]] = {}
+    sem_braco = 0
+    for linha in linhas:
+        if linha.get("evento") != "efeito":
+            continue
+        turno = str(linha.get("turno") or "")
+        if turno not in braco_por_turno:
+            sem_braco += 1
+            continue
+        por_turno.setdefault(turno, []).append(linha)
+
+    contagem = {"a": {"n": 0, "falhas": 0, "sem_efeito": 0},
+                "b": {"n": 0, "falhas": 0, "sem_efeito": 0}}
+    for turno, do_turno in por_turno.items():
+        braco = braco_por_turno[turno]
+        veredicto = veredicto_do_turno(do_turno)
+        if veredicto == "sem_efeito":
+            contagem[braco]["sem_efeito"] += 1
+            continue
+        contagem[braco]["n"] += 1
+        if veredicto == "falha":
+            contagem[braco]["falhas"] += 1
+    return {
+        "braco_a": contagem["a"],
+        "braco_b": contagem["b"],
+        "turnos": len(por_turno),
+        "turnos_medidos": contagem["a"]["n"] + contagem["b"]["n"],
+        "turnos_marcados": len(braco_por_turno),
+        "linhas_sem_braco": sem_braco,
+        "n_por_braco_pedido": registo.get("n_por_braco"),
+    }
+
+
 def escrever(registo: dict[str, Any], destino: Path) -> dict[str, Any]:
     """Grava o pre-registo e devolve o que ficou em disco (bytes e sha)."""
     destino.parent.mkdir(parents=True, exist_ok=True)
