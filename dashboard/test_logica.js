@@ -760,17 +760,31 @@ check("render: o provider selado vem preenchido nos dois selects",
       valoresSelects.indexOf("deepseek") !== -1
       && valoresSelects.indexOf("openrouter") !== -1,
       JSON.stringify(valoresSelects));
+const opcoesSelectProvider = (function () {
+  if (!selectsSombra.length) return [];
+  // `h` guarda os filhos em `filhos`; nao se junta `props.children` para nao
+  // contar a mesma lista duas vezes.
+  const crus = selectsSombra[0].filhos || [];
+  const filhos = [];
+  crus.forEach(function (f) {
+    if (Array.isArray(f)) f.forEach(function (g) { filhos.push(g); });
+    else filhos.push(f);
+  });
+  const vistos = [];
+  recolher({ tag: "x", filhos: filhos }, function (n) {
+    if (n.tag !== "option") return false;
+    const v = n.props.value;
+    if (vistos.indexOf(v) === -1) vistos.push(v);
+    return false;
+  });
+  return vistos.sort();
+})();
 check("render: a lista de providers e fechada e tirada do catalogo",
-      (function () {
-        if (!selectsSombra.length) return false;
-        const opcoes = recolher(
-          { tag: "x", props: { children: (selectsSombra[0].props || {}).children },
-            filhos: selectsSombra[0].filhos },
-          function (n) { return n.tag === "option"; });
-        const vals = opcoes.map(function (o) { return o.props.value; }).sort();
-        return JSON.stringify(vals) === JSON.stringify(["", "deepseek", "openrouter"]);
-      })(),
-      JSON.stringify((selectsSombra[0] || { props: {} }).props));
+      // "" = (auto); `deepseek`/`openrouter` vem do selo; `p` vem do catalogo
+      // do perfil — prova que a lista nao e escrita a mao no painel.
+      JSON.stringify(opcoesSelectProvider)
+      === JSON.stringify(["", "deepseek", "openrouter", "p"]),
+      JSON.stringify(opcoesSelectProvider));
 check("render: com provider declarado, diz qual e o do selo",
       textosSombra.indexOf("provider declarado no selo") !== -1, textosSombra);
 
