@@ -323,7 +323,7 @@ _LIMITES_INTERNOS = ("contexto_max", "latencia_p95_ms")
 # divergirem. As listas do classificador vivem em `analise_modelo` (`CHAVES`),
 # derivadas do `PADRAO` dele pela mesma razao.
 _CHAVES_CONFIG = frozenset({"versao", "activo", "registar", "analise",
-                            "estrategia", "retencao", "perfis"})
+                            "estrategia", "retencao", "sombra", "perfis"})
 _CHAVES_PERFIL = frozenset({"activo", "estrategia", "analise", "catalogo",
                             "tarefas", "latencia_max_ms", "rodizio"})
 _CHAVES_ANALISE = frozenset(set(ANALISE_PADRAO) | {"pesos", "aprendiz",
@@ -934,6 +934,42 @@ def opcoes_estrategia() -> dict[str, list[dict[str, str]]]:
     }
 
 
+SOMBRA_PADRAO: dict[str, Any] = {"activo": False, "vida_ttl_h": 24}
+_CHAVES_SOMBRA = frozenset(SOMBRA_PADRAO)
+
+
+def normalizar_sombra(valor: Any,
+                      campo: str = "sombra") -> tuple[dict[str, Any], list[str]]:
+    """Bloco do ensaio em sombra: interruptor e validade da sonda de vida.
+
+    Mesma regra da estrategia e da retencao — so se grava o que foi declarado.
+    `activo` ausente **nao** e `false` por acidente: e "nao decidido", e o ensaio
+    so corre com `activo` verdadeiro. `vida_ttl_h` tem tecto de uma semana: uma
+    sonda esquecida nao pode autorizar para sempre modelos que ja morreram — foi
+    assim que um slug gratuito retirado pela OpenRouter ia entrar em trafego.
+    """
+    erros: list[str] = []
+    if valor is None:
+        return {}, erros
+    if not isinstance(valor, dict):
+        return {}, [f"{campo} nao e um objecto"]
+    _recusar_desconhecidas(valor, _CHAVES_SOMBRA, campo, erros)
+    saida: dict[str, Any] = {}
+    if "activo" in valor:
+        saida["activo"] = bool(valor["activo"])
+    if "vida_ttl_h" in valor:
+        try:
+            ttl = float(valor["vida_ttl_h"])
+        except (TypeError, ValueError):
+            erros.append(f"{campo}.vida_ttl_h nao e um numero")
+        else:
+            if not 1 <= ttl <= 168:
+                erros.append(f"{campo}.vida_ttl_h fora de 1..168 horas")
+            else:
+                saida["vida_ttl_h"] = int(ttl) if ttl.is_integer() else ttl
+    return saida, erros
+
+
 def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
     """Normaliza e valida; devolve `(config, erros)`. Nunca levanta."""
     erros: list[str] = []
@@ -1039,6 +1075,14 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
     erros.extend(erros_ret)
     if retencao:
         saida["retencao"] = dict(retencao)
+
+    # Ensaio em sombra: bloco opcional, mesma regra da estrategia e da retencao.
+    # Sem esta fiacao o interruptor era escrito e deitado fora na leitura, e o
+    # ensaio aparecia "ligado" no ficheiro e desligado no turno.
+    sombra, erros_sombra = normalizar_sombra(cfg.get("sombra"))
+    erros.extend(erros_sombra)
+    if sombra:
+        saida["sombra"] = dict(sombra)
 
     perfis = cfg.get("perfis")
     if not isinstance(perfis, dict):

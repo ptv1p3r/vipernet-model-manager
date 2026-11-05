@@ -299,6 +299,50 @@ def recolher(linhas: list[dict[str, Any]],
     }
 
 
+def sondar_vida(registo: dict[str, Any], chamar: Any, *,
+                agora: Any = None) -> dict[str, Any]:
+    """Mede se cada braco do pre-registo responde; devolve o veredicto.
+
+    `chamar(modelo)` devolve `{"ok": bool, "http": int, "motivo": str}`. A sonda
+    corre **fora** do turno de proposito: dentro do middleware pagava-se em
+    latencia em todos os turnos, e um 404 descoberto ai queimava o turno — foi
+    exactamente o que aconteceu com um slug gratuito que a OpenRouter retirou.
+
+    Um braco cujo slug morreu nao e um braco com mais falhas: e um braco sem
+    resultado. Por isso a sonda e o que autoriza (ou nao) o ensaio a arrancar.
+    """
+    from datetime import datetime
+
+    instante = agora if agora is not None else datetime.now().astimezone()
+    saida: dict[str, Any] = {
+        "ts": instante.isoformat(timespec="seconds"),
+        "ts_epoch": float(instante.timestamp()),
+        "sha_registo": str(registo.get("sha256") or ""),
+        "ensaio": registo.get("ensaio"),
+        "braco_a": {"modelo": registo.get("braco_a")},
+        "braco_b": {"modelo": registo.get("braco_b")},
+        "todos_vivos": False,
+    }
+    for braco in ("a", "b"):
+        modelo = registo.get(f"braco_{braco}")
+        try:
+            resposta = chamar(modelo) or {}
+        except Exception as exc:  # noqa: BLE001 - a sonda nunca parte
+            resposta = {"ok": False, "http": 0,
+                        "motivo": f"{type(exc).__name__}: {str(exc)[:140]}"}
+        try:
+            http = int(resposta.get("http") or 0)
+        except (TypeError, ValueError):
+            http = 0
+        saida[f"braco_{braco}"].update({
+            "ok": bool(resposta.get("ok")),
+            "http": http,
+            "motivo": str(resposta.get("motivo") or "")[:160],
+        })
+    saida["todos_vivos"] = all(saida[f"braco_{b}"]["ok"] for b in ("a", "b"))
+    return saida
+
+
 def escrever(registo: dict[str, Any], destino: Path) -> dict[str, Any]:
     """Grava o pre-registo e devolve o que ficou em disco (bytes e sha)."""
     destino.parent.mkdir(parents=True, exist_ok=True)

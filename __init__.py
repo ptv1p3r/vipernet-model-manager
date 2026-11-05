@@ -417,6 +417,148 @@ def _braco_da_resposta(modelo: str) -> str | None:
         return None
 
 
+_sombra_vida_cache: dict[str, Any] = {}
+
+
+def _sombra_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Bloco `sombra` da config; desligado quando ausente ou malformado."""
+    bloco = (config or {}).get("sombra")
+    return bloco if isinstance(bloco, dict) else {}
+
+
+def _sombra_vida() -> dict[str, Any]:
+    """Vida dos dois bracos, lida do disco — o middleware nunca faz a sonda.
+
+    A sonda custa uma chamada de rede; dentro do turno pagava-se em latencia em
+    todos os turnos e um 404 so descoberto aqui queimava o turno (foi o que
+    aconteceu com `inkling-small:free`). `vmm sombra vida` mede fora do turno.
+    """
+    try:
+        caminho = gestor.directorio() / "sombra" / "vida.json"
+        chave = f"{caminho}:{caminho.stat().st_mtime_ns}"
+        guardado = _sombra_vida_cache.get("dados")
+        if guardado is not None and guardado[0] == chave:
+            return guardado[1]
+        dados = json.loads(caminho.read_text(encoding="utf-8"))
+        if not isinstance(dados, dict):
+            dados = {}
+        _sombra_vida_cache["dados"] = (chave, dados)
+        return dados
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _entrada_por_modelo(pcfg: dict[str, Any], modelo: Any) -> dict[str, Any] | None:
+    """Entrada do catalogo pelo **modelo**, nao pelo id: o braco nomeia modelos."""
+    alvo = str(modelo or "").strip().lower()
+    if not alvo:
+        return None
+    for entrada in gestor.catalogo_utilizavel(pcfg):
+        if str(entrada.get("modelo") or "").strip().lower() == alvo:
+            return entrada
+    return None
+
+
+def _sombra_do_turno(
+    pcfg: dict[str, Any],
+    config: dict[str, Any] | None,
+    perfil: str,
+    sessao: str,
+    turno: Any,
+    *,
+    nivel: str,
+    needs: dict[str, Any] | None,
+    superficie: str,
+    associada: bool = False,
+    marcador: bool = False,
+) -> dict[str, Any] | None:
+    """Braco sorteado do turno e a entrada que o serve.
+
+    `None` quando o ensaio esta desligado; um diagnostico quando esta ligado,
+    **inclusive quando recusa** — e o que permite ao ledger distinguir "nao
+    sorteou" de "sorteou e nao pode aplicar". Nunca levanta: medicao nao parte
+    um turno.
+
+    A prioridade do dono mantem-se: tarefa associada e marcador explicito ganham
+    ao sorteio. Um ensaio que trocasse o modelo de um pedido de arquitetura
+    estaria a medir outro trabalho.
+    """
+    bloco = _sombra_config(config)
+    if not bloco.get("activo"):
+        return None
+    registo = _pre_registo_ensaio()
+    if not registo:
+        return {"aplicado": False, "motivo": "sem_pre_registo"}
+    try:
+        braco = _sombra_mod.braco_do_turno(registo, perfil, sessao, turno)
+    except Exception:  # noqa: BLE001
+        return {"aplicado": False, "motivo": "sorteio_falhou"}
+    modelo = registo.get(f"braco_{braco}")
+    diag: dict[str, Any] = {"braco": braco, "modelo": modelo,
+                            "sha": str(registo.get("sha256") or "")[:16],
+                            "aplicado": False}
+    if associada:
+        diag["motivo"] = "tarefa_associada"
+        return diag
+    if marcador:
+        diag["motivo"] = "marcador_explicito"
+        return diag
+
+    vida = _sombra_vida()
+    if not vida:
+        diag["motivo"] = "vida_nao_medida"
+        return diag
+    try:
+        ttl_h = float(bloco.get("vida_ttl_h", 24) or 24)
+    except (TypeError, ValueError):
+        ttl_h = 24.0
+    ts = vida.get("ts_epoch")
+    if not isinstance(ts, (int, float)) or (time.time() - float(ts)) > ttl_h * 3600:
+        diag["motivo"] = "vida_expirada"
+        return diag
+    mortos = [b for b in ("a", "b")
+              if not (vida.get(f"braco_{b}") or {}).get("ok")]
+    if mortos:
+        # Braco morto nao e braco com falhas: nao ha resultado a medir. O ensaio
+        # para inteiro e o turno segue a rota normal — correr so com um braco
+        # vivo daria um "A/B" que compara um modelo com nada.
+        diag["motivo"] = "braco_sem_vida:" + ",".join(mortos)
+        diag["mortos"] = {b: str((vida.get(f"braco_{b}") or {}).get("motivo") or "")[:120]
+                          for b in mortos}
+        return diag
+
+    entrada = _entrada_por_modelo(pcfg, modelo)
+    if entrada is None:
+        diag["motivo"] = "modelo_fora_do_catalogo"
+        return diag
+    diag["entrada_id"] = entrada.get("id")
+    if nivel not in (entrada.get("complexidade") or []):
+        diag["motivo"] = "nivel_nao_coberto"
+        return diag
+    if superficie and not gestor.serve_superficie(entrada, superficie):
+        diag["motivo"] = "superficie_nao_serve"
+        return diag
+    motivo_cap = gestor.rota_serve(entrada, needs) if needs else ""
+    if motivo_cap:
+        diag["motivo"] = "capacidade:" + str(motivo_cap)
+        return diag
+    chave_maus = (perfil, str(entrada.get("provider") or "").lower(),
+                  str(entrada.get("modelo") or ""))
+    with _lock:
+        morta = _maus_expira.get(chave_maus, 0.0) > time.monotonic()
+    if morta:
+        diag["motivo"] = "rota_falhou_ha_pouco"
+        return diag
+    try:
+        rota = resolver_rota(perfil, entrada["provider"], entrada["modelo"])
+    except Exception as exc:  # noqa: BLE001
+        diag["motivo"] = "rota_indisponivel:" + type(exc).__name__
+        return diag
+    diag.update({"aplicado": True, "motivo": "sorteado",
+                 "entrada": entrada, "rota": rota})
+    return diag
+
+
 def _registar(entrada: dict[str, Any], *, registar: bool = True) -> None:
     """Ledger append-only; nunca leva texto de conversa nem credenciais."""
     if not registar:
@@ -1423,6 +1565,23 @@ def middleware_llm_request(
             if entrada is None or rota is None:
                 _registar({**base, "evento": "sem_rota", "falhadas": falhadas}, registar=registar)
                 return None
+        # Ensaio em sombra: o braco sorteado do turno decide o modelo. So aqui,
+        # depois de a analise ter uma rota — um ensaio que decidisse por fora da
+        # analise compararia modelos em trabalho que nao e o do dia a dia. O que
+        # nao aplicar fica registado com o motivo, para o ledger nao confundir
+        # "nao sorteou" com "sorteou e nao pode".
+        _diag_sombra = _sombra_do_turno(
+            pcfg, config, perfil, session_id, base.get("turno"),
+            nivel=str(nivel or ""), needs=needs, superficie=superficie,
+            associada=bool(associada), marcador=bool(marcador_manda))
+        if _diag_sombra is not None:
+            if _diag_sombra.get("aplicado"):
+                entrada = _diag_sombra["entrada"]
+                rota = _diag_sombra["rota"]
+                base["origem"] = "sombra"
+                base["escolhido_por_sombra"] = entrada["id"]
+            base["sombra"] = {k: v for k, v in _diag_sombra.items()
+                              if k not in ("entrada", "rota")}
         if fixar_turno:
             # A rota do turno fica fixada no mesmo pin: os pedidos seguintes
             # reutilizam-na sem repetir rodizio, estrategia nem credenciais.

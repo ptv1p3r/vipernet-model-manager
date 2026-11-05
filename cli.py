@@ -168,6 +168,136 @@ def cmd_on_off(args) -> int:
     return 0
 
 
+def _sombra_mod():
+    """Pre-registo, sorteio e sonda de vida — outro modulo, outra casa."""
+    spec = importlib.util.spec_from_file_location("vmm_sombra", _AQUI / "sombra.py")
+    mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
+
+
+def _chamar_modelo(modelo: str) -> dict[str, Any]:
+    """Uma chamada minima ao modelo, so para provar que responde.
+
+    Nunca imprime a credencial nem o corpo completo de um erro: o que sai daqui
+    vai para o ledger e para a conversa.
+    """
+    import urllib.error
+    import urllib.request
+
+    spec = importlib.util.spec_from_file_location("vmm_seams", _AQUI / "seams.py")
+    seams = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(seams)  # type: ignore[union-attr]
+    provider = "openrouter" if ("/" in modelo or ":" in modelo) else "deepseek"
+    try:
+        rota = seams.resolver_provider(provider, modelo)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "http": 0,
+                "motivo": f"rota: {type(exc).__name__}: {str(exc)[:110]}"}
+    corpo = json.dumps({
+        "model": modelo,
+        "messages": [{"role": "user", "content": "Responde apenas: OK"}],
+        "max_tokens": 8,
+    }).encode()
+    pedido = urllib.request.Request(
+        rota["base_url"].rstrip("/") + "/chat/completions",
+        data=corpo,
+        headers={"Authorization": "Bearer " + rota["api_key"],
+                 "Content-Type": "application/json",
+                 "User-Agent": "curl/8.5.0"},
+    )
+    try:
+        with urllib.request.urlopen(pedido, timeout=45) as resposta:
+            dados = json.loads(resposta.read().decode())
+        ok = bool(dados.get("choices"))
+        return {"ok": ok, "http": resposta.status,
+                "motivo": "" if ok else "sem choices"}
+    except urllib.error.HTTPError as exc:
+        texto = exc.read().decode(errors="replace")
+        try:
+            msg = json.loads(texto).get("error", {}).get("message", texto)
+        except (ValueError, AttributeError):
+            msg = texto
+        return {"ok": False, "http": exc.code, "motivo": str(msg)[:160]}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "http": 0, "motivo": f"{type(exc).__name__}: {str(exc)[:120]}"}
+
+
+def cmd_sombra(args) -> int:
+    """Estado, sonda de vida e interruptor do ensaio em sombra."""
+    acao = getattr(args, "acao", None) or "estado"
+    if acao in ("on", "off"):
+        cfg, _ = _cfg()
+        rev_lido = g.rev(cfg)
+        bloco = cfg.get("sombra")
+        if not isinstance(bloco, dict):
+            bloco = {}
+        bloco["activo"] = acao == "on"
+        bloco.setdefault("vida_ttl_h", 24)
+        cfg["sombra"] = bloco
+        try:
+            _gravar_cas(cfg, rev_lido)
+        except ValueError as exc:
+            return _erro(f"config recusada: {exc}")
+        print(f"ensaio em sombra: {'ligado' if acao == 'on' else 'desligado'}")
+        if acao == "on":
+            print("um braco sem vida medido mantem o ensaio parado (vmm sombra vida).")
+        return 0
+
+    base = Path(g.directorio()) / "sombra"
+    ficheiros = sorted(base.glob("pre-registo-*.json"))
+    if not ficheiros:
+        return _erro("sem pre-registo em aprendiz/sombra", 3)
+    try:
+        registo = json.loads(ficheiros[-1].read_text(encoding="utf-8"))
+    except ValueError as exc:
+        return _erro(f"pre-registo ilegivel: {exc}")
+    sombra = _sombra_mod()
+    if not sombra.verificar(registo):
+        return _erro("selo do pre-registo nao confere — recusado", 1)
+
+    if acao == "vida":
+        veredicto = sombra.sondar_vida(registo, _chamar_modelo)
+        destino = base / "vida.json"
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        temporario = destino.with_suffix(".json.tmp")
+        temporario.write_text(json.dumps(veredicto, indent=2, ensure_ascii=False) + "\n",
+                              encoding="utf-8")
+        temporario.replace(destino)
+        for braco in ("a", "b"):
+            d = veredicto[f"braco_{braco}"]
+            estado = "vivo" if d.get("ok") else "MORTO"
+            print(f"braco {braco}: {d.get('modelo')} — {estado} "
+                  f"(HTTP {d.get('http')}) {d.get('motivo') or ''}".rstrip())
+        print(f"todos vivos: {veredicto['todos_vivos']} | gravado em {destino}")
+        return 0 if veredicto["todos_vivos"] else 1
+
+    cfg, _ = _cfg()
+    _bloco = cfg.get("sombra")
+    bloco = _bloco if isinstance(_bloco, dict) else {}
+    print(f"pre-registo: {ficheiros[-1].name} | selo ok | sha {str(registo.get('sha256'))[:16]}")
+    print(f"ensaio: {registo.get('ensaio')} | unidade: {registo.get('unidade_de_randomizacao')}")
+    print(f"braco a = {registo.get('braco_a')} | braco b = {registo.get('braco_b')}")
+    print(f"n por braco = {registo.get('n_por_braco')} | margem = {registo.get('margem_nao_inferioridade')}")
+    print(f"interruptor: {'ligado' if bloco.get('activo') else 'desligado'}")
+    vida = {}
+    caminho_vida = base / "vida.json"
+    if caminho_vida.exists():
+        try:
+            vida = json.loads(caminho_vida.read_text(encoding="utf-8"))
+        except ValueError:
+            vida = {}
+    if vida:
+        print(f"vida: {vida.get('ts')} | todos vivos: {vida.get('todos_vivos')}")
+        for braco in ("a", "b"):
+            d = vida.get(f"braco_{braco}") or {}
+            print(f"  braco {braco}: {'vivo' if d.get('ok') else 'MORTO'} "
+                  f"(HTTP {d.get('http')}) {str(d.get('motivo') or '')[:90]}")
+    else:
+        print("vida: nunca medida — o ensaio nao aplica sem ela (vmm sombra vida)")
+    return 0
+
+
 def cmd_classificador(args) -> int:
     """Le e escreve a definicao do classificador por modelo (global e por perfil).
 
@@ -1256,6 +1386,11 @@ def build_parser() -> argparse.ArgumentParser:
     # Retencao: sem `--aplicar` nada e escrito. O tamanho ve-se primeiro; so
     # depois se decide. Os limites por omissao vem do bloco `retencao` do config,
     # para o CLI e o job agendado usarem o mesmo numero.
+    s = sub.add_parser("sombra", help="ensaio A/B: pre-registo, vida dos bracos, interruptor")
+    s.add_argument("acao", nargs="?", default="estado",
+                   choices=["estado", "vida", "on", "off"])
+    s.set_defaults(func=cmd_sombra)
+
     s = sub.add_parser("retencao", help="ledger: tamanho e compactacao do detalhe antigo")
     s.add_argument("--dias", type=int, help="dias de detalhe a manter (padrao: config)")
     s.add_argument("--aplicar", action="store_true", help="compactar de facto")
