@@ -35,7 +35,7 @@ import sys
 import tempfile
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -394,6 +394,37 @@ def teste_relatorio() -> None:
           "linhas" not in rt.relatorio(pasta / "nada.jsonl"))
 
 
+
+def teste_efeito_sobrevive_ao_resumo() -> None:
+    """O sinal de resultado nao pode morrer aos 7 dias.
+
+    O resumo diario dobra as linhas antigas numa so. Se nao contar `ok` e
+    `falha`, a medicao por resultado passa a ter memoria de sete dias — e a
+    unica coisa que o resumo tem de preservar e exactamente o que se agrega
+    depois de o detalhe sair.
+    """
+    agora = datetime.now(timezone.utc)
+    eventos = [
+        {"ts": (agora - timedelta(days=9)).isoformat(), "evento": "efeito",
+         "perfil": "default", "ferramenta": "terminal", "efeito": "ok", "exit_code": 0},
+        {"ts": (agora - timedelta(days=9)).isoformat(), "evento": "efeito",
+         "perfil": "default", "ferramenta": "terminal", "efeito": "falha", "exit_code": 2},
+        {"ts": (agora - timedelta(days=9)).isoformat(), "evento": "efeito",
+         "perfil": "default", "ferramenta": "terminal", "efeito": "falha", "exit_code": 7},
+        {"ts": (agora - timedelta(days=9)).isoformat(), "evento": "efeito",
+         "perfil": "default", "ferramenta": "browser_exec", "efeito": "ok", "exit_code": 0},
+    ]
+    resumo = rt.resumir_dia("2026-10-27", eventos)
+    check("efeitos somados por valor", resumo["efeitos"] == {"falha": 2, "ok": 2},
+          str(resumo.get("efeitos")))
+    check("efeitos somados por ferramenta",
+          resumo["efeito_ferramentas"] == {"browser_exec": 1, "terminal": 3},
+          str(resumo.get("efeito_ferramentas")))
+    check("falhas por ferramenta", resumo["efeito_falhas_ferramenta"] == {"terminal": 2},
+          str(resumo.get("efeito_falhas_ferramenta")))
+    check("efeitos nao contaminam os modelos", not resumo["modelos"], str(resumo.get("modelos")))
+
+
 def main() -> int:
     teste_corte_e_agregados()
     teste_encolhe_com_volume_real()
@@ -404,6 +435,7 @@ def main() -> int:
     teste_backups()
     teste_concorrencia()
     teste_relatorio()
+    teste_efeito_sobrevive_ao_resumo()
     falhas = [n for n, ok, _ in _RESULTADOS if not ok]
     print(f"\n{len(_RESULTADOS) - len(falhas)}/{len(_RESULTADOS)} verificacoes ok")
     if falhas:

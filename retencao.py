@@ -150,6 +150,9 @@ def resumir_dia(dia: str, eventos: list[dict[str, Any]]) -> dict[str, Any]:
     superficies: dict[str, int] = {}
     tokens: dict[str, int] = {}
     classif: dict[str, int] = {}
+    efeitos: dict[str, int] = {}
+    efeito_ferramentas: dict[str, int] = {}
+    efeito_falhas: dict[str, int] = {}
     primeiro: datetime | None = None
     ultimo: datetime | None = None
     bytes_linhas = 0
@@ -166,6 +169,11 @@ def resumir_dia(dia: str, eventos: list[dict[str, Any]]) -> dict[str, Any]:
         leitura = ev.get("classificador")
         if isinstance(leitura, dict):
             _contar(classif, leitura.get("modelo") or leitura.get("provider") or "desconhecido")
+        if ev.get("evento") == "efeito":
+            _contar(efeitos, ev.get("efeito"))
+            _contar(efeito_ferramentas, ev.get("ferramenta"))
+            if ev.get("efeito") == "falha":
+                _contar(efeito_falhas, ev.get("ferramenta"))
         instante = _instante(ev.get("ts"))
         if instante is not None:
             primeiro = instante if primeiro is None or instante < primeiro else primeiro
@@ -188,6 +196,9 @@ def resumir_dia(dia: str, eventos: list[dict[str, Any]]) -> dict[str, Any]:
         "superficies": dict(sorted(superficies.items())),
         "tokens": dict(sorted(tokens.items())),
         "classificador_leituras": dict(sorted(classif.items())),
+        "efeitos": dict(sorted(efeitos.items())),
+        "efeito_ferramentas": dict(sorted(efeito_ferramentas.items())),
+        "efeito_falhas_ferramenta": dict(sorted(efeito_falhas.items())),
     }
 
 
