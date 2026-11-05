@@ -2228,6 +2228,30 @@
       })
     );
 
+    // ---- bloco 5: ensaio A/B em sombra ----------------------------------
+    // Fica no fim porque e o unico bloco que fala do ENSAIO e nao da decisao
+    // normal: quem le de cima para baixo chega primeiro ao que decide o turno.
+    const catalogoSombra = [];
+    Object.keys(perfisEstado).forEach(function (nome) {
+      ((perfisEstado[nome] || {}).catalogo || []).forEach(function (e) {
+        if (e && (e.modelo || e.id)) catalogoSombra.push(e);
+      });
+    });
+    const estadoSombra = (props.estado || {}).sombra || null;
+    const blocoSombra = estadoSombra
+      ? h(SecaoSombra, {
+          // Remonta quando o selo muda: uma re-selagem noutra aba tem de
+          // aparecer aqui, e `useState` so le o inicial na montagem.
+          key: "sombra-" + (estadoSombra.selo || "sem-selo"),
+          sombra: estadoSombra,
+          catalogo: catalogoSombra,
+          aGravar: !!props.aGravar,
+          aviso: props.avisoSombra || "",
+          onSombra: props.onSombra,
+          onBracos: props.onBracos,
+        })
+      : null;
+
     return h("div", { className: "vmm-classif" },
       props.versao
         ? h("div", { className: "vmm-mudo vmm-versao-linha" }, "painel " + props.versao)
@@ -2235,7 +2259,147 @@
       blocoComplexidade,
       blocoTarefa,
       blocoEstrategia,
-      blocoSuperficies
+      blocoSuperficies,
+      blocoSombra
+    );
+  }
+
+  // ---- ensaio A/B em sombra -----------------------------------------------
+  // Os MODELOS dos dois bracos vivem no PRÉ-REGISTO SELADO, nao no config.json:
+  // por isso esta seccao escreve por dois endpoints proprios (`/sombra` para o
+  // interruptor e a sonda, `/sombra/bracos` para re-selar) em vez do textarea
+  // JSON. Re-selar REABRE o ensaio e torna a amostra ja recolhida nao
+  // comparavel — o gesto exige confirmacao explicita e nunca acontece por se
+  // carregar em "Gravar".
+  function SecaoSombra(props) {
+    const s = props.sombra || {};
+    const bracos = s.bracos || {};
+    const vida = s.vida || {};
+    const vivos = vida.bracos || {};
+    // `useState` so le o inicial na montagem: a seccao e remontada por `key`
+    // (o selo) para que uma re-selagem noutra aba apareca aqui sem recarregar.
+    const [a, setA] = useState(bracos.a || "");
+    const [b, setB] = useState(bracos.b || "");
+    const [ttl, setTtl] = useState(s.vida_ttl_h == null ? "" : String(s.vida_ttl_h));
+    const [confirmar, setConfirmar] = useState(false);
+    const [erroLocal, setErroLocal] = useState("");
+
+    // Sugestoes de modelo vem do catalogo real dos perfis. Datalist e nao
+    // lista fechada: um slug novo (os gratuitos mudam de nome com frequencia)
+    // tem de poder ser escrito sem esperar por uma versao nova do painel.
+    const modelos = [];
+    (props.catalogo || []).forEach(function (e) {
+      const nome = e && (e.modelo || e.id);
+      if (nome && modelos.indexOf(nome) === -1) modelos.push(nome);
+    });
+
+    function reabrir() {
+      setErroLocal("");
+      if (!a || !b) { setErroLocal("indique os dois modelos"); return; }
+      if (a === b) { setErroLocal("os dois braços não podem ser o mesmo modelo"); return; }
+      if (!confirmar) { setErroLocal("marque a confirmação de reabertura"); return; }
+      props.onBracos(a, b).then(function () { setConfirmar(false); })
+        .catch(function (e) { setErroLocal(String(e && e.message ? e.message : e)); });
+    }
+
+    function linhaVida(rotulo, chave) {
+      const v = vivos[chave] || {};
+      if (!v.modelo) {
+        return h("div", { key: "v-" + chave, className: "vmm-mudo" },
+          rotulo + ": nunca medida");
+      }
+      return h("div", { key: "v-" + chave, className: "vmm-mudo" },
+        rotulo + ": " + (v.ok ? "vivo" : "morto") +
+        (v.http ? " (HTTP " + v.http + ")" : "") + " — " + v.modelo +
+        (v.motivo ? " · " + v.motivo : ""));
+    }
+
+    const numeros = [];
+    if (s.p0 != null) numeros.push("p0 " + s.p0);
+    if (s.margem != null) numeros.push("margem " + s.margem);
+    if (s.n_por_braco != null) numeros.push(numeros.length ? "n " + s.n_por_braco + "/braço" : "n " + s.n_por_braco + "/braço");
+    if (s.dias_estimados != null) numeros.push(s.dias_estimados + " dias");
+
+    return h("div", { className: "vmm-bloco", key: "sombra" },
+      tituloBloco("Ensaio A/B em sombra",
+        "o turno é sorteado entre dois modelos; o modelo que serve vem do braço, não do nível."),
+
+      // Selo: o campo que decide se os números ainda são os declarados.
+      h("div", { className: "vmm-mudo" },
+        s.selo_valido
+          ? "pré-registo selado " + String(s.selo || "").slice(0, 16) + "…"
+          : (s.pre_registo_recente
+              ? "há um pré-registo mas o selo NÃO bate — não usar"
+              : "sem pré-registo selado")),
+
+      h("div", { className: "vmm-mudo" }, s.ensaio || "ensaio não definido"),
+      numeros.length ? h("div", { className: "vmm-mudo" }, numeros.join("  ·  ")) : null,
+      h("div", { className: "vmm-mudo" },
+        "sonda de vida " + (vida.medida_ts ? "medida em " + vida.medida_ts : "nunca medida")),
+      linhaVida("braço a", "a"),
+      linhaVida("braço b", "b"),
+
+      h("div", { className: "vmm-classif-nome" }, "interruptor"),
+      h(Seletor, {
+        rotulo: "ensaio",
+        valor: s.activo ? "ligado" : "desligado",
+        opcoes: [
+          { valor: "ligado", rotulo: "ligado" },
+          { valor: "desligado", rotulo: "desligado" },
+        ],
+        disabled: !!props.aGravar,
+        title: "Desligado, o turno volta a ser decidido pelo nível",
+        onChange: function (v) { props.onSombra({ activo: v === "ligado" }); },
+      }),
+
+      h("div", { className: "vmm-classif-nome" }, "validade da sonda (horas)"),
+      h("div", { className: "vmm-linha" },
+        h("input", {
+          type: "number", min: "1", step: "1",
+          value: ttl,
+          onChange: function (e) { setTtl(e.target.value); },
+          style: { width: "90px" },
+        }),
+        h(Button, {
+          size: "sm", variant: "ghost", disabled: !!props.aGravar || ttl === "",
+          onClick: function () { props.onSombra({ vida_ttl_h: Number(ttl) }); },
+        }, "Gravar")
+      ),
+
+      h("div", { className: "vmm-classif-nome" }, "modelos dos braços"),
+      h("div", { className: "vmm-linha" },
+        h("input", {
+          list: "vmm-modelos-sombra", value: a, placeholder: "braço a (pago)",
+          onChange: function (e) { setA(e.target.value); },
+          style: { flex: "1" },
+        }),
+        h("input", {
+          list: "vmm-modelos-sombra", value: b, placeholder: "braço b (gratuito)",
+          onChange: function (e) { setB(e.target.value); },
+          style: { flex: "1" },
+        }),
+        h("datalist", { id: "vmm-modelos-sombra" },
+          modelos.map(function (m) { return h("option", { key: m, value: m }); }))
+      ),
+
+      // A confirmacao existe porque re-selar deita fora o desenho que estava
+      // aprovado: os turnos ja recolhidos com os bracos antigos nao sao
+      // comparaveis com os novos.
+      h("label", { className: "vmm-mudo", style: { display: "block", marginTop: "6px" } },
+        h("input", {
+          type: "checkbox", checked: confirmar,
+          onChange: function (e) { setConfirmar(e.target.checked); },
+        }),
+        " confirmo que reabro o ensaio (a amostra recolhida deixa de valer)"
+      ),
+      h(Button, {
+        size: "sm", variant: "ghost",
+        disabled: !!props.aGravar || !confirmar || !a || !b || a === b,
+        onClick: reabrir,
+      }, "Re-selar braços"),
+
+      erroLocal ? h("div", { className: "vmm-erro" }, erroLocal) : null,
+      props.aviso ? h("div", { className: "vmm-ok" }, props.aviso) : null
     );
   }
 
@@ -2312,6 +2476,9 @@
         versao: versao,
         opcoes: ((estado.opcoes || {}).estrategia) || {},
         onSuperficie: props.onSuperficie,
+        onSombra: props.onSombra,
+        onBracos: props.onBracos,
+        avisoSombra: props.avisoSombra,
         onMudar: props.onMudarJSON,
       }),
 
@@ -2355,6 +2522,10 @@
     const [limite, setLimite] = useState(40);
     const [erro, setErro] = useState(null);
     const [aGravar, setAGravar] = useState(false);
+    // Aviso efémero do ensaio: "braços re-selados" tem de aparecer no sítio do
+    // gesto. Sem isto, gravar com sucesso e nao ver nada e indistinguivel de
+    // um botao que nao faz nada.
+    const [avisoSombra, setAvisoSombra] = useState("");
     const [aCarregar, setACarregar] = useState(false);
     const [mostrarEditor, setMostrarEditor] = useState(false);
     const [configJSON, setConfigJSON] = useState("");
@@ -2461,6 +2632,56 @@
           setErro(msg.indexOf("409") !== -1
             ? "As superfícies mudaram noutro sítio — recarreguei o estado. Escolha outra vez."
             : "Erro ao gravar a superfície: " + msg);
+          return carregar();
+        })
+        .then(function () { setAGravar(false); });
+    }
+
+    function mudarSombra(campos) {
+      setAvisoSombra("");
+      setAGravar(true);
+      pedir("/sombra", {
+        method: "POST",
+        body: Object.assign({ rev: (estado && estado.rev) || "" }, campos),
+      })
+        .then(function (r) {
+          setAvisoSombra("ensaio: " + (r && r.sombra && r.sombra.activo ? "ligado" : "desligado"));
+          return carregar();
+        })
+        .catch(function (e) {
+          setErro("Erro ao gravar o ensaio: " + String(e && e.message ? e.message : e));
+          return carregar();
+        })
+        .then(function () { setAGravar(false); });
+    }
+
+    function mudarBracos(bracoA, bracoB) {
+      setAvisoSombra("");
+      setAGravar(true);
+      // `confirmar_reabertura` e obrigatorio no backend: re-selar invalida a
+      // amostra recolhida. O painel so chega aqui depois da caixa marcada, mas
+      // o campo vai no corpo porque o servidor nao confia no cliente.
+      return pedir("/sombra/bracos", {
+        method: "POST",
+        body: {
+          braco_a: bracoA,
+          braco_b: bracoB,
+          confirmar_reabertura: true,
+          rev: (estado && estado.rev) || "",
+        },
+      })
+        .then(function (r) {
+          const selo = (r && r.pre_registo && r.pre_registo.selo_valido)
+            ? "re-selado " + String(r.pre_registo.sha256_ficheiro || "").slice(0, 12) + "…"
+            : "gravado";
+          setAvisoSombra("braços " + selo);
+          return carregar();
+        })
+        .catch(function (e) {
+          const msg = String(e && e.message ? e.message : e);
+          setErro(msg.indexOf("409") !== -1
+            ? "O ensaio mudou noutro sítio — recarreguei o estado. Repita a re-selagem."
+            : "Erro ao re-selar os braços: " + msg);
           return carregar();
         })
         .then(function () { setAGravar(false); });
@@ -2952,6 +3173,9 @@
         onGravar: gravarEFechar,
         onDescartar: fecharEditor,
         onSuperficie: function (perfil, sup, alvo) { mudarSuperficie(perfil, sup, alvo); },
+        onSombra: function (campos) { mudarSombra(campos); },
+        onBracos: function (a, b) { return mudarBracos(a, b); },
+        avisoSombra: avisoSombra,
         onMudarJSON: function (novo) {
           setConfigJSON(novo);
           setValidacaoOk(null);
@@ -3099,6 +3323,7 @@
     window.__VMM_TEST__.estrategiaDe = estrategiaDe;
     window.__VMM_TEST__.comEstrategia = comEstrategia;
     window.__VMM_TEST__.SecaoClassificador = SecaoClassificador;
+    window.__VMM_TEST__.SecaoSombra = SecaoSombra;
     window.__VMM_TEST__.valorDaRegra = valorDaRegra;
     window.__VMM_TEST__.rotuloRegra = rotuloRegra;
     window.__VMM_TEST__.metaPlugin = metaPlugin;

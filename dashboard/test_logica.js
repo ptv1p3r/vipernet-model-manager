@@ -666,6 +666,130 @@ const cfgSecao = {
 };
 const arvoreSecao = renderSecao(cfgSecao, opcoesReais);
 
+// ---- ensaio A/B na pagina de configuracao ---------------------------------
+// A informacao existia em dois ficheiros (interruptor no config, MODELOS no
+// pre-registo selado) e nao aparecia em nenhum formulario: quem abria a
+// configuracao via um editor de JSON. Estes casos provam que os bracos sao
+// editaveis onde se edita o resto, e que o selo e o aviso nao desaparecem.
+const estadoSombra = {
+  perfis: {
+    default: { catalogo: [{ modelo: "modelo-do-catalogo", provider: "p", complexidade: ["leve"] }] },
+  },
+  sombra: {
+    activo: true,
+    vida_ttl_h: 24,
+    bracos: { a: "deepseek-flash", b: "nvidia/nemotron-3-ultra-550b-a55b:free" },
+    selo_valido: true,
+    selo: "5275bbf6eba15dbb" + "0".repeat(48),
+    ensaio: "taxa de falha por chamada de ferramenta",
+    p0: 0.0463, margem: 0.01, n_por_braco: 18536, dias_estimados: 2.3,
+    pre_registo: "/tmp/pre-registo-20261105b.json",
+    pre_registo_recente: "/tmp/pre-registo-20261105b.json",
+    pre_registo_recente_selado: true,
+    vida: {
+      medida_ts: "2026-11-05T10:29:59+00:00",
+      bracos: {
+        a: { modelo: "deepseek-flash", ok: true, http: 200, motivo: "" },
+        b: { modelo: "nvidia/nemotron-3-ultra-550b-a55b:free", ok: false, http: 404,
+             motivo: "unavailable for free" },
+      },
+      todos_vivos: false,
+    },
+  },
+};
+// O harness nao executa componentes-funcao (um `h(SecaoSombra)` fica um no com
+// o tag do nome), por isso encontra-se o no dentro da seccao e chama-se a
+// funcao a mao — a mesma convencao que ja se usa para a SecaoClassificador.
+function renderSombra(estado, extra) {
+  const arvore = renderSecao({ perfis: { default: {} } }, {}, estado);
+  const no = recolher(arvore, function (n) { return n.tag === "SecaoSombra"; });
+  if (!no.length) return null;
+  const props = Object.assign({}, no[0].props, extra || {});
+  return T.SecaoSombra(props);
+}
+
+const arvoreSombraCompleta = renderSombra(estadoSombra);
+check("render: a seccao monta o bloco do ensaio", arvoreSombraCompleta !== null);
+
+const textosSombra = arvoreSombraCompleta ? textoDaArvore(arvoreSombraCompleta) : "";
+const inputsSombra = arvoreSombraCompleta ? recolher(arvoreSombraCompleta,
+  function (no) { return no.tag === "input"; }) : [];
+const valoresSombra = inputsSombra.map(function (n) { return n.props.value; });
+
+check("render: o ensaio tem bloco proprio no editor",
+      textosSombra.indexOf("Ensaio A/B em sombra") !== -1, textosSombra.slice(0, 200));
+check("render: os dois modelos dos bracos estao nos campos",
+      valoresSombra.indexOf("deepseek-flash") !== -1
+      && valoresSombra.indexOf("nvidia/nemotron-3-ultra-550b-a55b:free") !== -1,
+      JSON.stringify(valoresSombra));
+check("render: mostra os numeros do ensaio (p0, margem, n, dias)",
+      textosSombra.indexOf("0.0463") !== -1 && textosSombra.indexOf("0.01") !== -1
+      && textosSombra.indexOf("18536") !== -1 && textosSombra.indexOf("2.3") !== -1,
+      textosSombra);
+check("render: mostra o selo do pre-registo",
+      textosSombra.indexOf("5275bbf6eba15dbb") !== -1);
+check("render: mostra a sonda de vida de cada braco, com o motivo da falha",
+      textosSombra.indexOf("vivo") !== -1 && textosSombra.indexOf("morto") !== -1
+      && textosSombra.indexOf("unavailable for free") !== -1, textosSombra);
+check("render: as sugestoes de modelo vem do catalogo real",
+      (function () {
+        const dl = recolher(arvoreSombraCompleta, function (n) { return n.tag === "datalist"; });
+        if (!dl.length) return false;
+        // `filhos` no harness, `props.children` no React real.
+        const dentro = recolher(dl[0], function (n) { return n.tag === "option"; });
+        const opcoes = dentro.length ? dentro : recolher(
+          { tag: "x", props: { children: (dl[0].props || {}).children }, filhos: dl[0].filhos },
+          function (n) { return n.tag === "option"; });
+        return opcoes.length === 1 && opcoes[0].props.value === "modelo-do-catalogo";
+      })());
+
+// O botao de re-selar tem de estar DESLIGADO enquanto a caixa de confirmacao
+// nao estiver marcada: reabrir o ensaio invalida a amostra ja recolhida e nao
+// pode acontecer por se carregar no botao que parece "gravar".
+const botoesSombra = arvoreSombraCompleta ? recolher(arvoreSombraCompleta,
+  function (no) {
+    const filhos = (no.filhos || []).concat((no.props || {}).children || []);
+    return no.tag === "button" && filhos.indexOf("Re-selar braços") !== -1;
+  }) : [];
+check("render: o botao de re-selar existe", botoesSombra.length === 1,
+      "obtive " + botoesSombra.length);
+check("render: re-selar comeca desligado ate confirmar",
+      botoesSombra.length === 1 && botoesSombra[0].props.disabled === true);
+
+// A classe do aviso tem de aparecer quando o ensaio grava: sem isso, gravar
+// com sucesso e nao ver nada e indistinguivel de um botao morto.
+const temasAviso = renderSombra(estadoSombra, { aviso: "braços re-selados" });
+check("render: o aviso de sucesso aparece no sitio do gesto",
+      temasAviso !== null && textoDaArvore(temasAviso).indexOf("braços re-selados") !== -1);
+
+// Caso negativo do selo: com selo invalido o painel avisa em vez de mostrar os
+// bracos como aprovados.
+const estadoSombraMau = JSON.parse(JSON.stringify(estadoSombra));
+estadoSombraMau.sombra.selo_valido = false;
+estadoSombraMau.sombra.pre_registo_recente_selado = false;
+estadoSombraMau.sombra.bracos = { a: null, b: null };
+const arvoreSombraMau = renderSombra(estadoSombraMau);
+const textosSombraMau = arvoreSombraMau ? textoDaArvore(arvoreSombraMau) : "";
+check("render: selo invalido e dito por extenso, nao escondido",
+      textosSombraMau.indexOf("NÃO bate") !== -1, textosSombraMau.slice(0, 260));
+
+// Terceiro caso, distinto do anterior: NAO existe pre-registo nenhum. O painel
+// nao pode confundir "nao ha" com "ha um e o selo nao bate" — sao acoes
+// diferentes (criar vs. investigar quem editou o ficheiro).
+const estadoSemRegisto = JSON.parse(JSON.stringify(estadoSombra));
+estadoSemRegisto.sombra.selo_valido = false;
+estadoSemRegisto.sombra.selo = null;
+estadoSemRegisto.sombra.pre_registo = "";
+estadoSemRegisto.sombra.pre_registo_recente = "";
+estadoSemRegisto.sombra.pre_registo_recente_selado = null;
+estadoSemRegisto.sombra.bracos = { a: null, b: null };
+const arvoreSemRegisto = renderSombra(estadoSemRegisto);
+const textosSemRegisto = arvoreSemRegisto ? textoDaArvore(arvoreSemRegisto) : "";
+check("render: distingue 'nao ha pre-registo' de 'selo nao bate'",
+      textosSemRegisto.indexOf("sem pré-registo") !== -1
+      && textosSemRegisto.indexOf("NÃO bate") === -1,
+      textosSemRegisto.slice(0, 260));
+
 check("render: os blocos distintos — Complexidade, Estrategia e Superficies",
       textoDaArvore(arvoreSecao).indexOf("Complexidade") !== -1
       && textoDaArvore(arvoreSecao).indexOf("Estratégia") !== -1
@@ -795,14 +919,17 @@ check("render: o painel principal nao tem um unico controlo de configuracao",
           && corpo.indexOf("<select") === -1;
       })());
 
-check("render: o editor tem os quatro blocos com titulo proprio",
+check("render: o editor tem os cinco blocos com titulo proprio",
       (function () {
         const titulos = (srcPainel.match(/tituloBloco\("/g) || []).length;
-        return titulos === 4
+        return titulos === 5
           && srcPainel.indexOf('tituloBloco("Complexidade"') !== -1
           && srcPainel.indexOf('tituloBloco("Tarefa persistente"') !== -1
           && srcPainel.indexOf('tituloBloco("Estratégia"') !== -1
-          && srcPainel.indexOf('tituloBloco("Superfícies"') !== -1;
+          && srcPainel.indexOf('tituloBloco("Superfícies"') !== -1
+          // O ensaio A/B e configuracao como as outras: os modelos dos bracos
+          // estavam so no pre-registo e nao apareciam em nenhum formulario.
+          && srcPainel.indexOf('tituloBloco("Ensaio A/B em sombra"') !== -1;
       })());
 
 check("render: com JSON invalido a seccao avisa em vez de desaparecer",

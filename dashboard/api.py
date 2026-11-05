@@ -32,6 +32,7 @@ if str(_RAIZ_PLUGIN) not in sys.path:
     sys.path.insert(0, str(_RAIZ_PLUGIN))
 
 import gestor  # noqa: E402  (depende do sys.path acima)
+import sombra as _sombra  # noqa: E402  (idem: o modulo vive na raiz do plugin)
 
 router = APIRouter()
 
@@ -174,6 +175,114 @@ def _config_mtime_iso() -> str:
     return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds")
 
 
+# --------------------------------------------------------------------- sombra
+#
+# O ensaio A/B vive em DOIS sitios diferentes, e o painel so mostrava um deles
+# (nenhum, na verdade): o interruptor e a validade da sonda estao no `config.json`
+# (bloco `sombra`), mas os MODELOS DOS BRACOS estao no pre-registo selado em
+# `aprendiz/sombra/pre-registo-*.json`. Quem procurava a configuracao do teste no
+# painel encontrava um editor de JSON e nada mais — a informacao existia e nao
+# estava onde se edita.
+
+
+def _dir_sombra() -> Path:
+    return gestor.directorio() / "aprendiz" / "sombra"
+
+
+def _pre_registo_actual() -> tuple[Optional[dict[str, Any]], str]:
+    """Pre-registo mais recente e o caminho, ou ``(None, "")``.
+
+    Le o ficheiro mais recente por ordem lexicografica (`pre-registo-AAAAMMDDx`)
+    e verifica o `sha256` que ele proprio carrega. Um selo que nao bate nao e um
+    pre-registo: e um ficheiro que alguem editou a mao depois de os numeros
+    terem sido fixados, e usa-lo seria decidir com uma margem escolhida depois
+    de ver os dados.
+
+    Devolve tambem o caminho para que a escrita saiba que nome tem de superar
+    na ordenacao — um ficheiro novo com nome anterior nunca seria lido.
+    """
+    base = _dir_sombra()
+    try:
+        ficheiros = sorted(base.glob("pre-registo-*.json"))
+    except OSError:
+        return None, ""
+    for caminho in reversed(ficheiros):
+        try:
+            dados = json.loads(caminho.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(dados, dict) and _sombra.verificar(dados):
+            return dados, str(caminho)
+    return None, ""
+
+
+def _sombra_estado(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Bloco `sombra` para o painel: interruptor, sonda, bracos e selo.
+
+    `selo_valido` e o campo que interessa: diz se o pre-registo ainda e o que
+    foi selado. Um `activo: true` com `selo_valido: false` e um ensaio que corre
+    com numeros que ja nao sao os declarados, e o painel tem de o mostrar em vez
+    de apresentar os bracos como se estivessem aprovados.
+    """
+    bloco = cfg.get("sombra") if isinstance(cfg.get("sombra"), dict) else {}
+    registo, caminho = _pre_registo_actual()
+
+    # O ficheiro mais recente pode estar corrompido: le-se na mesma para que o
+    # painel distinga "nao ha pre-registo" de "ha um e o selo nao bate".
+    recente: Optional[dict[str, Any]] = None
+    caminho_recente = ""
+    try:
+        ficheiros = sorted(_dir_sombra().glob("pre-registo-*.json"))
+        if ficheiros:
+            caminho_recente = str(ficheiros[-1])
+            dados = json.loads(ficheiros[-1].read_text(encoding="utf-8"))
+            recente = dados if isinstance(dados, dict) else None
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+
+    vida: dict[str, Any] = {}
+    try:
+        vida = json.loads((_dir_sombra() / "vida.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        vida = {}
+
+    # Fonte dos numeros do ensaio: o selo valido manda; se nao houver, mostra-se
+    # o recente (para o painel poder dizer que existe um e o selo nao bate).
+    numeros: dict[str, Any] = registo or recente or {}
+
+    return {
+        # Ausente nao e `false` por acidente: e "nao decidido". O middleware so
+        # corre o ensaio com `activo` verdadeiro (mesma regra do `gestor`).
+        "activo": bool(bloco.get("activo", False)),
+        "vida_ttl_h": bloco.get("vida_ttl_h"),
+        "bracos": (
+            {"a": registo.get("braco_a"), "b": registo.get("braco_b")}
+            if registo else {"a": None, "b": None}
+        ),
+        "selo_valido": bool(registo),
+        "selo": (registo or {}).get("sha256"),
+        "pre_registo": caminho,
+        "pre_registo_recente": caminho_recente,
+        "pre_registo_recente_selado": (
+            bool(recente) and _sombra.verificar(recente)
+        ) if recente else None,
+        "ensaio": numeros.get("ensaio"),
+        "p0": numeros.get("p0"),
+        "margem": numeros.get("margem_nao_inferioridade"),
+        "n_por_braco": numeros.get("n_por_braco"),
+        "dias_estimados": numeros.get("dias_estimados"),
+        "vida": {
+            "medida_ts": vida.get("ts") or vida.get("medida_ts") or "",
+            "bracos": {
+                "a": vida.get("braco_a") or {},
+                "b": vida.get("braco_b") or {},
+            },
+            "todos_vivos": vida.get("todos_vivos"),
+            "sha_registo": vida.get("sha_registo"),
+        },
+    }
+
+
 # Um motivo de configuracao sem trafego que o renove envelhece: ao fim de duas
 # horas ja nao e estado, e uma afirmacao de ontem sobre o sistema de hoje.
 MOTIVO_VALIDADE_S = 7200
@@ -286,6 +395,21 @@ def _registar_escrita(*, rev_antes: str, rev_depois: str, rev_cliente: str, conf
     except Exception:  # noqa: BLE001 - o log nao pode impedir a escrita pedida
         pass
 
+
+
+def _verdadeiro(valor: Any) -> bool:
+    """Interpreta um booleano vindo do painel, sem o confundir com texto.
+
+    ``bool("false")`` e ``True`` — um painel que envie a string ``"false"``
+    ligaria o ensaio em vez de o desligar. Aqui so ``true``/``1``/``sim`` contam.
+    """
+    if isinstance(valor, bool):
+        return valor
+    if isinstance(valor, (int, float)):
+        return valor != 0
+    if isinstance(valor, str):
+        return valor.strip().lower() in ("true", "1", "sim", "yes", "on")
+    return False
 
 
 def _corpo_objeto(corpo: Any, *, obrigatorio: bool = True) -> Optional[dict[str, Any]]:
@@ -619,6 +743,11 @@ def estado() -> dict[str, Any]:
         # a partir daqui: se o backend acrescentar um valor, o painel mostra-o
         # sem alteracao, e nunca aparece um valor que a validacao recusaria.
         "estrategia_global": gestor.estrategia_global(cfg),
+        # Ensaio A/B em sombra: interruptor e validade da sonda (config) e os
+        # MODELOS DOS BRACOS (pre-registo selado). E o que faltava no painel: a
+        # configuracao do teste existia em dois ficheiros e nao aparecia em
+        # nenhum formulario.
+        "sombra": _sombra_estado(cfg),
         "opcoes": {
             "estrategia": gestor.opcoes_estrategia(),
             # Superficies que ja foram vistas neste ambiente. Nao e a lista
@@ -882,6 +1011,169 @@ def superficies_post(corpo: Any = Body(default=None)) -> JSONResponse:
         "ok": (bool(lido) if regra is not None else not lido),
         "ambito": ambito, "perfil": None if ambito == "global" else nome,
         "superficie": superficie, "regra": lido,
+        "rev": _rev(confirmado),
+    })
+
+
+@router.post("/sombra")
+def sombra_post(corpo: Any = Body(default=None)) -> JSONResponse:
+    """Liga/desliga o ensaio em sombra e fixa a validade da sonda de vida.
+
+    Escreve so o bloco `sombra` do config — o mesmo que o CLI
+    (`vmm sombra on|off`) e que o middleware le. Os MODELOS dos bracos nao se
+    mudam aqui: vivem no pre-registo selado, e re-sela-lo e outro gesto (ver
+    `POST /sombra/bracos`), porque mudar os bracos a meio invalida a comparacao
+    que ja foi acumulada.
+    """
+    corpo = _corpo_objeto(corpo)
+    rev = str(corpo.get("rev") or "")
+    tem_activo = "activo" in corpo
+    tem_ttl = "vida_ttl_h" in corpo
+    if not tem_activo and not tem_ttl:
+        raise HTTPException(status_code=400, detail="indique 'activo' e/ou 'vida_ttl_h'")
+
+    def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
+        bloco = cfg.get("sombra")
+        bloco = dict(bloco) if isinstance(bloco, dict) else {}
+        if tem_activo:
+            bloco["activo"] = bool(corpo.get("activo"))
+        if tem_ttl:
+            bloco["vida_ttl_h"] = corpo.get("vida_ttl_h")
+        cfg["sombra"] = bloco
+        return cfg
+
+    try:
+        gestor.alterar(mutar, rev_esperado=rev or None)
+    except gestor.Conflito:
+        raise HTTPException(
+            status_code=409,
+            detail="a configuração mudou desde que este painel leu o estado",
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"nao gravou: {exc}") from exc
+
+    confirmado = _cfg()
+    return JSONResponse({"ok": True, "sombra": _sombra_estado(confirmado),
+                         "rev": _rev(confirmado)})
+
+
+def _proximo_nome_pre_registo() -> str:
+    """Nome do proximo pre-registo, garantidamente posterior na ordenacao.
+
+    A leitura usa ``sorted(glob(...))[-1]``, logo o nome nao e decorativo: um
+    ficheiro novo com nome que ordene ANTES do actual nunca seria lido e o
+    painel gravaria com sucesso um ensaio que ninguem corre. Os nomes seguem
+    ``pre-registo-AAAAMMDD`` e depois letras (``...b``); a proxima letra livre
+    e a escolha. Uma data com sufixo vazio conta como anterior a ``a``.
+    """
+    hoje = datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%Y%m%d")
+    prefixo = f"pre-registo-{hoje}"
+    usado = ""
+    try:
+        for caminho in _dir_sombra().glob("pre-registo-*.json"):
+            nome = caminho.stem
+            if not nome.startswith(prefixo):
+                continue
+            sufixo = nome[len(prefixo):]
+            if sufixo > usado:
+                usado = sufixo
+    except OSError:
+        usado = ""
+    if not usado:
+        return f"{prefixo}a"
+    # Incrementa a ultima letra; `z` passa a `za` (mantem a ordenacao).
+    ultima = usado[-1]
+    if ultima < "z":
+        return f"{prefixo}{usado[:-1]}{chr(ord(ultima) + 1)}"
+    return f"{prefixo}{usado}a"
+
+
+@router.post("/sombra/bracos")
+def sombra_bracos_post(corpo: Any = Body(default=None)) -> JSONResponse:
+    """Re-sela o pre-registo com outros bracos (modelos) para o ensaio A/B.
+
+    Este gesto reabre o ensaio: os numeros que ja estavam selados deixam de
+    valer, e os turnos recolhidos com os bracos antigos nao sao comparaveis com
+    os novos. Por isso exige ``confirmar_reabertura: true`` — sem ele recusa,
+    em vez de apagar em silencio o desenho que o dono aprovou.
+
+    ``p0``, ``design_effect`` e ``chamadas_por_dia`` sao herdados do pre-registo
+    actual quando nao vierem no corpo: sao valores MEDIDOS (48582 chamadas de
+    ferramenta), e reescreve-los a mao mudaria o tamanho da amostra sem que
+    ninguem tivesse medido nada.
+    """
+    corpo = _corpo_objeto(corpo)
+    if not _verdadeiro(corpo.get("confirmar_reabertura")):
+        raise HTTPException(
+            status_code=409,
+            detail=("reabrir o ensaio invalida a amostra ja recolhida; "
+                    "reenvie com 'confirmar_reabertura: true'"),
+        )
+
+    actual, caminho_actual = _pre_registo_actual()
+    if actual is None:
+        actual = {}
+
+    braco_a = str(corpo.get("braco_a") or "").strip()
+    braco_b = str(corpo.get("braco_b") or "").strip()
+    if not braco_a or not braco_b:
+        raise HTTPException(status_code=400,
+                            detail="indique 'braco_a' (pago) e 'braco_b' (gratuito)")
+    if braco_a == braco_b:
+        raise HTTPException(status_code=400,
+                            detail="os dois bracos nao podem ser o mesmo modelo")
+
+    def num(campo: str, omissao: Any) -> Any:
+        valor = corpo.get(campo, omissao)
+        try:
+            return float(valor)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                                detail=f"'{campo}' tem de ser um numero") from None
+
+    p0 = num("p0", actual.get("p0", 0.0463))
+    margem = num("margem", actual.get("margem_nao_inferioridade", 0.01))
+    deff = num("design_effect", actual.get("design_effect", 3.08))
+    por_dia = num("chamadas_por_dia", actual.get("chamadas_por_dia", 16194.0))
+    if not (0.0 <= p0 <= 1.0):
+        raise HTTPException(status_code=400, detail="'p0' tem de estar em [0, 1]")
+    if not (0.0 < margem <= 1.0):
+        raise HTTPException(status_code=400,
+                            detail="'margem' tem de estar em ]0, 1]")
+    if deff <= 0:
+        raise HTTPException(status_code=400,
+                            detail="'design_effect' tem de ser positivo")
+
+    registo = _sombra.desenhar(
+        caro=braco_a,
+        barato=braco_b,
+        p0=p0,
+        margem=margem,
+        deff=deff,
+        chamadas_por_dia=por_dia,
+        medida=str(corpo.get("medida") or actual.get("medida_primaria")
+                   or "taxa de falha por chamada de ferramenta medida por exit_code"),
+        nota=str(corpo.get("nota") or (
+            f"re-selado pelo painel; substitui {Path(caminho_actual).name}"
+            if caminho_actual else "selado pelo painel")),
+    )
+    if not _sombra.verificar(registo):
+        raise HTTPException(status_code=500,
+                            detail="o pre-registo nao ficou selado; nada gravado")
+
+    destino = _dir_sombra() / f"{_proximo_nome_pre_registo()}.json"
+    escrito = _sombra.escrever(registo, destino)
+
+    # Releitura independente: o que se devolve e o que ficou no disco.
+    confirmado = _cfg()
+    estado = _sombra_estado(confirmado)
+    return JSONResponse({
+        "ok": True,
+        "pre_registo": escrito,
+        "anterior": caminho_actual or None,
+        "sombra": estado,
         "rev": _rev(confirmado),
     })
 
