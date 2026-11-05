@@ -39,6 +39,7 @@ medir; tudo o resto e declarado em falta.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -228,3 +229,96 @@ def custo_da_linha(evento: dict) -> float | None:
     if evento.get("evento") != "resposta":
         return None
     return custo_de(evento.get("respondido_por", ""), _tokens(evento.get("tokens")))
+
+
+def atribuido_por_turno(ledger: Path, db: Path) -> dict[str, dict]:
+    """Custo por turno que soma **exactamente** o custo estimado do core.
+
+    Porque nao basta multiplicar tokens por preco: o bloco `tokens` do ledger
+    nao mede o mesmo que o `session_model_usage`. Medido no `deepseek-flash`
+    (12 045 chamadas no ledger, 44 771 no core): input 1,19x, cache 1,18x e
+    **output 0,65x** — o ledger nao apanha os tokens de raciocinio, que sao 60%
+    do preco. Multiplicar tokens por preco da um limite inferior 4,7% abaixo do
+    proprio numero do core, com aspecto de medido.
+
+    A atribuicao correcta: o total de cada `(sessao, modelo)` vem do core, que e
+    a autoridade; a reparticao pelos turnos dessa sessao usa a quota de custo que
+    o ledger mede. A soma dos turnos fica igual ao total do core por construcao,
+    e cada turno recebe a parte que proporcionalmente lhe cabe.
+
+    Devolve `{turn_id: {...,"custo_atribuido": float, "quota": float}}`, mais a
+    reconciliacao em `_reconciliacao` no proprio dicionario (chave reservada,
+    prefixo `_`, para nunca colidir com um turn_id).
+    """
+    turnos = por_turno(ledger)
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        return {"_reconciliacao": {"erro": f"state.db inacessivel: {exc}"}}
+
+    # custo do core por (sessao, modelo)
+    core: dict[tuple[str, str], float] = {}
+    try:
+        for sessao, modelo, valor in con.execute(
+            """select session_id, model, sum(estimated_cost_usd)
+               from session_model_usage
+               where session_id is not null and model is not null
+               group by session_id, model"""
+        ):
+            if valor:
+                core[(sessao, modelo)] = float(valor)
+    finally:
+        con.close()
+
+    # quota do ledger: por (sessao, modelo) a soma dos custos das suas linhas
+    quota: dict[tuple[str, str], float] = {}
+    for evento in _iterar(ledger):
+        if evento.get("evento") != "resposta":
+            continue
+        sessao = evento.get("sessao")
+        modelo = evento.get("respondido_por")
+        if not sessao or not modelo:
+            continue
+        c = custo_da_linha(evento)
+        if c is None:
+            continue
+        quota[(sessao, modelo)] = quota.get((sessao, modelo), 0.0) + c
+
+    # factor de correccao por (sessao, modelo)
+    factor: dict[tuple[str, str], float] = {}
+    for chave, q in quota.items():
+        if q > 0 and chave in core:
+            factor[chave] = core[chave] / q
+        elif q > 0:
+            factor[chave] = 1.0  # sessao fora do core: fica o valor do ledger
+
+    # repartir por turno: cada linha contribui com o seu custo corrigido, para
+    # que um turno com dois modelos receba a parte de cada um
+    for d in turnos.values():
+        d["custo_atribuido"] = 0.0
+
+    for evento in _iterar(ledger):
+        if evento.get("evento") != "resposta":
+            continue
+        tid = evento.get("turn_id")
+        sessao = evento.get("sessao")
+        modelo = evento.get("respondido_por")
+        c = custo_da_linha(evento)
+        if not tid or not sessao or not modelo or c is None:
+            continue
+        f = factor.get((sessao, modelo), 1.0)
+        if tid in turnos:
+            turnos[tid]["custo_atribuido"] += c * f
+
+    soma_atribuida = sum(d["custo_atribuido"] for d in turnos.values())
+    soma_core = sum(
+        v for (s, m), v in core.items() if s in {d.get("sessao") for d in turnos.values()}
+    )
+    turnos["_reconciliacao"] = {
+        "soma_turnos_usd": round(soma_atribuida, 6),
+        "soma_core_usd": round(soma_core, 6),
+        "desvio_usd": round(soma_atribuida - soma_core, 6),
+        "sessoes_no_ledger": len({d.get("sessao") for d in turnos.values() if isinstance(d, dict)}),
+        "metodo": "total do core por (sessao,modelo), repartido pela quota do ledger",
+    }
+    return turnos

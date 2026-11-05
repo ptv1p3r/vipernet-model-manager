@@ -69,6 +69,14 @@ def _retencao():
     return mod
 
 
+def _veredicto():
+    """Veredicto de entrega, legivel por maquina — modulo proprio."""
+    spec = importlib.util.spec_from_file_location("vmm_veredicto", _AQUI / "veredicto.py")
+    mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
+
+
 def _cfg() -> tuple[dict[str, Any], list[str]]:
     return g.carregar()
 
@@ -806,6 +814,74 @@ def cmd_retencao(args) -> int:
     return 0
 
 
+def cmd_veredicto(args) -> int:
+    """Regista ou le o veredicto de uma entrega.
+
+    Sem `--estado` e leitura: lista os ultimos veredictos (opcionalmente de uma
+    tarefa) ou, com `--agregado`, o estado agregado de uma tarefa. Com `--estado`
+    escreve — e recusa antes de escrever se a fonte ou a evidencia faltarem.
+    """
+    vd = _veredicto()
+    caminho = g.caminho_ledger()
+
+    if args.estado is None:
+        if args.agregado:
+            if not args.tarefa:
+                return _erro("--agregado exige --tarefa", 2)
+            print(json.dumps(vd.estado_da_tarefa(caminho, args.tarefa),
+                             indent=2, ensure_ascii=False))
+            return 0
+        if args.resumo:
+            print(json.dumps(vd.resumo(caminho), indent=2, ensure_ascii=False))
+            return 0
+        todos = vd.veredictos(caminho)
+        if args.tarefa:
+            todos = [e for e in todos if e.get("tarefa") == args.tarefa]
+        todos = todos[-args.n:]
+        if args.json:
+            print(json.dumps(todos, indent=2, ensure_ascii=False))
+            return 0
+        if not todos:
+            print("sem veredictos registados")
+            return 0
+        linhas = [["ts", "tarefa", "estado", "fonte", "evidencia"]]
+        for e in todos:
+            linhas.append([
+                str(e.get("ts", ""))[:19],
+                str(e.get("tarefa", ""))[:28],
+                str(e.get("estado", "")),
+                str(e.get("fonte", "")),
+                str(e.get("evidencia", ""))[:44],
+            ])
+        print(_tabela(linhas))
+        return 0
+
+    detalhe = None
+    if args.detalhe:
+        detalhe = {}
+        for par in args.detalhe:
+            if "=" in par:
+                k, v = par.split("=", 1)
+                detalhe[k.strip()] = v.strip()
+    try:
+        evento = vd.registar(
+            caminho,
+            tarefa=args.tarefa or "",
+            estado=args.estado,
+            fonte=args.fonte or "",
+            evidencia=args.evidencia or "",
+            detalhe=detalhe,
+            perfil=args.perfil,
+            sessao=args.sessao,
+            turno=args.turno,
+        )
+    except ValueError as exc:
+        return _erro(f"veredicto recusado: {exc}", 2)
+    print(f"veredicto registado: {evento['tarefa']} = {evento['estado']} "
+          f"(fonte {evento['fonte']})")
+    return 0
+
+
 def cmd_backups(args) -> int:
     """Estado dos backups do config; com `--aplicar`, poda a rotina."""
     cfg, erros = _cfg()
@@ -1184,6 +1260,30 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dias", type=int, help="dias de detalhe a manter (padrao: config)")
     s.add_argument("--aplicar", action="store_true", help="compactar de facto")
     s.set_defaults(func=cmd_retencao)
+
+    s = sub.add_parser(
+        "veredicto",
+        help="veredicto de entrega: registar (com --estado) ou ler (sem ele)",
+    )
+    s.add_argument("--tarefa", help="nome da tarefa (obrigatorio para escrever)")
+    s.add_argument("--estado", choices=["pass", "falha", "parcial"],
+                   help="estado a registar; sem isto o comando so le")
+    s.add_argument("--fonte", help="quem afirma: gate, releitura, testes, ha, jira, "
+                                  "wiki, git, skill, manual")
+    s.add_argument("--evidencia", help="prova concreta, curta (obrigatoria para escrever)")
+    s.add_argument("--detalhe", action="append", metavar="K=V",
+                   help="par chave=valor adicional (repetivel)")
+    s.add_argument("--perfil", help="perfil a que o veredicto pertence")
+    s.add_argument("--sessao", help="sessao a que o veredicto pertence")
+    s.add_argument("--turno", help="turn_id a que o veredicto pertence")
+    s.add_argument("--listar", dest="listar", action="store_true",
+                   help="(implicito) listar em vez de escrever")
+    s.add_argument("--n", type=int, default=20, help="quantos listar (padrao 20)")
+    s.add_argument("--json", action="store_true", help="saida em JSON")
+    s.add_argument("--resumo", action="store_true", help="contagens por estado e fonte")
+    s.add_argument("--agregado", action="store_true",
+                   help="estado agregado de --tarefa, todas as fontes")
+    s.set_defaults(func=cmd_veredicto)
 
     s = sub.add_parser("backups", help="backups do config: contagem e poda da rotina")
     s.add_argument("--manter", type=int, help="quantos datados ficam (padrao: config)")
