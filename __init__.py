@@ -49,6 +49,7 @@ try:  # carregado como pacote do Hermes
     from . import gestor
     from . import analise as _analise_mod
     from . import analise_modelo as _analise_modelo_mod
+    from . import resultado as _resultado_mod
 except Exception:  # import directo (selftest / CLI fora do Hermes)
     import importlib.util as _ilu
 
@@ -67,6 +68,7 @@ except Exception:  # import directo (selftest / CLI fora do Hermes)
     gestor = _mod("gestor")
     _analise_mod = _mod("analise")
     _analise_modelo_mod = _mod("analise_modelo")
+    _resultado_mod = _mod("resultado")
 
 NIVEIS = _analise_mod.NIVEIS
 
@@ -1745,6 +1747,54 @@ def ao_erro(
 # --------------------------------------------------------------------------- registo
 
 
+def ao_resultado(
+    tool_name: str = "",
+    result: Any = None,
+    status: Any = None,
+    session_id: str = "",
+    turn_id: Any = None,
+    tool_call_id: Any = None,
+    **_: Any,
+) -> None:
+    """Efeito de cada chamada de ferramenta, lido do `exit_code` que ja existe.
+
+    O core tem a coluna `effect_disposition` e preenche-a so nos caminhos de
+    erro — medido a 2026-11-05, 55 de 84 120 mensagens de ferramenta no
+    `default`, todas `unknown`/`none`, e zero sucessos. Escrever nessa coluna a
+    partir daqui seria escrever na tabela de um modulo do core, que a regra 10
+    do catalogo recusa; por isso o efeito fica no ledger do plugin, com a mesma
+    chave de juncao (`sessao` + `turno`) que as linhas de resposta ja usam.
+
+    Duas coisas que este hook nao faz de proposito: nao adivinha quando o
+    resultado nao declara efeito (uma leitura de ficheiro nao e sucesso nem
+    falha — gravar `ok` encheria o ledger de medicao falsa) e nao parte um
+    turno. Qualquer excepcao aqui e engolida com rasto em `uso.err`, porque o
+    hook corre no caminho quente de todas as ferramentas.
+    """
+    try:
+        config = _config()
+        if not isinstance(config, dict) or not config.get("registar", True):
+            return
+        medido = _resultado_mod.classificar(result)
+        if medido is None:
+            medido = _resultado_mod.efeito_do_status(status)
+        if medido is None:
+            return
+        _registar({
+            "evento": "efeito",
+            "perfil": gestor.perfil_atual(None),
+            "sessao": session_id or "",
+            "turno": str(turn_id or ""),
+            "chamada": str(tool_call_id or ""),
+            "ferramenta": str(tool_name or ""),
+            "exit_code": medido.get("exit_code"),
+            "efeito": medido.get("efeito"),
+        })
+    except Exception:
+        if _uma_vez(("ao_resultado", "erro", "hook")):
+            _falha("ao_resultado: " + traceback.format_exc(limit=3).replace("\n", " | "))
+
+
 def register(ctx: Any) -> None:
     try:
         ctx.register_middleware("llm_request", middleware_llm_request)
@@ -1753,6 +1803,9 @@ def register(ctx: Any) -> None:
         # uma falha de provider era um `sem_troca` sem explicacao ou uma linha
         # de traceback em uso.err.
         ctx.register_hook("api_request_error", ao_erro)
+        # 3.35.0: o resultado da chamada, para a medicao por resultado existir
+        # sem depender de rotulos humanos.
+        ctx.register_hook("post_tool_call", ao_resultado)
         gestor.garantir()  # cria o config por omissao para o dono o editar
         _config()  # aquece a cache com o que esta no disco
     except Exception:
