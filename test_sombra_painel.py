@@ -173,7 +173,7 @@ def testes() -> None:
         # -------------------------------------------------- 6. re-sela
         r = api.sombra_bracos_post(corpo={
             "braco_a": "deepseek-flash",
-            "braco_b": "openrouter/outro:free",
+            "braco_b": "nvidia/nemotron-3.5-lightning:free",
             "confirmar_reabertura": True,
         })
         corpo_r = json.loads(bytes(r.body).decode("utf-8"))
@@ -181,8 +181,22 @@ def testes() -> None:
               and corpo_r["pre_registo"]["selo_valido"] is True,
               json.dumps(corpo_r.get("pre_registo")))
         check("bracos: releitura independente devolve os bracos novos",
-              corpo_r["sombra"]["bracos"]["b"] == "openrouter/outro:free",
+              corpo_r["sombra"]["bracos"]["b"] == "nvidia/nemotron-3.5-lightning:free",
               json.dumps(corpo_r["sombra"]["bracos"]))
+        # O provider passou a fazer parte do desenho: sem ele a sonda e o
+        # middleware tinham de adivinhar a credencial pelo nome do modelo.
+        check("bracos: o provider de cada braco fica selado",
+              corpo_r["sombra"]["providers"] == {"a": "deepseek", "b": "openrouter"},
+              json.dumps(corpo_r["sombra"].get("providers")))
+        check("bracos: os dois providers vem declarados",
+              corpo_r["sombra"]["providers_declarados"] is True,
+              json.dumps(corpo_r["sombra"].get("providers_declarados")))
+        check("bracos: a origem do provider e dita (catalogo, nunca palpite)",
+              corpo_r["providers_origem"] == {"a": "catalogo", "b": "catalogo"},
+              json.dumps(corpo_r.get("providers_origem")))
+        check("bracos: a lista de providers e fechada e vem do catalogo",
+              corpo_r["sombra"]["providers_disponiveis"] == ["deepseek", "openrouter"],
+              json.dumps(corpo_r["sombra"].get("providers_disponiveis")))
         check("bracos: o ficheiro novo e o que a leitura escolhe",
               Path(corpo_r["sombra"]["pre_registo"]).name == "pre-registo-20261105c.json",
               corpo_r["sombra"]["pre_registo"])
@@ -193,13 +207,39 @@ def testes() -> None:
         check("bracos: o anterior continua em disco (nada apagado)",
               len(list((base / "aprendiz" / "sombra").glob("pre-registo-*.json"))) == 2)
 
+        # ------------------------------------------------- 6b. provider errado
+        # Os dois casos negativos que faltavam: um provider que nao serve o
+        # modelo e um modelo que nao esta em catalogo nenhum sao recusados em
+        # vez de selados (um braco assim nunca podia ser servido).
+        for rotulo, corpo_mau, esperado in (
+            ("provider que nao serve o modelo",
+             {"braco_a": "deepseek-flash", "braco_a_provider": "openrouter",
+              "braco_b": "nvidia/nemotron-3.5-lightning:free",
+              "confirmar_reabertura": True}, 400),
+            ("modelo fora de todos os catalogos",
+             {"braco_a": "deepseek-flash", "braco_b": "fantasma/modelo:free",
+              "confirmar_reabertura": True}, 400),
+            ("provider inexistente",
+             {"braco_a": "deepseek-flash", "braco_a_provider": "anthropic",
+              "braco_b": "nvidia/nemotron-3.5-lightning:free",
+              "confirmar_reabertura": True}, 400),
+        ):
+            try:
+                api.sombra_bracos_post(corpo=corpo_mau)
+                recusou, detalhe = False, "gravou"
+            except HTTPException as exc:
+                recusou, detalhe = exc.status_code == esperado, f"{exc.status_code} {exc.detail}"
+            check(f"bracos: recusa {rotulo}", recusou, detalhe)
+        check("bracos: as recusas nao deixaram ficheiro novo",
+              len(list((base / "aprendiz" / "sombra").glob("pre-registo-*.json"))) == 2)
+
         # -------------------------------------------------- 7. interruptor
         r2 = api.sombra_post(corpo={"activo": False})
         corpo2 = json.loads(bytes(r2.body).decode("utf-8"))
         check("interruptor: desliga", corpo2["sombra"]["activo"] is False,
               json.dumps(corpo2["sombra"]["activo"]))
         check("interruptor: nao mexe nos bracos",
-              corpo2["sombra"]["bracos"]["b"] == "openrouter/outro:free",
+              corpo2["sombra"]["bracos"]["b"] == "nvidia/nemotron-3.5-lightning:free",
               json.dumps(corpo2["sombra"]["bracos"]))
         cfg_disco = json.loads((base / "config.json").read_text(encoding="utf-8"))
         # O `alterar` valida a config INTEIRA: uma escrita cirurgica que

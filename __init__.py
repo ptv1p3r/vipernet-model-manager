@@ -406,13 +406,17 @@ def _pre_registo_ensaio() -> dict[str, Any] | None:
         return None
 
 
-def _braco_da_resposta(modelo: str) -> str | None:
-    """Braco do turno, derivado do modelo que respondeu — nunca do desejado."""
+def _braco_da_resposta(modelo: str, provider: str = "") -> str | None:
+    """Braco do turno, derivado do modelo que respondeu — nunca do desejado.
+
+    O provider acompanha o modelo: com dois providers a servir o mesmo slug,
+    casar so pelo nome atribuia o turno ao braco errado.
+    """
     registo = _pre_registo_ensaio()
     if not registo or not modelo:
         return None
     try:
-        return _sombra_mod.braco_do_modelo(registo, modelo)
+        return _sombra_mod.braco_do_modelo(registo, modelo, provider)
     except Exception:  # noqa: BLE001
         return None
 
@@ -450,14 +454,24 @@ def _sombra_vida() -> dict[str, Any]:
         return {}
 
 
-def _entrada_por_modelo(pcfg: dict[str, Any], modelo: Any) -> dict[str, Any] | None:
-    """Entrada do catalogo pelo **modelo**, nao pelo id: o braco nomeia modelos."""
+def _entrada_por_modelo(pcfg: dict[str, Any], modelo: Any,
+                        provider: Any = "") -> dict[str, Any] | None:
+    """Entrada do catalogo pelo **modelo**, nao pelo id: o braco nomeia modelos.
+
+    `provider` desempata quando o mesmo slug existe em dois providers — sem
+    ele, a primeira entrada do catalogo vencia em silencio e o braco servia-se
+    da credencial errada.
+    """
     alvo = str(modelo or "").strip().lower()
     if not alvo:
         return None
+    alvo_prov = str(provider or "").strip().lower()
     for entrada in gestor.catalogo_utilizavel(pcfg):
-        if str(entrada.get("modelo") or "").strip().lower() == alvo:
-            return entrada
+        if str(entrada.get("modelo") or "").strip().lower() != alvo:
+            continue
+        if alvo_prov and str(entrada.get("provider") or "").strip().lower() != alvo_prov:
+            continue
+        return entrada
     return None
 
 
@@ -496,7 +510,12 @@ def _sombra_do_turno(
     except Exception:  # noqa: BLE001
         return {"aplicado": False, "motivo": "sorteio_falhou"}
     modelo = registo.get(f"braco_{braco}")
+    try:
+        provider_braco = _sombra_mod.provider_do_braco(registo, braco)
+    except Exception:  # noqa: BLE001 - o diagnostico nunca parte o turno
+        provider_braco = ""
     diag: dict[str, Any] = {"braco": braco, "modelo": modelo,
+                            "provider": provider_braco,
                             "sha": str(registo.get("sha256") or "")[:16],
                             "aplicado": False}
     if associada:
@@ -529,7 +548,7 @@ def _sombra_do_turno(
                           for b in mortos}
         return diag
 
-    entrada = _entrada_por_modelo(pcfg, modelo)
+    entrada = _entrada_por_modelo(pcfg, modelo, provider_braco)
     if entrada is None:
         diag["motivo"] = "modelo_fora_do_catalogo"
         return diag

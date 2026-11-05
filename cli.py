@@ -176,8 +176,13 @@ def _sombra_mod():
     return mod
 
 
-def _chamar_modelo(modelo: str) -> dict[str, Any]:
+def _chamar_modelo(provider: str, modelo: str) -> dict[str, Any]:
     """Uma chamada minima ao modelo, so para provar que responde.
+
+    `provider` vem declarado no pre-registo. Vazio significa "nao declarado" e
+    cai-se na inferencia antiga (`/` ou `:` -> openrouter), que e um palpite:
+    fica registado como tal na resposta para a sonda nao se fazer passar por
+    medida quando foi adivinhacao.
 
     Nunca imprime a credencial nem o corpo completo de um erro: o que sai daqui
     vai para o ledger e para a conversa.
@@ -188,11 +193,14 @@ def _chamar_modelo(modelo: str) -> dict[str, Any]:
     spec = importlib.util.spec_from_file_location("vmm_seams", _AQUI / "seams.py")
     seams = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
     spec.loader.exec_module(seams)  # type: ignore[union-attr]
-    provider = "openrouter" if ("/" in modelo or ":" in modelo) else "deepseek"
+    inferido = not str(provider or "").strip()
+    if inferido:
+        provider = "openrouter" if ("/" in modelo or ":" in modelo) else "deepseek"
     try:
         rota = seams.resolver_provider(provider, modelo)
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "http": 0,
+        return {"ok": False, "http": 0, "provider": provider,
+                "provider_inferido": inferido,
                 "motivo": f"rota: {type(exc).__name__}: {str(exc)[:110]}"}
     corpo = json.dumps({
         "model": modelo,
@@ -210,7 +218,8 @@ def _chamar_modelo(modelo: str) -> dict[str, Any]:
         with urllib.request.urlopen(pedido, timeout=45) as resposta:
             dados = json.loads(resposta.read().decode())
         ok = bool(dados.get("choices"))
-        return {"ok": ok, "http": resposta.status,
+        return {"ok": ok, "http": resposta.status, "provider": provider,
+                "provider_inferido": inferido,
                 "motivo": "" if ok else "sem choices"}
     except urllib.error.HTTPError as exc:
         texto = exc.read().decode(errors="replace")
@@ -218,9 +227,12 @@ def _chamar_modelo(modelo: str) -> dict[str, Any]:
             msg = json.loads(texto).get("error", {}).get("message", texto)
         except (ValueError, AttributeError):
             msg = texto
-        return {"ok": False, "http": exc.code, "motivo": str(msg)[:160]}
+        return {"ok": False, "http": exc.code, "provider": provider,
+                "provider_inferido": inferido, "motivo": str(msg)[:160]}
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "http": 0, "motivo": f"{type(exc).__name__}: {str(exc)[:120]}"}
+        return {"ok": False, "http": 0, "provider": provider,
+                "provider_inferido": inferido,
+                "motivo": f"{type(exc).__name__}: {str(exc)[:120]}"}
 
 
 def cmd_sombra(args) -> int:

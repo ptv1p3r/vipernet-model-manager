@@ -679,6 +679,11 @@ const estadoSombra = {
     activo: true,
     vida_ttl_h: 24,
     bracos: { a: "deepseek-flash", b: "nvidia/nemotron-3-ultra-550b-a55b:free" },
+    // O provider faz parte do desenho: sem ele a sonda adivinhava a credencial
+    // pelo nome do modelo. A lista e fechada e sai do catalogo.
+    providers: { a: "deepseek", b: "openrouter" },
+    providers_declarados: true,
+    providers_disponiveis: ["deepseek", "openrouter"],
     selo_valido: true,
     selo: "5275bbf6eba15dbb" + "0".repeat(48),
     ensaio: "taxa de falha por chamada de ferramenta",
@@ -743,9 +748,44 @@ check("render: as sugestoes de modelo vem do catalogo real",
         return opcoes.length === 1 && opcoes[0].props.value === "modelo-do-catalogo";
       })());
 
-// O botao de re-selar tem de estar DESLIGADO enquanto a caixa de confirmacao
-// nao estiver marcada: reabrir o ensaio invalida a amostra ja recolhida e nao
-// pode acontecer por se carregar no botao que parece "gravar".
+// O provider nao se adivinha. Estes casos provam que o formulario o pede numa
+// lista fechada (tirada do catalogo), que o mostra preenchido com o que esta
+// selado, e que diz em voz alta quando o selo nao o declara.
+const selectsSombra = arvoreSombraCompleta ? recolher(arvoreSombraCompleta,
+  function (no) { return no.tag === "select"; }) : [];
+const valoresSelects = selectsSombra.map(function (n) { return n.props.value; });
+check("render: ha um select de provider por braco", selectsSombra.length === 2,
+      "obtive " + selectsSombra.length);
+check("render: o provider selado vem preenchido nos dois selects",
+      valoresSelects.indexOf("deepseek") !== -1
+      && valoresSelects.indexOf("openrouter") !== -1,
+      JSON.stringify(valoresSelects));
+check("render: a lista de providers e fechada e tirada do catalogo",
+      (function () {
+        if (!selectsSombra.length) return false;
+        const opcoes = recolher(
+          { tag: "x", props: { children: (selectsSombra[0].props || {}).children },
+            filhos: selectsSombra[0].filhos },
+          function (n) { return n.tag === "option"; });
+        const vals = opcoes.map(function (o) { return o.props.value; }).sort();
+        return JSON.stringify(vals) === JSON.stringify(["", "deepseek", "openrouter"]);
+      })(),
+      JSON.stringify((selectsSombra[0] || { props: {} }).props));
+check("render: com provider declarado, diz qual e o do selo",
+      textosSombra.indexOf("provider declarado no selo") !== -1, textosSombra);
+
+// Caso negativo: selo antigo, sem provider. O painel nao pode mostrar um
+// provider que nao existe — tem de dizer que o selo nao o declara.
+const estadoSemProvider = JSON.parse(JSON.stringify(estadoSombra));
+delete estadoSemProvider.sombra.providers;
+estadoSemProvider.sombra.providers_declarados = false;
+const arvoreSemProvider = renderSombra(estadoSemProvider);
+check("render: selo sem provider e dito, nao inventado",
+      arvoreSemProvider !== null
+      && textoDaArvore(arvoreSemProvider).indexOf("NÃO declara o provider") !== -1,
+      arvoreSemProvider ? textoDaArvore(arvoreSemProvider).slice(0, 400) : "sem arvore");
+
+
 const botoesSombra = arvoreSombraCompleta ? recolher(arvoreSombraCompleta,
   function (no) {
     const filhos = (no.filhos || []).concat((no.props || {}).children || []);

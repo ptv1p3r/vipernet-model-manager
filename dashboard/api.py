@@ -216,6 +216,27 @@ def _pre_registo_actual() -> tuple[Optional[dict[str, Any]], str]:
     return None, ""
 
 
+def _providers_disponiveis(cfg: dict[str, Any]) -> list[str]:
+    """Providers que o catalogo conhece — lista fechada para o select.
+
+    Sai do catalogo real de todos os perfis, nunca de uma lista escrita a mao:
+    um provider que nao serve nenhuma entrada nao pode ser escolhido para um
+    braco, porque o braco tem de cair numa entrada existente para o middleware
+    o poder servir.
+    """
+    vistos: set[str] = set()
+    for perfil in (cfg.get("perfis") or {}).values():
+        if not isinstance(perfil, dict):
+            continue
+        for entrada in perfil.get("catalogo") or []:
+            if not isinstance(entrada, dict):
+                continue
+            prov = str(entrada.get("provider") or "").strip().lower()
+            if prov:
+                vistos.add(prov)
+    return sorted(vistos)
+
+
 def _sombra_estado(cfg: dict[str, Any]) -> dict[str, Any]:
     """Bloco `sombra` para o painel: interruptor, sonda, bracos e selo.
 
@@ -259,6 +280,20 @@ def _sombra_estado(cfg: dict[str, Any]) -> dict[str, Any]:
             {"a": registo.get("braco_a"), "b": registo.get("braco_b")}
             if registo else {"a": None, "b": None}
         ),
+        # O provider nao se adivinha: ou o desenho o declara, ou o painel diz
+        # em voz alta que esta inferido. Um slug so nao identifica a rota, e a
+        # heuristica antiga (`/` ou `:` -> openrouter) mandava um slug gratuito
+        # contra a credencial errada.
+        "providers": {
+            "a": _sombra.provider_do_braco(registo, "a") if registo else "",
+            "b": _sombra.provider_do_braco(registo, "b") if registo else "",
+        },
+        "providers_declarados": bool(
+            registo
+            and _sombra.provider_do_braco(registo, "a")
+            and _sombra.provider_do_braco(registo, "b")
+        ),
+        "providers_disponiveis": _providers_disponiveis(cfg),
         "selo_valido": bool(registo),
         "selo": (registo or {}).get("sha256"),
         "pre_registo": caminho,
@@ -1125,6 +1160,59 @@ def sombra_bracos_post(corpo: Any = Body(default=None)) -> JSONResponse:
         raise HTTPException(status_code=400,
                             detail="os dois bracos nao podem ser o mesmo modelo")
 
+    # Um slug so nao identifica a rota. O provider entra no selo: ou vem dito,
+    # ou sai do catalogo por consulta exacta (zero ou duas entradas recusam em
+    # vez de escolher uma em silencio). O que nao se faz e adivinhar pelo nome
+    # — foi assim que um slug gratuito foi sondado contra a credencial errada.
+    cfg, _ = gestor.carregar()
+    catalogo: dict[str, set[str]] = {}
+    for perfil in (cfg.get("perfis") or {}).values():
+        if not isinstance(perfil, dict):
+            continue
+        for entrada in perfil.get("catalogo") or []:
+            if not isinstance(entrada, dict):
+                continue
+            modelo_e = str(entrada.get("modelo") or "").strip().lower()
+            prov_e = str(entrada.get("provider") or "").strip().lower()
+            if modelo_e and prov_e:
+                catalogo.setdefault(modelo_e, set()).add(prov_e)
+    disponiveis = _providers_disponiveis(cfg)
+
+    def _provider(campo_modelo: str, campo_provider: str,
+                  modelo: str) -> tuple[str, str]:
+        declarado = str(corpo.get(campo_provider) or "").strip().lower()
+        candidatos = sorted(catalogo.get(modelo.strip().lower()) or set())
+        if declarado:
+            if declarado not in disponiveis:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(f"'{campo_provider}' = '{declarado}' nao serve "
+                            f"nenhuma entrada do catalogo; disponiveis: "
+                            f"{disponiveis or ['(nenhum)']}"))
+            if declarado not in candidatos:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(f"'{campo_provider}': o par {declarado}/"
+                            f"{modelo} nao existe no catalogo"
+                            + (f" (esse modelo esta em {candidatos})"
+                               if candidatos else "")))
+            return declarado, "declarado"
+        if len(candidatos) == 1:
+            return candidatos[0], "catalogo"
+        if not candidatos:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"'{campo_modelo}': o modelo '{modelo}' nao esta em "
+                        "nenhum catalogo; sem entrada o middleware nao o pode "
+                        "servir"))
+        raise HTTPException(
+            status_code=400,
+            detail=(f"'{campo_modelo}': '{modelo}' existe em {candidatos}; "
+                    f"indique '{campo_provider}' para desempatar"))
+
+    provider_a, origem_a = _provider("braco_a", "braco_a_provider", braco_a)
+    provider_b, origem_b = _provider("braco_b", "braco_b_provider", braco_b)
+
     def num(campo: str, omissao: Any) -> Any:
         valor = corpo.get(campo, omissao)
         try:
@@ -1149,6 +1237,8 @@ def sombra_bracos_post(corpo: Any = Body(default=None)) -> JSONResponse:
     registo = _sombra.desenhar(
         caro=braco_a,
         barato=braco_b,
+        provider_caro=provider_a,
+        provider_barato=provider_b,
         p0=p0,
         margem=margem,
         deff=deff,
@@ -1174,6 +1264,9 @@ def sombra_bracos_post(corpo: Any = Body(default=None)) -> JSONResponse:
         "pre_registo": escrito,
         "anterior": caminho_actual or None,
         "sombra": estado,
+        # De onde veio o provider de cada braco: dito no corpo ou lido do
+        # catalogo. Nunca "adivinhado pelo nome do modelo".
+        "providers_origem": {"a": origem_a, "b": origem_b},
         "rev": _rev(confirmado),
     })
 

@@ -2280,6 +2280,9 @@
     // (o selo) para que uma re-selagem noutra aba apareca aqui sem recarregar.
     const [a, setA] = useState(bracos.a || "");
     const [b, setB] = useState(bracos.b || "");
+    const providersSelo = s.providers || {};
+    const [provA, setProvA] = useState(providersSelo.a || "");
+    const [provB, setProvB] = useState(providersSelo.b || "");
     const [ttl, setTtl] = useState(s.vida_ttl_h == null ? "" : String(s.vida_ttl_h));
     const [confirmar, setConfirmar] = useState(false);
     const [erroLocal, setErroLocal] = useState("");
@@ -2293,12 +2296,35 @@
       if (nome && modelos.indexOf(nome) === -1) modelos.push(nome);
     });
 
+    // Lista fechada de providers: a que o backend manda (sai do catalogo) e,
+    // em falta, a que se deduz do catalogo que o painel ja tem em maos.
+    const providers = [];
+    (s.providers_disponiveis || []).forEach(function (p) {
+      if (p && providers.indexOf(p) === -1) providers.push(p);
+    });
+    (props.catalogo || []).forEach(function (e) {
+      const p = e && e.provider;
+      if (p && providers.indexOf(p) === -1) providers.push(p);
+    });
+
+    // Escrever o modelo preenche o provider quando o catalogo so tem um para
+    // esse slug: e uma consulta, nao um palpite pelo nome. Com dois ou zero
+    // candidatos nao se mexe — o servidor recusa e diz por que.
+    function autoProvider(modelo, setter) {
+      const vistos = [];
+      (props.catalogo || []).forEach(function (e) {
+        if (e && (e.modelo || e.id) === modelo && e.provider
+            && vistos.indexOf(e.provider) === -1) vistos.push(e.provider);
+      });
+      if (vistos.length === 1) setter(vistos[0]);
+    }
+
     function reabrir() {
       setErroLocal("");
       if (!a || !b) { setErroLocal("indique os dois modelos"); return; }
       if (a === b) { setErroLocal("os dois braços não podem ser o mesmo modelo"); return; }
       if (!confirmar) { setErroLocal("marque a confirmação de reabertura"); return; }
-      props.onBracos(a, b).then(function () { setConfirmar(false); })
+      props.onBracos(a, b, provA, provB).then(function () { setConfirmar(false); })
         .catch(function (e) { setErroLocal(String(e && e.message ? e.message : e)); });
     }
 
@@ -2367,20 +2393,48 @@
       ),
 
       h("div", { className: "vmm-classif-nome" }, "modelos dos braços"),
+      // O provider deixou de ser adivinhado. Um slug so nao identifica a rota
+      // (`deepseek-flash` vive em deepseek, `nvidia/...:free` em openrouter) e
+      // a heuristica antiga — tem barra ou dois pontos logo e openrouter —
+      // mandava um slug gratuito contra a credencial errada. Aqui escolhe-se
+      // numa lista fechada, tirada do catalogo; a lista vazia significa
+      // "deriva do catalogo", e o servidor recusa quando nao ha um so par.
       h("div", { className: "vmm-linha" },
+        h("select", {
+          value: provA,
+          title: "provider do braço a",
+          onChange: function (e) { setProvA(e.target.value); },
+          style: { width: "140px" },
+        },
+          h("option", { value: "" }, "(auto)"),
+          providers.map(function (p) { return h("option", { key: p, value: p }, p); })),
         h("input", {
           list: "vmm-modelos-sombra", value: a, placeholder: "braço a (pago)",
-          onChange: function (e) { setA(e.target.value); },
+          onChange: function (e) { setA(e.target.value); autoProvider(e.target.value, setProvA); },
           style: { flex: "1" },
-        }),
+        })
+      ),
+      h("div", { className: "vmm-linha" },
+        h("select", {
+          value: provB,
+          title: "provider do braço b",
+          onChange: function (e) { setProvB(e.target.value); },
+          style: { width: "140px" },
+        },
+          h("option", { value: "" }, "(auto)"),
+          providers.map(function (p) { return h("option", { key: p, value: p }, p); })),
         h("input", {
           list: "vmm-modelos-sombra", value: b, placeholder: "braço b (gratuito)",
-          onChange: function (e) { setB(e.target.value); },
+          onChange: function (e) { setB(e.target.value); autoProvider(e.target.value, setProvB); },
           style: { flex: "1" },
         }),
         h("datalist", { id: "vmm-modelos-sombra" },
           modelos.map(function (m) { return h("option", { key: m, value: m }); }))
       ),
+      h("div", { className: "vmm-mudo" },
+        s.providers_declarados
+          ? "provider declarado no selo: " + (s.providers.a || "?") + " · " + (s.providers.b || "?")
+          : "o selo actual NÃO declara o provider — re-selar declara-o e a sonda passa a saber que credencial usar"),
 
       // A confirmacao existe porque re-selar deita fora o desenho que estava
       // aprovado: os turnos ja recolhidos com os bracos antigos nao sao
@@ -2655,7 +2709,7 @@
         .then(function () { setAGravar(false); });
     }
 
-    function mudarBracos(bracoA, bracoB) {
+    function mudarBracos(bracoA, bracoB, provA, provB) {
       setAvisoSombra("");
       setAGravar(true);
       // `confirmar_reabertura` e obrigatorio no backend: re-selar invalida a
@@ -2666,6 +2720,10 @@
         body: {
           braco_a: bracoA,
           braco_b: bracoB,
+          // O provider vai explicito; vazio deixa o servidor derivá-lo do
+          // catalogo (e recusar quando nao ha um so par para esse modelo).
+          braco_a_provider: provA || "",
+          braco_b_provider: provB || "",
           confirmar_reabertura: true,
           rev: (estado && estado.rev) || "",
         },
