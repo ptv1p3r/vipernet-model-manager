@@ -244,7 +244,10 @@ def cmd_sombra(args) -> int:
             print("um braco sem vida medido mantem o ensaio parado (vmm sombra vida).")
         return 0
 
-    base = Path(g.directorio()) / "sombra"
+    # Mesmo caminho que o middleware le (`_pre_registo_ensaio`): o desenho vive
+    # em `aprendiz/sombra`. Com a CLI a procurar em `sombra/` o desenho selado
+    # nunca era encontrado e a sonda nao podia autorizar o ensaio.
+    base = Path(g.directorio()) / "aprendiz" / "sombra"
     ficheiros = sorted(base.glob("pre-registo-*.json"))
     if not ficheiros:
         return _erro("sem pre-registo em aprendiz/sombra", 3)

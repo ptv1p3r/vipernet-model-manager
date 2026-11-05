@@ -95,6 +95,12 @@ class Base(unittest.TestCase):
         p._contadores.clear()
         p._turno.clear()
         p._tarefa_sessao.clear()
+        # O dedupe do rasto e por chave de turno e sobrevive entre testes: sem
+        # isto, a segunda metade da bateria perde o rasto na linha `resposta` e
+        # o teste falha por estado de outro teste, nao por defeito do codigo.
+        p._trace_resposta.clear()
+        p._ultima_decisao.clear()
+        p._avisados.clear()
         self.patches = [
             patch.object(p, "_config",
                          side_effect=lambda: p.gestor.validar(self.cfg)[0]),
@@ -129,7 +135,7 @@ class Base(unittest.TestCase):
                         "motivo": motivo_b},
             "todos_vivos": ok_a and ok_b,
         }
-        destino = self.dir / "sombra" / "vida.json"
+        destino = self.dir / "aprendiz" / "sombra" / "vida.json"
         destino.parent.mkdir(parents=True, exist_ok=True)
         destino.write_text(json.dumps(dados), encoding="utf-8")
 
@@ -239,12 +245,19 @@ class PrioridadesDoDono(Base):
 
 
 class Recusas(Base):
-    def test_nivel_nao_coberto(self):
+    def test_nivel_nao_declarado_serve_e_fica_registado(self):
+        """O sorteio e a autorizacao: um nivel fora do declarado nao trava o A/B.
+
+        Alargar o catalogo para destravar o ensaio mudaria tambem o routing
+        normal (um modelo gratuito, custo 0, ganharia os turnos); em vez disso o
+        turno e servido e o facto fica no diagnostico para a analise separar.
+        """
         self.escrever_vida()
         self.cfg = config(complexidade_barato=["media"])
         diag = self.decidir(nivel="alta")
-        self.assertFalse(diag["aplicado"])
-        self.assertEqual(diag["motivo"], "nivel_nao_coberto")
+        self.assertTrue(diag["aplicado"])
+        self.assertTrue(diag["nivel_nao_declarado"])
+        self.assertEqual(diag["braco"], "b")
 
     def test_modelo_fora_do_catalogo(self):
         self.escrever_vida()

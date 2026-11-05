@@ -434,7 +434,9 @@ def _sombra_vida() -> dict[str, Any]:
     aconteceu com `inkling-small:free`). `vmm sombra vida` mede fora do turno.
     """
     try:
-        caminho = gestor.directorio() / "sombra" / "vida.json"
+        # Mesma pasta do pre-registo: `aprendiz/sombra`. E a CLI (`vmm sombra
+        # vida`) que grava; ler de `sombra/` dava vida nunca medida para sempre.
+        caminho = gestor.directorio() / "aprendiz" / "sombra" / "vida.json"
         chave = f"{caminho}:{caminho.stat().st_mtime_ns}"
         guardado = _sombra_vida_cache.get("dados")
         if guardado is not None and guardado[0] == chave:
@@ -532,9 +534,13 @@ def _sombra_do_turno(
         diag["motivo"] = "modelo_fora_do_catalogo"
         return diag
     diag["entrada_id"] = entrada.get("id")
+    # O nivel declarado da entrada nao trava o ensaio: o sorteio do braco e a
+    # autorizacao, e um A/B que so serve o subconjunto de turnos que a entrada
+    # ja cobria mede outra coisa. O facto fica registado (`nivel_nao_declarado`)
+    # para a analise poder separar os turnos servidos fora do declarado. Nao se
+    # alarga o catalogo: alargar mudava tambem o routing normal dos turnos.
     if nivel not in (entrada.get("complexidade") or []):
-        diag["motivo"] = "nivel_nao_coberto"
-        return diag
+        diag["nivel_nao_declarado"] = True
     if superficie and not gestor.serve_superficie(entrada, superficie):
         diag["motivo"] = "superficie_nao_serve"
         return diag
@@ -1258,6 +1264,10 @@ def middleware_llm_request(
                     "superficie": superficie or None,
                     "superficie_fonte": fonte_sup or None,
                     "plataforma_kw": (platform or "").strip().lower() or None,
+                    # O ensaio decide uma vez por turno; os pedidos seguintes
+                    # (laco de ferramentas) herdam o braco do pin em vez de
+                    # sortearem outro — senao o mesmo turno comparia dois braços.
+                    "sombra": pin.get("sombra"),
                     "kw_platform": platform is not None}
             if pin.get("classificador") and (pin["classificador"] or {}).get("lido"):
                 # So a leitura se herda. Uma falha nao se herda: o cartao conta
@@ -1588,7 +1598,8 @@ def middleware_llm_request(
             guardado = _pin_ler(chave_turno) or {}
             guardado.update({"nivel": nivel, "entrada": entrada["id"],
                              "provider": rota["provider"],
-                             "modelo": entrada["modelo"], "passo": passo})
+                             "modelo": entrada["modelo"], "passo": passo,
+                             "sombra": base.get("sombra")})
             _pin_gravar(chave_turno, guardado)
         mapa_sup = entrada.get("superficies")
         if isinstance(mapa_sup, dict) and mapa_sup:
