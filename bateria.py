@@ -70,6 +70,12 @@ def main(argv: list[str]) -> int:
     logica = AQUI / "dashboard" / "test_logica.js"
     if logica.exists():
         extras.append(("dashboard/test_logica.js", ["node", str(logica)]))
+    # O selftest do painel bate na API a serio (FastAPI + ficheiro temporario) e
+    # le o config.json do disco. Sem esta linha, as verificacoes que provam que
+    # o POST grava o que o formulario diz nunca corriam na bateria.
+    api_painel = AQUI / "dashboard" / "selftest.py"
+    if api_painel.exists():
+        extras.append(("dashboard/selftest.py", [sys.executable, str(api_painel)]))
 
     total_ok = total = 0
     falhas: list[str] = []

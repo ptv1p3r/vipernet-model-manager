@@ -127,11 +127,19 @@ class Cenario:
         # `agente_vivo` procura `agent` na pilha: a variavel tem de se chamar
         # `agent` no frame chamador, nao `self.agente`.
         agent = self.agente
-        return self.plugin.middleware_llm_request(
+        r = self.plugin.middleware_llm_request(
             request=req, session_id=agent.session_id,
             model="deepseek-flash", provider="deepseek",
             turn_id=f"t-{platform}-{texto[:8]}", api_call_count=1,
             platform=platform)
+        # A `resposta` e o desfecho de cada chamada e, desde que o `sem_troca`
+        # saiu, leva o rasto da decisao (superficie, entrada, excecao, nivel).
+        self.plugin.pos_resposta(
+            session_id=agent.session_id, model=agent.model, provider=agent.provider,
+            response_model=agent.model, finish_reason="stop",
+            usage={"total_tokens": 10}, platform=platform,
+            turn_id=f"t-{platform}-{texto[:8]}", api_call_count=1)
+        return r
 
     def eventos(self) -> list[dict]:
         caminho = self.plugin.gestor.caminho_ledger()
@@ -142,7 +150,8 @@ class Cenario:
 
     def decididos(self) -> list[dict]:
         return [e for e in self.eventos()
-                if str(e.get("evento") or "").startswith(("troca", "sem_"))]
+                if str(e.get("evento") or "").startswith(("troca", "sem_"))
+                or e.get("evento") == "resposta"]
 
 
 def testes() -> None:

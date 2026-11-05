@@ -67,7 +67,7 @@
               href: meta.github,
               target: "_blank",
               rel: "noopener noreferrer",
-              title: "Repositorio publico do autor",
+              title: "Repositorio publico do plugin",
             },
             meta.github.replace(/^https?:\/\/(www\.)?github\.com\//, "github.com/")
           )
@@ -1009,6 +1009,7 @@
     r = r || {};
     const cls = (r.classificador && typeof r.classificador === "object") ? r.classificador : null;
     const est = (r.estrategia && typeof r.estrategia === "object") ? r.estrategia : null;
+    const tp = (r.tarefa_persistente && typeof r.tarefa_persistente === "object") ? r.tarefa_persistente : null;
     const tarefas = Object.keys(r.tarefas || {}).map(function (id) {
       const t = (r.tarefas || {})[id] || {};
       return {
@@ -1039,6 +1040,12 @@
       estHerdar: !est,
       estModo: est && est.modo ? String(est.modo) : "",
       estPor: est && est.por ? String(est.por) : "",
+      // O bloco da tarefa persistente so mostra o que este perfil DECLARA: os
+      // tres campos vazios querem dizer "herda essa chave", nao "herda tudo".
+      tpHerdar: !tp,
+      tpActivo: tp ? tp.activo !== false : true,
+      tpTurnos: tp && tp.expira_turnos != null ? String(tp.expira_turnos) : "",
+      tpMin: tp && tp.expira_min != null ? String(tp.expira_min) : "",
     };
   }
 
@@ -1129,6 +1136,31 @@
       if (f.estPor) corpo.estrategia.por = f.estPor;
     }
 
+    if (f.tpHerdar) {
+      corpo.tarefa_persistente = "herdar";
+    } else {
+      const tp = { activo: !!f.tpActivo };
+      // Vazio = "herda esta chave". O limite e o mesmo que o `gestor` aplica:
+      // recusar aqui dá a mensagem junto ao campo, em vez de um 400 anónimo.
+      const turnos = String(f.tpTurnos == null ? "" : f.tpTurnos).trim();
+      if (turnos !== "") {
+        if (!/^\d+$/.test(turnos) || Number(turnos) < 1 || Number(turnos) > 50) {
+          erro.push("tarefa persistente: o prazo em turnos tem de ser um inteiro de 1 a 50");
+        } else {
+          tp.expira_turnos = parseInt(turnos, 10);
+        }
+      }
+      const minutos = String(f.tpMin == null ? "" : f.tpMin).trim();
+      if (minutos !== "") {
+        if (!/^\d+$/.test(minutos) || Number(minutos) < 1 || Number(minutos) > 1440) {
+          erro.push("tarefa persistente: o prazo em minutos tem de ser um inteiro de 1 a 1440");
+        } else {
+          tp.expira_min = parseInt(minutos, 10);
+        }
+      }
+      corpo.tarefa_persistente = tp;
+    }
+
     return { corpo: corpo, erro: erro };
   }
 
@@ -1157,6 +1189,7 @@
     const tarefas = form.tarefas || [];
     const cls = form.cls || {};
     const estrategiaEfectiva = efectivo.estrategia || {};
+    const tpEfectiva = efectivo.tarefa_persistente || {};
 
     return h(
       "div",
@@ -1171,7 +1204,7 @@
           h(
             "div",
             { className: "vmm-sub" },
-            "Tudo o que este perfil declara: activação, tarefas, limites, classificador e estratégia. "
+            "Tudo o que este perfil declara: activação, tarefas, limites, classificador, tarefa persistente e estratégia. "
               + "As rotas do catálogo têm página própria, por modelo. "
               + "Gravar volta ao painel e passa a valer no turno seguinte."
           ),
@@ -1397,7 +1430,76 @@
                   )
             ),
 
-            // --- 4. estrategia ---------------------------------------------
+            // --- 4. tarefa persistente --------------------------------------
+            // A tarefa detectada sobrevive ao turno, dentro do prazo. Edita-se
+            // aqui o DELTA deste perfil: herdar segue o global chave a chave;
+            // declarar escreve so o que difere, para nao fixar o perfil ao
+            // valor do dia.
+            h(
+              "div",
+              { className: "vmm-bloco" },
+              h(
+                "div",
+                { className: "vmm-bloco-titulo" },
+                h("strong", null, "Tarefa persistente"),
+                h("span", { className: "vmm-mudo" },
+                  "  em vigor: " + (tpEfectiva.activo === false ? "desligada" : "activa")
+                    + " · " + String(tpEfectiva.expira_turnos == null ? "?" : tpEfectiva.expira_turnos) + " turnos"
+                    + " · " + String(tpEfectiva.expira_min == null ? "?" : tpEfectiva.expira_min) + " min"
+                    + " · " + String(tpEfectiva.origem || "?"))
+              ),
+              h(
+                "div",
+                { className: "vmm-perfil-campos" },
+                h(Campo, {
+                  rotulo: "definição",
+                  ajuda: "herdar segue o global; declarar sobrepõe-se chave a chave neste perfil",
+                }, h(Seletor, {
+                  rotulo: "definição da tarefa persistente",
+                  valor: form.tpHerdar ? "herdar" : "proprio",
+                  opcoes: [
+                    { valor: "herdar", rotulo: "herdar do global" },
+                    { valor: "proprio", rotulo: "declarar neste perfil" },
+                  ],
+                  onChange: function (v) { props.onCampo("tpHerdar", v === "herdar"); },
+                })),
+                form.tpHerdar
+                  ? h("div", { className: "vmm-mudo vmm-campo-ajuda" },
+                      "herda " + ((global.tarefa_persistente || {}).activo === false ? "desligada" : "activa")
+                        + " · " + String((global.tarefa_persistente || {}).expira_turnos) + " turnos · "
+                        + String((global.tarefa_persistente || {}).expira_min) + " min")
+                  : h("div", null,
+                      h(Campo, { rotulo: "activação" },
+                        h(Seletor, {
+                          rotulo: "tarefa persistente activa neste perfil",
+                          valor: form.tpActivo ? "true" : "false",
+                          opcoes: [{ valor: "true", rotulo: "activa" },
+                                   { valor: "false", rotulo: "desligada neste perfil" }],
+                          onChange: function (v) { props.onCampo("tpActivo", v === "true"); },
+                        })),
+                      h(Campo, { rotulo: "prazo em turnos", ajuda: "vazio = herda o global; 1 a 50" },
+                        h(EntradaTexto, {
+                          valor: form.tpTurnos,
+                          tipo: "number",
+                          rotulo: "prazo em turnos",
+                          placeholder: "6",
+                          onChange: mudar("tpTurnos"),
+                        })),
+                      h(Campo, { rotulo: "prazo em minutos", ajuda: "vazio = herda o global; 1 a 1440" },
+                        h(EntradaTexto, {
+                          valor: form.tpMin,
+                          tipo: "number",
+                          rotulo: "prazo em minutos",
+                          placeholder: "90",
+                          onChange: mudar("tpMin"),
+                        })),
+                      h("div", { className: "vmm-mudo vmm-campo-ajuda" },
+                        "conta desde a última detecção: herdar não renova o prazo. "
+                        + "«complexidade: auto» numa mensagem termina a associação neste perfil."))
+              )
+            ),
+
+            // --- 5. estrategia ---------------------------------------------
             h(
               "div",
               { className: "vmm-bloco" },
@@ -1796,6 +1898,51 @@
     return novo;
   }
 
+  // ---- tarefa persistente --------------------------------------------------
+  // A tarefa associada a um turno continua a mandar nos turnos seguintes da
+  // mesma sessao, dentro de um prazo. O bloco vive em `analise`, logo tem dois
+  // sitios: o global (pagina de configuracao) e o delta por perfil (pagina do
+  // perfil). O painel nao inventa valores: le o que la esta e escreve so o que
+  // muda — um perfil que declare os tres valores iguais ao global fica preso ao
+  // valor do dia, que e o que a validacao tenta evitar.
+  const TAREFA_PERSISTENTE_PADRAO = { activo: true, expira_turnos: 6, expira_min: 90 };
+
+  function tarefaPersistenteDe(cfg, perfil) {
+    if (!cfg) return null;
+    if (perfil === null) {
+      return (cfg.analise && cfg.analise.tarefa_persistente) || null;
+    }
+    const p = (cfg.perfis || {})[perfil] || {};
+    return (p.analise && p.analise.tarefa_persistente) || null;
+  }
+
+  function comTarefaPersistente(cfg, perfil, campos, herdar) {
+    const novo = JSON.parse(JSON.stringify(cfg));
+    let alvo;
+    if (perfil === null) {
+      alvo = novo;
+    } else {
+      novo.perfis = novo.perfis || {};
+      novo.perfis[perfil] = novo.perfis[perfil] || {};
+      alvo = novo.perfis[perfil];
+    }
+    alvo.analise = alvo.analise || {};
+    if (herdar) {
+      delete alvo.analise.tarefa_persistente;
+    } else {
+      const tp = Object.assign({}, alvo.analise.tarefa_persistente || {}, campos || {});
+      // Um campo vazio e "nao declarado": sai, para herdar essa chave em vez de
+      // a fixar com um valor que o select mostraria como escolha propria.
+      Object.keys(tp).forEach(function (k) {
+        if (tp[k] === null || tp[k] === undefined || tp[k] === "") delete tp[k];
+      });
+      if (Object.keys(tp).length) alvo.analise.tarefa_persistente = tp;
+      else delete alvo.analise.tarefa_persistente;
+    }
+    if (!Object.keys(alvo.analise).length) delete alvo.analise;
+    return novo;
+  }
+
   // ---- blocos: complexidade e estrategia --------------------------------
   // Sao duas decisoes diferentes e passam a ter dois blocos diferentes: o
   // classificador decide o NIVEL do turno; a estrategia decide COMO se escolhe
@@ -1938,7 +2085,63 @@
         }))
     );
 
-    // ---- bloco 2: estrategia --------------------------------------------
+    // ---- bloco 2: tarefa persistente ------------------------------------
+    // Uma tarefa detectada num turno deixava de mandar no turno seguinte (o
+    // detector le so a ultima mensagem, o pin dura um turno): o modelo mudava a
+    // meio da conversa quando o utilizador escrevia "continua". Este bloco
+    // decide quanto tempo a associacao dura. Aqui so o global — o delta por
+    // perfil vive na pagina do perfil, para a mesma decisao nao ter duas copias
+    // no ecra.
+    const tpGlobal = tarefaPersistenteDe(cfg, null) || {};
+    const tpActivo = tpGlobal.activo !== false;
+    const TURNOS_PRAZO = [1, 2, 3, 4, 6, 8, 10, 15, 20, 30, 50];
+    const MINUTOS_PRAZO = [15, 30, 45, 60, 90, 120, 180, 240, 360, 720, 1440];
+    function aplicarTarefa(campo, valor) {
+      const campos = {};
+      campos[campo] = valor;
+      props.onMudar(JSON.stringify(comTarefaPersistente(cfg, null, campos, false), null, 2));
+    }
+    const blocoTarefa = h("div", { className: "vmm-bloco", key: "tarefa-persistente" },
+      tituloBloco("Tarefa persistente",
+        "a tarefa detectada num turno continua a mandar nos seguintes da mesma sessão, dentro do prazo."),
+      h("div", { className: "vmm-classif-linha vmm-linha-estrategia" },
+        h("span", { className: "vmm-classif-nome",
+                    title: "Vale para todos os perfis que não declararem outra coisa. O delta de cada perfil edita-se na página do perfil." },
+          "global",
+          h("span", { className: "vmm-mudo" },
+            Object.keys(tpGlobal).length ? " · declarado" : " · por omissão (6 turnos / 90 min)")),
+        h(Seletor, {
+          key: "tp-activo",
+          rotulo: "tarefa persistente em todos os perfis",
+          valor: tpActivo ? "true" : "false",
+          opcoes: [{ valor: "true", rotulo: "activa" }, { valor: "false", rotulo: "desligada" }],
+          onChange: function (v) { aplicarTarefa("activo", v === "true"); },
+        }),
+        h(Seletor, {
+          key: "tp-turnos",
+          rotulo: "prazo em turnos",
+          valor: tpGlobal.expira_turnos == null ? "" : String(tpGlobal.expira_turnos),
+          opcoes: [{ valor: "", rotulo: "turnos: por omissão" }].concat(
+            TURNOS_PRAZO.map(function (n) { return { valor: String(n), rotulo: "dura " + n + " turnos" }; })),
+          onChange: function (v) { aplicarTarefa("expira_turnos", v === "" ? "" : parseInt(v, 10)); },
+        }),
+        h(Seletor, {
+          key: "tp-min",
+          rotulo: "prazo em minutos",
+          valor: tpGlobal.expira_min == null ? "" : String(tpGlobal.expira_min),
+          opcoes: [{ valor: "", rotulo: "minutos: por omissão" }].concat(
+            MINUTOS_PRAZO.map(function (n) {
+              return { valor: String(n), rotulo: n >= 60 ? (n / 60) + " h" : n + " min" };
+            })),
+          onChange: function (v) { aplicarTarefa("expira_min", v === "" ? "" : parseInt(v, 10)); },
+        })
+      ),
+      h("div", { className: "vmm-mudo vmm-campo-ajuda" },
+        "conta desde a última detecção: herdar não renova o prazo. "
+        + "«complexidade: auto» numa mensagem termina a associação; desligada, cada turno volta a decidir pela complexidade.")
+    );
+
+    // ---- bloco 3: estrategia --------------------------------------------
     const blocoEstrategia = h("div", { className: "vmm-bloco", key: "estrategia" },
       tituloBloco("Estratégia",
         "com o nível decidido, como se escolhe o modelo dentro dele."),
@@ -1997,7 +2200,7 @@
       })
     );
 
-    // ---- bloco 3: superficies -------------------------------------------
+    // ---- bloco 4: superficies -------------------------------------------
     // "Se a superficie da sessao for cron, o turno vai para este modelo." Fica
     // aqui, e nao nos cartoes: e configuracao como as outras duas. Escreve
     // pelo endpoint `/superficies` (cada regra e um delta com rev) e nao pelo
@@ -2030,6 +2233,7 @@
         ? h("div", { className: "vmm-mudo vmm-versao-linha" }, "painel " + props.versao)
         : null,
       blocoComplexidade,
+      blocoTarefa,
       blocoEstrategia,
       blocoSuperficies
     );
@@ -2923,6 +3127,12 @@
     window.__VMM_TEST__.PaginaPerfil = PaginaPerfil;
     window.__VMM_TEST__.perfilParaForm = perfilParaForm;
     window.__VMM_TEST__.formParaPerfil = formParaPerfil;
+    // A tarefa persistente tem dois donos (global na configuracao, delta no
+    // perfil): testar as quatro funcoes e o que impede o painel de escrever um
+    // valor que a validacao descarta em silencio.
+    window.__VMM_TEST__.tarefaPersistenteDe = tarefaPersistenteDe;
+    window.__VMM_TEST__.comTarefaPersistente = comTarefaPersistente;
+    window.__VMM_TEST__.TAREFA_PERSISTENTE_PADRAO = TAREFA_PERSISTENTE_PADRAO;
     window.__VMM_TEST__.CAMPOS_CLASSIFICADOR = CAMPOS_CLASSIFICADOR;
     window.__VMM_TEST__.CAMPOS_JSON_CLASSIFICADOR = CAMPOS_JSON_CLASSIFICADOR;
   }

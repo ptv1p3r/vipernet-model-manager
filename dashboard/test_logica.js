@@ -795,11 +795,12 @@ check("render: o painel principal nao tem um unico controlo de configuracao",
           && corpo.indexOf("<select") === -1;
       })());
 
-check("render: o editor tem os tres blocos com titulo proprio",
+check("render: o editor tem os quatro blocos com titulo proprio",
       (function () {
         const titulos = (srcPainel.match(/tituloBloco\("/g) || []).length;
-        return titulos === 3
+        return titulos === 4
           && srcPainel.indexOf('tituloBloco("Complexidade"') !== -1
+          && srcPainel.indexOf('tituloBloco("Tarefa persistente"') !== -1
           && srcPainel.indexOf('tituloBloco("Estratégia"') !== -1
           && srcPainel.indexOf('tituloBloco("Superfícies"') !== -1;
       })());
@@ -1421,6 +1422,79 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   }, "default", "");
   check("escrita: tarefa sem id e recusada", r7.erro.length === 1, JSON.stringify(r7.erro));
 
+  // --- tarefa persistente: perfil (leitura, escrita, limites) -------------
+  // O bloco tem dois sitios: o global na pagina de configuracao, o delta no
+  // perfil. Se a conversao deixar de o transportar, o POST leva "herdar" e a
+  // caixa do painel mente — e nada no servidor se queixa.
+  const comTp = t.perfilParaForm({
+    activo: true, tarefas: {},
+    tarefa_persistente: { activo: false, expira_turnos: 3 },
+  });
+  check("tp: declarado -> tpHerdar falso", comTp.tpHerdar === false);
+  check("tp: activo false preservado", comTp.tpActivo === false);
+  check("tp: turnos como texto", comTp.tpTurnos === "3");
+  check("tp: chave ausente fica vazia, para herdar so essa",
+        comTp.tpMin === "", JSON.stringify(comTp.tpMin));
+
+  const semTp = t.perfilParaForm({ activo: true, tarefas: {} });
+  check("tp: sem bloco -> herda o global", semTp.tpHerdar === true);
+
+  const e1 = t.formParaPerfil(
+    { activo: true, tarefas: [], clsHerdar: true, estHerdar: true, tpHerdar: true },
+    "default", "");
+  check("tp: herdar -> a palavra, nao uma copia do valor",
+        e1.corpo.tarefa_persistente === "herdar", JSON.stringify(e1.corpo.tarefa_persistente));
+
+  const e2 = t.formParaPerfil({
+    activo: true, tarefas: [], clsHerdar: true, estHerdar: true,
+    tpHerdar: false, tpActivo: true, tpTurnos: "8", tpMin: "",
+  }, "default", "");
+  check("tp: declarar -> inteiro e chave vazia fora",
+        e2.corpo.tarefa_persistente.activo === true
+          && e2.corpo.tarefa_persistente.expira_turnos === 8
+          && !("expira_min" in e2.corpo.tarefa_persistente),
+        JSON.stringify(e2.corpo.tarefa_persistente));
+  check("tp: declarar sem erro", e2.erro.length === 0, e2.erro.join("; "));
+
+  const e3 = t.formParaPerfil({
+    activo: true, tarefas: [], clsHerdar: true, estHerdar: true,
+    tpHerdar: false, tpActivo: true, tpTurnos: "0", tpMin: "2000",
+  }, "default", "");
+  check("tp: 0 turnos e 2000 min recusados", e3.erro.length === 2, JSON.stringify(e3.erro));
+  check("tp: cada erro nomeia o seu prazo",
+        /turnos/.test(e3.erro[0]) && /minutos/.test(e3.erro[1]), JSON.stringify(e3.erro));
+
+  // --- tarefa persistente: o JSON da configuracao (painel de config) ------
+  const cfgTp = {
+    analise: { limiares: { alta: 4 } },
+    perfis: { pessoal: { analise: { modo: "modelo",
+                                    tarefa_persistente: { expira_min: 30 } } } },
+  };
+  check("tp config: sem bloco global devolve null", t.tarefaPersistenteDe(cfgTp, null) === null);
+  check("tp config: le o delta do perfil",
+        t.tarefaPersistenteDe(cfgTp, "pessoal").expira_min === 30);
+  const cfgNovo = t.comTarefaPersistente(cfgTp, null, { activo: false }, false);
+  check("tp config: escreve o global dentro de analise",
+        cfgNovo.analise.tarefa_persistente.activo === false, JSON.stringify(cfgNovo.analise));
+  check("tp config: nao toca no que la estava",
+        cfgNovo.analise.limiares.alta === 4
+          && cfgNovo.perfis.pessoal.analise.tarefa_persistente.expira_min === 30);
+  check("tp config: o config original fica intacto",
+        cfgTp.analise.tarefa_persistente === undefined);
+  const cfgCampoVazio = t.comTarefaPersistente(
+    { analise: { tarefa_persistente: { expira_min: 30 } } }, null, { expira_min: "" }, false);
+  check("tp config: campo vazio sai (herda em vez de fixar)",
+        (cfgCampoVazio.analise || {}).tarefa_persistente === undefined,
+        JSON.stringify(cfgCampoVazio));
+  const cfgPerfilHerdar = t.comTarefaPersistente(cfgTp, "pessoal", {}, true);
+  check("tp config: herdar no perfil apaga so o bloco",
+        cfgPerfilHerdar.perfis.pessoal.analise.tarefa_persistente === undefined
+          && cfgPerfilHerdar.perfis.pessoal.analise.modo === "modelo");
+  check("tp config: o padrao do painel e o do motor",
+        t.TAREFA_PERSISTENTE_PADRAO.expira_turnos === 6
+          && t.TAREFA_PERSISTENTE_PADRAO.expira_min === 90
+          && t.TAREFA_PERSISTENTE_PADRAO.activo === true);
+
   // --- a pagina desenha-se de verdade (sem rebentar) ---
   const arvore = t.PaginaPerfil({
     estado: { versao: "3.21.0", painel: { versao: "3.21.0" } },
@@ -1449,7 +1523,7 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   const titulos = comTag(arvore, "div").filter(function (x) {
     return String(x.props && x.props.className || "").indexOf("vmm-bloco-titulo") !== -1;
   });
-  check("render: a pagina tem os quatro blocos", titulos.length === 4, "blocos=" + titulos.length);
+  check("render: a pagina tem os cinco blocos", titulos.length === 5, "blocos=" + titulos.length);
   const textosBotoes = comTag(arvore, "button").map(function (b) { return textoPlano(b.filhos).trim(); });
   check("render: os tres botoes do editor estao la",
         textosBotoes.some(function (t) { return t === "Validar"; })
@@ -1478,8 +1552,10 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
     onValidar: function () {}, onGravar: function () {}, onDescartar: function () {},
   });
   check("render: a herdar nao mostra os campos do classificador",
-        comTag(arvoreHerdada, "Seletor").length + comTag(arvoreHerdada, "EntradaTexto").length <= 4,
+        comTag(arvoreHerdada, "Seletor").length + comTag(arvoreHerdada, "EntradaTexto").length <= 5,
         "campos=" + (comTag(arvoreHerdada, "Seletor").length + comTag(arvoreHerdada, "EntradaTexto").length));
+  // (o limite subiu de 4 para 5 com o seletor "herdar/declarar" da tarefa
+  // persistente: o bloco dela mostra sempre a definicao, nunca os tres campos)
   check("render: a herdar diz de quem herda",
         /~typesafe\/jev-latest/.test(textoPlano(arvoreHerdada)));
   // --- o icone do cartao ABRE a pagina: a ligacao, nao o desenho -----------

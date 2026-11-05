@@ -61,32 +61,38 @@ def _meta_plugin() -> dict[str, str]:
     divergirem, o painel mostra os dois valores e a divergencia fica visivel em
     vez de escolher um deles em silencio.
 
-    ``github`` e o repositorio publico do autor. O repositorio que o catalogo
-    aceita tem de ser publico, clonavel por https em GitHub ou GitLab [1]; o
-    Gitea interno continua a ser o espelho de trabalho, nao o endereco de
-    submissao.
+    ``github`` e o **repositorio do plugin**, lido do campo ``homepage`` do
+    ``plugin.yaml`` — uma so casa para o endereco, senao o painel e o manifesto
+    dizem coisas diferentes. O catalogo exige um repositorio publico, clonavel
+    por https em GitHub ou GitLab [1]; o Gitea interno continua a ser o espelho
+    de trabalho, nao o endereco de submissao. ``autor_github`` fica separado: e
+    o perfil do autor, nao o repositorio que se pinа.
     """
     versao = ""
     autor = ""
+    homepage = ""
     try:
         manifesto = Path(__file__).resolve().parent.parent / "plugin.yaml"
         for linha in manifesto.read_text(encoding="utf-8").splitlines():
             chave, _, valor = linha.partition(":")
             chave = chave.strip()
-            if chave not in ("version", "author"):
+            if chave not in ("version", "author", "homepage"):
                 continue
-            # Aceita `author: Nome` e `author: "Nome"`.
+            # Aceita `author: Nome`, `author: "Nome"` e comentarios a direita.
             limpo = valor.strip().strip('"').strip("'")
             if chave == "version":
                 versao = limpo
-            else:
+            elif chave == "author":
                 autor = limpo
+            else:
+                homepage = limpo
     except Exception:  # noqa: BLE001 - sem plugin.yaml o painel ainda responde
         pass
     return {
         "versao": versao,
         "autor": autor,
-        "github": GITHUB_AUTOR,
+        "github": homepage or GITHUB_AUTOR,
+        "autor_github": GITHUB_AUTOR,
         # Divergencia entre os dois numeros e deriva, nao gosto: o painel diz.
         "versao_manifest": _versao_painel(),
     }
@@ -444,9 +450,9 @@ def _resumo_por_perfil(
                         "classif_ultima_falha": "",
                     },
                 )
-                # O rasto do classificador vive nos eventos de troca/sem_troca, que
-                # sao anteriores a `resposta` no ficheiro; a primeira ocorrencia que
-                # se ve aqui e a mais recente.
+                # O rasto do classificador viaja na linha `resposta` desde a 3.31.0
+                # (antes vivia nos eventos de troca/sem_troca). Le-se de tras para a
+                # frente, logo a primeira ocorrencia que se ve e a mais recente.
                 if reg["classificador"] is None and isinstance(ev.get("classificador"), dict):
                     c = ev["classificador"]
                     reg["classificador"] = {
@@ -1282,7 +1288,8 @@ def perfil_get(nome: str = Query(...)) -> dict[str, Any]:
     if nome not in perfis:
         raise HTTPException(status_code=404, detail=f"perfil {nome!r} nao existe")
     cru = perfis.get(nome) or {}
-    analise = cru.get("analise") if isinstance(cru.get("analise"), dict) else {}
+    _analise_cru = cru.get("analise")
+    analise: dict[str, Any] = _analise_cru if isinstance(_analise_cru, dict) else {}
     estrategia_cru = cru.get("estrategia")
     est_efectiva = gestor.estrategia_efectiva(cfg, nome)
     cls_efectivo = gestor.classificador_efectivo(cfg, nome)
@@ -1294,10 +1301,19 @@ def perfil_get(nome: str = Query(...)) -> dict[str, Any]:
         "tarefas": copy.deepcopy(cru.get("tarefas") or {}),
         "classificador": copy.deepcopy(analise.get("classificador")) if "classificador" in analise else None,
         "estrategia": copy.deepcopy(estrategia_cru) if estrategia_cru else None,
+        # So o declarado: `None` = herda o global. O valor herdado vai em
+        # `global`, nao aqui — dentro do bloco, gravar punha uma copia que
+        # fixava o perfil ao valor do dia.
+        "tarefa_persistente": (copy.deepcopy(analise.get("tarefa_persistente"))
+                               if isinstance(analise.get("tarefa_persistente"), dict) else None),
         "latencia_max_ms": cru.get("latencia_max_ms") or 0,
     }
     # O classificador global, para o formulario poder mostrar o que se herda.
     global_cls = copy.deepcopy((cfg.get("analise") or {}).get("classificador") or {})
+    # O bloco global desta materia ja com os valores por omissao: e isso que o
+    # perfil herda, e e isso que o formulario mostra a quem escolhe "herdar".
+    tp_global = dict(gestor.TAREFA_PERSISTENTE_PADRAO)
+    tp_global.update(copy.deepcopy((cfg.get("analise") or {}).get("tarefa_persistente") or {}))
     return {
         "perfil": nome,
         "rev": _rev(cfg),
@@ -1305,10 +1321,12 @@ def perfil_get(nome: str = Query(...)) -> dict[str, Any]:
         "efectivo": {
             "classificador": cls_efectivo,
             "estrategia": est_efectiva,
+            "tarefa_persistente": gestor.tarefa_persistente_efectiva(cfg, nome),
             "n_modelos": len(cru.get("catalogo") or []),
         },
         "global": {"classificador": global_cls,
-                   "estrategia": copy.deepcopy(cfg.get("estrategia") or gestor.ESTRATEGIA_PADRAO)},
+                   "estrategia": copy.deepcopy(cfg.get("estrategia") or gestor.ESTRATEGIA_PADRAO),
+                   "tarefa_persistente": tp_global},
         "opcoes": _opcoes_perfil(cfg, nome),
     }
 
@@ -1322,6 +1340,8 @@ def perfil_post(corpo: Any = Body(default=None)) -> JSONResponse:
     se o que o dono escreveu serve, que e o oposto de validar.
     """
     obj = _corpo_objeto(corpo)
+    if obj is None:                      # `obrigatorio=True` ja recusou acima
+        return JSONResponse(status_code=400, content={"ok": False, "detail": "falta o corpo"})
     nome = str(obj.get("perfil") or "").strip()
     if not nome:
         return JSONResponse(status_code=400, content={"ok": False, "detail": "falta 'perfil'"})
@@ -1385,7 +1405,7 @@ def perfil_post(corpo: Any = Body(default=None)) -> JSONResponse:
         else:
             pcfg.pop("latencia_max_ms", None)
 
-    analise = pcfg.get("analise") if isinstance(pcfg.get("analise"), dict) else {}
+    analise: dict[str, Any] = pcfg.get("analise") if isinstance(pcfg.get("analise"), dict) else {}
     analise = copy.deepcopy(analise)
     mexeu_analise = False
 
@@ -1395,6 +1415,22 @@ def perfil_post(corpo: Any = Body(default=None)) -> JSONResponse:
             analise.pop("classificador", None)      # volta a herdar o global
         else:
             analise["classificador"] = valor        # o `normalizar` valida-o depois
+        mexeu_analise = True
+
+    # A tarefa persistente segue a mesma regra, mas o delta e chave a chave: o
+    # `validar` deita fora as chaves iguais ao global, para um perfil que
+    # declare o mesmo valor nao ficar preso ao valor do dia.
+    if "tarefa_persistente" in obj:
+        valor = obj.get("tarefa_persistente")
+        if valor is None or valor == "" or valor == "herdar":
+            analise.pop("tarefa_persistente", None)  # volta a herdar o global
+        elif not isinstance(valor, dict):
+            return JSONResponse(status_code=400, content={
+                "ok": False,
+                "detail": "'tarefa_persistente' tem de ser um objecto "
+                          "({activo, expira_turnos, expira_min}) ou \\\"herdar\\\""})
+        else:
+            analise["tarefa_persistente"] = valor    # o `validar` fecha as chaves
         mexeu_analise = True
 
     if mexeu_analise:

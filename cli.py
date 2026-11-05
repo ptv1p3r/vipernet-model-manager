@@ -61,6 +61,22 @@ def _analise_modelo():
 g = _gestor()
 
 
+def _retencao():
+    """Compactacao do ledger e poda dos backups — outro modulo, outra casa."""
+    spec = importlib.util.spec_from_file_location("vmm_retencao", _AQUI / "retencao.py")
+    mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
+
+
+def _veredicto():
+    """Veredicto de entrega, legivel por maquina — modulo proprio."""
+    spec = importlib.util.spec_from_file_location("vmm_veredicto", _AQUI / "veredicto.py")
+    mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
+
+
 def _cfg() -> tuple[dict[str, Any], list[str]]:
     return g.carregar()
 
@@ -149,6 +165,139 @@ def cmd_on_off(args) -> int:
         return _erro(f"config recusada: {exc}")
     print(f"{alvo}: {'ligado' if ligar else 'desligado'}")
     print("o gateway le a config a quente (cache de 5 s); nao e preciso reiniciar.")
+    return 0
+
+
+def _sombra_mod():
+    """Pre-registo, sorteio e sonda de vida — outro modulo, outra casa."""
+    spec = importlib.util.spec_from_file_location("vmm_sombra", _AQUI / "sombra.py")
+    mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
+
+
+def _chamar_modelo(modelo: str) -> dict[str, Any]:
+    """Uma chamada minima ao modelo, so para provar que responde.
+
+    Nunca imprime a credencial nem o corpo completo de um erro: o que sai daqui
+    vai para o ledger e para a conversa.
+    """
+    import urllib.error
+    import urllib.request
+
+    spec = importlib.util.spec_from_file_location("vmm_seams", _AQUI / "seams.py")
+    seams = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(seams)  # type: ignore[union-attr]
+    provider = "openrouter" if ("/" in modelo or ":" in modelo) else "deepseek"
+    try:
+        rota = seams.resolver_provider(provider, modelo)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "http": 0,
+                "motivo": f"rota: {type(exc).__name__}: {str(exc)[:110]}"}
+    corpo = json.dumps({
+        "model": modelo,
+        "messages": [{"role": "user", "content": "Responde apenas: OK"}],
+        "max_tokens": 8,
+    }).encode()
+    pedido = urllib.request.Request(
+        rota["base_url"].rstrip("/") + "/chat/completions",
+        data=corpo,
+        headers={"Authorization": "Bearer " + rota["api_key"],
+                 "Content-Type": "application/json",
+                 "User-Agent": "curl/8.5.0"},
+    )
+    try:
+        with urllib.request.urlopen(pedido, timeout=45) as resposta:
+            dados = json.loads(resposta.read().decode())
+        ok = bool(dados.get("choices"))
+        return {"ok": ok, "http": resposta.status,
+                "motivo": "" if ok else "sem choices"}
+    except urllib.error.HTTPError as exc:
+        texto = exc.read().decode(errors="replace")
+        try:
+            msg = json.loads(texto).get("error", {}).get("message", texto)
+        except (ValueError, AttributeError):
+            msg = texto
+        return {"ok": False, "http": exc.code, "motivo": str(msg)[:160]}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "http": 0, "motivo": f"{type(exc).__name__}: {str(exc)[:120]}"}
+
+
+def cmd_sombra(args) -> int:
+    """Estado, sonda de vida e interruptor do ensaio em sombra."""
+    acao = getattr(args, "acao", None) or "estado"
+    if acao in ("on", "off"):
+        cfg, _ = _cfg()
+        rev_lido = g.rev(cfg)
+        bloco = cfg.get("sombra")
+        if not isinstance(bloco, dict):
+            bloco = {}
+        bloco["activo"] = acao == "on"
+        bloco.setdefault("vida_ttl_h", 24)
+        cfg["sombra"] = bloco
+        try:
+            _gravar_cas(cfg, rev_lido)
+        except ValueError as exc:
+            return _erro(f"config recusada: {exc}")
+        print(f"ensaio em sombra: {'ligado' if acao == 'on' else 'desligado'}")
+        if acao == "on":
+            print("um braco sem vida medido mantem o ensaio parado (vmm sombra vida).")
+        return 0
+
+    # Mesmo caminho que o middleware le (`_pre_registo_ensaio`): o desenho vive
+    # em `aprendiz/sombra`. Com a CLI a procurar em `sombra/` o desenho selado
+    # nunca era encontrado e a sonda nao podia autorizar o ensaio.
+    base = Path(g.directorio()) / "aprendiz" / "sombra"
+    ficheiros = sorted(base.glob("pre-registo-*.json"))
+    if not ficheiros:
+        return _erro("sem pre-registo em aprendiz/sombra", 3)
+    try:
+        registo = json.loads(ficheiros[-1].read_text(encoding="utf-8"))
+    except ValueError as exc:
+        return _erro(f"pre-registo ilegivel: {exc}")
+    sombra = _sombra_mod()
+    if not sombra.verificar(registo):
+        return _erro("selo do pre-registo nao confere — recusado", 1)
+
+    if acao == "vida":
+        veredicto = sombra.sondar_vida(registo, _chamar_modelo)
+        destino = base / "vida.json"
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        temporario = destino.with_suffix(".json.tmp")
+        temporario.write_text(json.dumps(veredicto, indent=2, ensure_ascii=False) + "\n",
+                              encoding="utf-8")
+        temporario.replace(destino)
+        for braco in ("a", "b"):
+            d = veredicto[f"braco_{braco}"]
+            estado = "vivo" if d.get("ok") else "MORTO"
+            print(f"braco {braco}: {d.get('modelo')} — {estado} "
+                  f"(HTTP {d.get('http')}) {d.get('motivo') or ''}".rstrip())
+        print(f"todos vivos: {veredicto['todos_vivos']} | gravado em {destino}")
+        return 0 if veredicto["todos_vivos"] else 1
+
+    cfg, _ = _cfg()
+    _bloco = cfg.get("sombra")
+    bloco = _bloco if isinstance(_bloco, dict) else {}
+    print(f"pre-registo: {ficheiros[-1].name} | selo ok | sha {str(registo.get('sha256'))[:16]}")
+    print(f"ensaio: {registo.get('ensaio')} | unidade: {registo.get('unidade_de_randomizacao')}")
+    print(f"braco a = {registo.get('braco_a')} | braco b = {registo.get('braco_b')}")
+    print(f"n por braco = {registo.get('n_por_braco')} | margem = {registo.get('margem_nao_inferioridade')}")
+    print(f"interruptor: {'ligado' if bloco.get('activo') else 'desligado'}")
+    vida = {}
+    caminho_vida = base / "vida.json"
+    if caminho_vida.exists():
+        try:
+            vida = json.loads(caminho_vida.read_text(encoding="utf-8"))
+        except ValueError:
+            vida = {}
+    if vida:
+        print(f"vida: {vida.get('ts')} | todos vivos: {vida.get('todos_vivos')}")
+        for braco in ("a", "b"):
+            d = vida.get(f"braco_{braco}") or {}
+            print(f"  braco {braco}: {'vivo' if d.get('ok') else 'MORTO'} "
+                  f"(HTTP {d.get('http')}) {str(d.get('motivo') or '')[:90]}")
+    else:
+        print("vida: nunca medida — o ensaio nao aplica sem ela (vmm sombra vida)")
     return 0
 
 
@@ -746,6 +895,160 @@ def cmd_superficie_rm(args) -> int:
     return 0
 
 
+def _retencao_efectiva(cfg: dict[str, Any]) -> dict[str, int]:
+    """Os numeros que valem: o declarado sobrepoe-se ao padrao, chave a chave."""
+    valores = dict(g.RETENCAO_PADRAO)
+    declarado = cfg.get("retencao")
+    if isinstance(declarado, dict):
+        for chave, valor in declarado.items():
+            if chave in valores and isinstance(valor, int) and not isinstance(valor, bool):
+                valores[chave] = valor
+    return valores
+
+
+def cmd_retencao(args) -> int:
+    """Estado do ledger; com `--aplicar`, dobra o detalhe antigo em resumo.
+
+    Sem `--aplicar` nao escreve nada — e o comando que se corre para ver o
+    tamanho antes de decidir. O padrao vem do bloco `retencao` do config.
+    """
+    cfg, erros = _cfg()
+    if erros:
+        return _erro("config com erros: " + "; ".join(erros))
+    rt = _retencao()
+    valores = _retencao_efectiva(cfg)
+    dias = args.dias if args.dias is not None else valores["dias_completo"]
+    if dias < 0:
+        return _erro("--dias tem de ser >= 0", 2)
+    caminho = g.caminho_ledger()
+    estado = rt.relatorio(caminho)
+    if "bytes" in estado:
+        print(f"ledger {caminho}")
+        print(f"  {estado['bytes'] / 1048576:.2f} MB, {estado['linhas']} linhas "
+              f"({estado['linhas_detalhe']} de detalhe, {estado['resumos']} resumos)")
+    else:
+        print(f"ledger {caminho} (inexistente)")
+        return 0
+    if not args.aplicar:
+        print(f"  politica: detalhe dos ultimos {dias} dias (correr --aplicar para compactar)")
+        return 0
+    resultado = rt.compactar(caminho, dias=dias)
+    if not resultado.get("aplicado"):
+        print(f"  nada a compactar (corte {resultado.get('corte')})")
+        return 0
+    antes = resultado.get("bytes_antes", 0)
+    depois = resultado.get("bytes_depois", 0)
+    print(f"  dobradas {resultado['dobradas']} linhas de {resultado['dias_dobrados']} dias "
+          f"em {resultado['resumos']} resumos")
+    print(f"  {antes / 1048576:.2f} MB -> {depois / 1048576:.2f} MB "
+          f"({100 * depois / max(antes, 1):.1f}%)")
+    if resultado.get("ilegiveis"):
+        print(f"  {resultado['ilegiveis']} linhas ilegiveis preservadas")
+    return 0
+
+
+def cmd_veredicto(args) -> int:
+    """Regista ou le o veredicto de uma entrega.
+
+    Sem `--estado` e leitura: lista os ultimos veredictos (opcionalmente de uma
+    tarefa) ou, com `--agregado`, o estado agregado de uma tarefa. Com `--estado`
+    escreve — e recusa antes de escrever se a fonte ou a evidencia faltarem.
+    """
+    vd = _veredicto()
+    caminho = g.caminho_ledger()
+
+    if args.estado is None:
+        if args.agregado:
+            if not args.tarefa:
+                return _erro("--agregado exige --tarefa", 2)
+            print(json.dumps(vd.estado_da_tarefa(caminho, args.tarefa),
+                             indent=2, ensure_ascii=False))
+            return 0
+        if args.resumo:
+            print(json.dumps(vd.resumo(caminho), indent=2, ensure_ascii=False))
+            return 0
+        todos = vd.veredictos(caminho)
+        if args.tarefa:
+            todos = [e for e in todos if e.get("tarefa") == args.tarefa]
+        todos = todos[-args.n:]
+        if args.json:
+            print(json.dumps(todos, indent=2, ensure_ascii=False))
+            return 0
+        if not todos:
+            print("sem veredictos registados")
+            return 0
+        linhas = [["ts", "tarefa", "estado", "fonte", "evidencia"]]
+        for e in todos:
+            linhas.append([
+                str(e.get("ts", ""))[:19],
+                str(e.get("tarefa", ""))[:28],
+                str(e.get("estado", "")),
+                str(e.get("fonte", "")),
+                str(e.get("evidencia", ""))[:44],
+            ])
+        print(_tabela(linhas))
+        return 0
+
+    detalhe = None
+    if args.detalhe:
+        detalhe = {}
+        for par in args.detalhe:
+            if "=" in par:
+                k, v = par.split("=", 1)
+                detalhe[k.strip()] = v.strip()
+    try:
+        evento = vd.registar(
+            caminho,
+            tarefa=args.tarefa or "",
+            estado=args.estado,
+            fonte=args.fonte or "",
+            evidencia=args.evidencia or "",
+            detalhe=detalhe,
+            perfil=args.perfil,
+            sessao=args.sessao,
+            turno=args.turno,
+        )
+    except ValueError as exc:
+        return _erro(f"veredicto recusado: {exc}", 2)
+    print(f"veredicto registado: {evento['tarefa']} = {evento['estado']} "
+          f"(fonte {evento['fonte']})")
+    return 0
+
+
+def cmd_backups(args) -> int:
+    """Estado dos backups do config; com `--aplicar`, poda a rotina."""
+    cfg, erros = _cfg()
+    if erros:
+        return _erro("config com erros: " + "; ".join(erros))
+    rt = _retencao()
+    valores = _retencao_efectiva(cfg)
+    manter = args.manter if args.manter is not None else valores["backups_manter"]
+    semanais = args.semanais if args.semanais is not None else valores["backups_semanais"]
+    if manter < 1:
+        return _erro("--manter tem de ser >= 1", 2)
+    if semanais < 0:
+        return _erro("--semanais tem de ser >= 0", 2)
+    pasta = g.directorio()
+    estado = rt.relatorio(g.caminho_ledger(), pasta)
+    print(f"backups em {pasta}")
+    print(f"  {estado.get('backups_datados', 0)} datados, "
+          f"{estado.get('backups_manuais', 0)} a mao, "
+          f"{estado.get('backups_bytes', 0) / 1048576:.2f} MB")
+    if not args.aplicar:
+        print(f"  politica: ficam {manter} + {semanais}/semana (correr --aplicar para podar)")
+        return 0
+    resultado = rt.podar_backups(pasta, manter=manter, semanais=semanais)
+    if not resultado.get("aplicado"):
+        print("  nada a podar")
+        return 0
+    print(f"  removidos {resultado['removidos']} de {resultado['datados_antes']} datados "
+          f"({resultado['bytes_libertados'] / 1048576:.2f} MB livres), "
+          f"ficaram {resultado['datados_depois']}")
+    if resultado.get("semanais_guardados"):
+        print(f"  semanais preservados: {', '.join(resultado['semanais_guardados'])}")
+    return 0
+
+
 def cmd_simular(args) -> int:
     cfg, _ = _cfg()
     p = g.perfil_config(cfg, args.perfil)
@@ -788,7 +1091,10 @@ def _seams_mod():
         global _SEAMS_CACHE
         if _SEAMS_CACHE is not None:
             return _SEAMS_CACHE
-        caminho = Path(__file__).with_name("seams.py")
+        # `_AQUI` e o directorio do ficheiro JA resolvido: usar `__file__` cru
+        # falha quando o CLI e invocado pelo symlink /opt/data/bin/vmm, porque
+        # procurava /opt/data/bin/seams.py e o comando dizia "seam indisponivel".
+        caminho = _AQUI / "seams.py"
         spec = _ilu.spec_from_file_location("vmm_seams", caminho)
         if spec is None or spec.loader is None:
             raise RuntimeError("seams.py nao encontrado junto de cli.py")
@@ -924,13 +1230,20 @@ def cmd_auditoria(args) -> int:
               + (f" ({info['ilegiveis']} ilegiveis)" if info["ilegiveis"] else ""))
         print(f"vivo:    {info['vivo_sha'] or '-'}")
         print(f"ultimo:  {info['ultimo_depois_sha'] or '-'}")
+        if info["quebras_reconciliadas"]:
+            print(f"reconciliadas: linhas {info['quebras_reconciliadas']} "
+                  "(quebra declarada com testemunha igual)")
         if info["fora_da_cadeia"]:
             print("VEREDITO: escrita FORA do caminho unico "
                   "(o config vivo nao e o que o ultimo escritor deixou)")
         elif not info["existe"]:
             print("VEREDITO: sem registo de escritas e sem config — nada a atribuir")
-        elif not info["cadeia_continua"]:
-            print(f"VEREDITO: cadeia quebrada nas linhas {info['quebras']}")
+        elif info["quebras_nao_explicadas"]:
+            print(f"VEREDITO: cadeia quebrada SEM explicacao nas linhas "
+                  f"{info['quebras_nao_explicadas']}")
+        elif info["quebras_reconciliadas"]:
+            print("VEREDITO: OK com quebras declaradas — a config viva veio do "
+                  "caminho unico; a historia tem escritas manuais reconciliadas")
         else:
             print("VEREDITO: OK — a config viva foi escrita pelo caminho unico")
     return 1 if (info["fora_da_cadeia"] or not info["cadeia_continua"]) else 0
@@ -1072,6 +1385,49 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("caminho", help="caminhos da config e do ledger")
     s.set_defaults(func=cmd_caminho)
+
+    # Retencao: sem `--aplicar` nada e escrito. O tamanho ve-se primeiro; so
+    # depois se decide. Os limites por omissao vem do bloco `retencao` do config,
+    # para o CLI e o job agendado usarem o mesmo numero.
+    s = sub.add_parser("sombra", help="ensaio A/B: pre-registo, vida dos bracos, interruptor")
+    s.add_argument("acao", nargs="?", default="estado",
+                   choices=["estado", "vida", "on", "off"])
+    s.set_defaults(func=cmd_sombra)
+
+    s = sub.add_parser("retencao", help="ledger: tamanho e compactacao do detalhe antigo")
+    s.add_argument("--dias", type=int, help="dias de detalhe a manter (padrao: config)")
+    s.add_argument("--aplicar", action="store_true", help="compactar de facto")
+    s.set_defaults(func=cmd_retencao)
+
+    s = sub.add_parser(
+        "veredicto",
+        help="veredicto de entrega: registar (com --estado) ou ler (sem ele)",
+    )
+    s.add_argument("--tarefa", help="nome da tarefa (obrigatorio para escrever)")
+    s.add_argument("--estado", choices=["pass", "falha", "parcial"],
+                   help="estado a registar; sem isto o comando so le")
+    s.add_argument("--fonte", help="quem afirma: gate, releitura, testes, ha, jira, "
+                                  "wiki, git, skill, manual")
+    s.add_argument("--evidencia", help="prova concreta, curta (obrigatoria para escrever)")
+    s.add_argument("--detalhe", action="append", metavar="K=V",
+                   help="par chave=valor adicional (repetivel)")
+    s.add_argument("--perfil", help="perfil a que o veredicto pertence")
+    s.add_argument("--sessao", help="sessao a que o veredicto pertence")
+    s.add_argument("--turno", help="turn_id a que o veredicto pertence")
+    s.add_argument("--listar", dest="listar", action="store_true",
+                   help="(implicito) listar em vez de escrever")
+    s.add_argument("--n", type=int, default=20, help="quantos listar (padrao 20)")
+    s.add_argument("--json", action="store_true", help="saida em JSON")
+    s.add_argument("--resumo", action="store_true", help="contagens por estado e fonte")
+    s.add_argument("--agregado", action="store_true",
+                   help="estado agregado de --tarefa, todas as fontes")
+    s.set_defaults(func=cmd_veredicto)
+
+    s = sub.add_parser("backups", help="backups do config: contagem e poda da rotina")
+    s.add_argument("--manter", type=int, help="quantos datados ficam (padrao: config)")
+    s.add_argument("--semanais", type=int, help="quantos por semana ISO para la dos primeiros")
+    s.add_argument("--aplicar", action="store_true", help="podar de facto")
+    s.set_defaults(func=cmd_backups)
 
     # A auditoria le o que o caminho unico ja grava. `rc 1` quando ha prova de
     # escrita por fora: um script de vigia pode limitar-se a olhar para o rc.

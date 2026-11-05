@@ -4,6 +4,10 @@ Escolhe **provider + modelo** em cada turno a partir da complexidade que o turno
 mostra — não a partir de uma etiqueta que o dono escreveu — dentro do catálogo
 que o dono declarou **para o perfil que está a ser servido**.
 
+**Repositório público:** https://github.com/ptv1p3r/vipernet-model-manager — a entrada de
+catálogo pronta a submeter vive em `plugin-catalog/vipernet-model-manager.yaml` (falta só o
+pin `sha`, que exige conteúdo publicado no ramo `main` do GitHub).
+
 Três frases que resumem o contrato:
 
 1. A **complexidade é medida** (última mensagem + estado do trabalho): tamanho do
@@ -1045,6 +1049,8 @@ vmm classificador [ver|on|off] [--perfil NOME] [--provider P] [--modelo M]
                  [--esforco baixo|medio|alto|-] [--formato auto|on|off]
 vmm classificador lote "texto1" "texto2" ...   N pedidos num só pedido (contexto longo)
 vmm log [-n N] [--perfil NOME] [--provider P] [--sessao S] [--evento E]
+vmm retencao [--dias N] [--aplicar]   ledger: tamanho e compactação do detalhe antigo
+vmm backups [--manter N] [--semanais N] [--aplicar]   backups do config: contagem e poda
 vmm caminho                          caminhos de config e ledger
 vmm recarregar                       recarrega plugins no gateway
 ```
@@ -1059,6 +1065,47 @@ chaves.
 
 Códigos de saída: `0` ok · `1` há problema · `2` uso inválido · `3` não
 encontrado.
+
+## Retenção: o ledger e os backups param de crescer
+
+O ledger cresce a cada chamada ao provider (~5,8 MB/dia medidos a 2026-11-04) e
+o `gravar` do config deixa um `config.json.bak-<carimbo>` por escrita — 132
+acumulados em dois dias e meio. Duas políticas independentes, ambas **aditivas**:
+nada desaparece sem deixar os agregados.
+
+**Ledger** (`vmm retencao`). As linhas de dias **completos** com mais de
+`dias_completo` dias são substituídas por um evento `resumo_dia` por dia, com
+contagens por evento, perfil, nível, modelo, origem e superfície, somas de
+tokens e leituras do classificador. Dia **cortado a meio não se dobra**: um
+resumo parcial lê-se como o total do dia e mente sobre o que falta — fica
+inteiro até à compactação seguinte e sai em `dias_parciais`. Linhas ilegíveis
+não se apagam. O resumo vai para o **início** do ficheiro; o painel lê do fim
+para trás e filtra por evento, por isso não o vê — os leitores actuais não
+mudam. Medido numa cópia do ledger real com o dia 2026-11-02 dobrado: 7 301
+linhas exactas, total preservado (23 084 = 23 084), 17,35 MB → 13,23 MB.
+
+**Backups** (`vmm backups`). Ficam os `backups_manter` mais recentes mais
+`backups_semanais` por semana ISO para lá desse número. Os marcos postos a mão
+(`config.json.bak-antes-dos-free-reais`) não são datados, não contam e nunca são
+tocados. Medido: 132 datados → 11, 121 removidos, 0,53 MB libertados, 3 marcos
+intactos.
+
+Os limites vivem no bloco opcional `retencao` do config — um número, uma casa:
+
+```json
+"retencao": { "dias_completo": 7, "backups_manter": 10, "backups_semanais": 1 }
+```
+
+Chaves fechadas: `retencao.lixo` é recusada, `dias_completo: -1` e
+`backups_manter: 0` também (um `0` explícito em `dias_completo` é legítimo — não
+compacta nada). Ausente, valem os padrões acima. Sem `--aplicar` nada é escrito:
+o tamanho mede-se primeiro. O job diário `/opt/data/scripts/vmm-retencao.py`
+corre os dois comandos e **cala-se quando não há nada a fazer** — um aviso
+diário a dizer que não fez nada é um aviso que ninguém lê.
+
+O append do ledger toma uma trava **partilhada** em `uso.jsonl.lock`; a
+compactação toma-a em modo exclusivo. Sem isso, o `os.replace` de uma
+compactação deitava fora as linhas escritas entre a leitura e a troca.
 
 ## Escolha, por turno
 
@@ -1109,8 +1156,10 @@ intacto e a razão vai para `uso.err`.
 ## Ledger
 
 `uso.jsonl` (append-only, uma linha JSON por evento) e `uso.err`. Eventos:
-`troca`, `sem_troca`, `sem_rota`, `falha_troca`, `reset`, `desligado`,
+`troca`, `sem_rota`, `falha_troca`, `reset`, `desligado`,
 `perfil_desligado`, `perfil_nao_gerido`, `sem_catalogo`, `resposta`.
+O `sem_troca` **saiu na 3.31.0**: era uma linha por chamada de API a repetir a
+mesma decisão (ver o rasto, abaixo).
 O `resposta` regista o que **de facto respondeu**: `provider` e `modelo`
 efectivos do agente (não o escolhido no catálogo), `respondido_por`
 (`response_model` que o provider devolveu), `perfil`, `sessao`, `superficie`
@@ -1131,6 +1180,30 @@ vezes este turno mudou de modelo", sem junção nenhuma:
   (`capacidade`, `rota`);
 - `fonte_turno` — `turn_id` ou `hash`, para se saber quanto vale a prova.
 
+### O rasto da decisão vive na `resposta` (3.31.0)
+
+Até à 3.30.0 o rasto que explica a decisão (`classificador`, `sinais`,
+`triagem`, `score`, `esforco`, `superficie*`, `entrada`) ia num `sem_troca` por
+**chamada de API** — e um turno tem, em média, 2,8 chamadas. Medido a
+2026-11-04: 11 129 linhas, 9,59 MB dos 17,11 MB do ledger, com o
+`classificador` repetido em 95,4% das linhas do mesmo turno.
+
+Agora viaja na linha `resposta`, **uma vez por turno**, e de novo só quando a
+decisão muda: a assinatura é calculada sobre `_TRACE_ESTAVEL` (nível, tarefa,
+origem, score, classificador, superfície, exceção…), que deixa de fora as
+medidas que crescem com a conversa (`sinais`, `triagem`, `ms`) e as que mudam em
+cada chamada (`pin`, `rota_pin`). Sem essa separação o corte era nulo: assinar o
+rasto inteiro faz um turno de 6 chamadas escrever 6 cópias.
+
+- O `pin`/`rota_pin` continuam a ser escritos em **todas** as `resposta`, logo a
+  aritmética `reutilizados == chamadas - turnos` mede-se sem o `sem_troca`.
+- Um turno que só produza erros nunca escreve `resposta`: o evento de erro leva
+  o mesmo rasto, com a mesma chave, e por isso sai uma só vez.
+- Os eventos `troca*` levam o **resumo** da decisão (`nivel`, `tarefa`,
+  `origem`, `score`, `esforco`, de/para), não uma segunda cópia do rasto pesado.
+- O painel não precisou de mudar: lê o ledger sem filtrar por evento e guarda, por
+  perfil, o rasto mais recente que encontra.
+
 A verificação aritmética que apanha um pin que não está a pegar:
 `pin: reutilizado` tem de ser igual a `pedidos − turnos`.
 
@@ -1140,6 +1213,69 @@ superfície, nível, score, nomes de sinais, providers, modelos, acesso,
 tempos e tokens. A escrita é uma linha por `write` com `O_APPEND` e o
 ficheiro nasce `0600`, para coexistir com o CLI e o gateway a escrever em
 processos diferentes.
+
+### A tarefa vive na sessão, não no turno (3.32.0)
+
+Até à 3.31.0 a associação de tarefa durava **um turno**. `analise.detectar_tarefa`
+lê só a última mensagem do utilizador — de propósito, para não classificar
+histórico nem contexto injectado — e o `pin` fixa a decisão por `turn_id`. As duas
+coisas juntas produziam o drift: o turno que traz «faz uma análise de arquitetura»
+acerta na rota cara, o turno seguinte («continua», «agora escreve o parecer») não
+tem nenhum dos termos, a associação desaparece e quem decide é a complexidade. O
+modelo muda a meio da conversa, e o custo com ele.
+
+Agora a tarefa é guardada por **`perfil|sessão`**, ao lado do histórico de
+histerese e com a mesma trava:
+
+    "analise": {"tarefa_persistente": {"activo": true, "expira_turnos": 6, "expira_min": 90}}
+
+- Tarefa detectada no texto **substitui** sempre a anterior e reinicia o prazo.
+- Sem detecção e com tarefa viva, o turno **herda-a** e regista
+  `tarefa_origem: herdada` com `tarefa_idade_turnos` — é o que permite medir se a
+  herança está a colar demais sem ler a conversa.
+- O prazo conta desde a última **detecção**: herdar não o renova. Renovar deixava
+  um «sim» de oito em oito turnos manter um modelo pago vivo sem fim.
+- Termina por tarefa nova, por prazo (`expira_turnos` **ou** `expira_min`), ou por
+  `complexidade: auto` sem tarefa no texto — o único fim manual, registado com
+  `tarefa_limpa: true`. O marcador continua a ganhar a tudo quando o texto traz
+  uma tarefa: nesse caso manda o pedido actual.
+- `activo: false` devolve o comportamento antigo, sem mais nada.
+- O bloco herda do global chave a chave, como a estratégia: um perfil que declare
+  só `expira_turnos` mantém o `activo` do global; repetir o valor do global não é
+  gravado (fixava o perfil ao dia).
+- A chave é da mesma família do pin, mas não é a mesma: o pin dura um turno, a
+  tarefa dura a sessão. Sessão vazia não persiste nada — sem ela a chave colaria
+  todas as conversas e duas sessões partilhavam a rota.
+
+Prova: `test_tarefa_persistente.py` (12 casos, com os negativos — sessão
+diferente, prazo esgotado, marcador de fim, desligado, validação).
+
+### O painel edita a tarefa persistente (3.33.0)
+
+O bloco existia só no ficheiro e na API: mudar o prazo obrigava a editar JSON.
+Agora tem os dois sítios que o resto do `analise` já tinha:
+
+- **Página de configuração** — bloco «Tarefa persistente», com a activação e os
+  dois prazos (1–50 turnos, 1–1440 minutos, os limites do motor). Escreve no
+  `analise` **global**.
+- **Página de perfil** — «definição: herdar do global | declarar neste perfil».
+  A herdar, mostra os valores herdados e não desenha campos; a declarar, mostra
+  os três, com **vazio = herdar essa chave**.
+- **Uma decisão, um sítio**: o global edita-se na configuração, o delta no
+  perfil. Duas cópias do mesmo número no ecrã discordam mais cedo ou mais tarde.
+
+Os valores em vigor e a origem vêm do servidor (`tarefa_persistente_efectiva`,
+no `dashboard/api.py`), calculados com as mesmas regras do motor: `proprio` (o
+perfil declara), `global` (o global difere do padrão) ou `padrao`. A distinção
+importa porque o `validar` materializa o bloco global com os valores por
+omissão — «existe no ficheiro» não é «foi escolhido», e o painel não devia
+anunciar uma escolha que ninguém fez.
+
+Prova: **18** verificações novas na lógica do painel (`node test_logica.js`,
+**266/266**) e **6** no selftest do servidor (**186/186**). As do servidor leem o
+`config.json` do disco, não a resposta: declarar exatamente os valores do global
+não fica escrito, `herdar` apaga o bloco, e um prazo fora dos limites volta como
+400 com o nome da chave.
 
 ## Limites conhecidos
 
@@ -1350,10 +1486,10 @@ O nível fixado por turno tem ainda duas provas próprias:
   **0 em `pin`**, com `953 = 1 109 − 156` reutilizações.
 
 
-190 verificações no selftest, 55 no classificador por modelo (servidor HTTP
+186 verificações no selftest, 55 no classificador por modelo (servidor HTTP
 local a sério, sem mocks), 32 no banco de avaliação (métricas, percentis,
 congelamento do gold, recusa de afinar, consistência entre registos) e mais 79
-em quatro holdouts rotulados à mão, 79 no painel — incluindo a lógica pura do
+em quatro holdouts rotulados à mão, 266 no painel — incluindo a lógica pura do
 editor corrida em node —, 51 na triagem por necessidades, 22 na
 amostragem/rotulagem, 55 no ciclo de aprendizagem, 23 no nível fixado por turno
 e 16 de tarefas.

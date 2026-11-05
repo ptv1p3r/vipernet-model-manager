@@ -1,0 +1,51 @@
+# Entrada de catalogo do Vipernet Model Manager.
+#
+# Destino: `plugin-catalog/vipernet-model-manager.yaml` no repositorio
+# `NousResearch/hermes-agent`, por PR com revisao humana. Esta copia vive no
+# repositorio do plugin para que o que se submete seja versionado com o codigo
+# e nao se perca numa conversa.
+#
+# Esquema lido de `hermes_cli/plugin_catalog.py` (dataclass PluginCatalogEntry):
+# o loader recusa `repo` que nao comece por https://, `sha` que nao seja 40 hex,
+# `tier` fora de official/verified/community e `category` fora de
+# desktop/memory/platform/web/tools/voice/automation/models/general.
+
+name: vipernet-model-manager
+repo: https://github.com/ptv1p3r/vipernet-model-manager
+
+# OBRIGATORIO: o commit EXATO que o revisor leu, 40 caracteres hexadecimais.
+# Vazio de proposito enquanto o ramo publico nao tiver o plugin: o HEAD de
+# `main` e' c171a3c015a7e7a73ac9781d55886b809fd73760 ("remover todo o conteudo
+# do ramo"), com a arvore vazia -- 0 entradas. Nao se inventa um pin: o loader
+# recusa ramos, tags e SHAs curtos, e um pin falso instalaria uma arvore vazia.
+# Preenche-se com o sha do push que publica a versao, e nunca antes disso.
+sha: ""
+
+description: >-
+  Picks the provider and model for each turn from the profile's own catalog,
+  based on the kind of work detected in the message: declared task associations
+  first, then an automatic complexity analysis. Keeps the choice stable for the
+  whole session, records every decision in an append-only ledger and degrades to
+  the next route instead of failing when a route has no credential.
+
+maintainer: ptv1p3r
+tier: community
+category: models
+requires_hermes: ">=0.22.0"
+version: 3.38.0
+title: Vipernet Model Manager
+readme: true
+
+# Capacidades declaradas = o que o plugin regista de facto em `__init__.py`.
+# Regra 6 do catalogo: uma capacidade por declarar e' falha de validacao, uma
+# capacidade declarada a mais e' deriva. `post_tool_call` entrou na 3.35.0 (mede
+# o `exit_code` de cada chamada) e ficou por declarar ate' 2026-11-05.
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_api_request
+    - api_request_error
+    - post_tool_call
+  provides_middleware:
+    - llm_request
+  requires_env: []

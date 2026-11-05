@@ -104,6 +104,25 @@ _ESFORCO_SINONIMOS = {
 # restantes providers sao rota de API. A inferencia retrocompativel apoia-se nisto.
 _PROVIDERS_SUBSCRICAO = frozenset({"openai-codex"})
 
+# Tarefa persistente por sessao (3.32.0). O detector
+# (`analise.detectar_tarefa`) le **so** a ultima mensagem do utilizador — de
+# proposito, para nao classificar historico nem contexto injectado — e o pin
+# fixa a decisao por turno. Juntas, as duas coisas davam isto: o turno que traz
+# "analise de arquitetura" associava a rota certa, e o turno seguinte
+# ("continua", "agora escreve o parecer") nao tinha nenhum dos termos, a
+# associacao desaparecia e quem decidia era a complexidade. O turno trocava de
+# modelo a meio da conversa.
+#
+# `expira_turnos` e `expira_min` contam a partir da ultima **deteccao**, nunca
+# da ultima heranca: se herdar renovasse o prazo, um "sim" de oito em oito
+# turnos mantinha um modelo pago vivo indefinidamente e ninguem dava por isso.
+TAREFA_PERSISTENTE_PADRAO: dict[str, Any] = {
+    "activo": True,
+    "expira_turnos": 6,
+    "expira_min": 90,
+}
+TAREFA_PERSISTENTE_CHAVES = frozenset(TAREFA_PERSISTENTE_PADRAO)
+
 ANALISE_PADRAO: dict[str, Any] = {
     "janela_mensagens": 8,
     "varredura_max_mensagens": 60,
@@ -122,6 +141,10 @@ ANALISE_PADRAO: dict[str, Any] = {
     # `cli` 27. Uma regra aqui ganha a tarefa e a analise de complexidade —
     # so o marcador explicito do utilizador (`complexidade: alta`) manda mais.
     "superficies": {},
+    # A tarefa associada vive na **sessao**, com prazo — ver
+    # `TAREFA_PERSISTENTE_PADRAO`. Herda-se do global chave a chave, como a
+    # estrategia: declarar so o prazo nao obriga a repetir o `activo`.
+    "tarefa_persistente": dict(TAREFA_PERSISTENTE_PADRAO),
     # `classificador` e preenchido mais abaixo, a partir de
     # `analise_modelo.PADRAO`: os limites do classificador (timeout, tokens,
     # cache) tem UMA casa. Duplica-los aqui foi o que deixou a config viva com
@@ -300,13 +323,23 @@ _LIMITES_INTERNOS = ("contexto_max", "latencia_p95_ms")
 # divergirem. As listas do classificador vivem em `analise_modelo` (`CHAVES`),
 # derivadas do `PADRAO` dele pela mesma razao.
 _CHAVES_CONFIG = frozenset({"versao", "activo", "registar", "analise",
-                            "estrategia", "perfis"})
+                            "estrategia", "retencao", "sombra", "perfis"})
 _CHAVES_PERFIL = frozenset({"activo", "estrategia", "analise", "catalogo",
                             "tarefas", "latencia_max_ms", "rodizio"})
 _CHAVES_ANALISE = frozenset(set(ANALISE_PADRAO) | {"pesos", "aprendiz",
                                                    "classificador"})
 # `limiares` so tem dois limiares: sao os que `analise.nivel_de_score` le.
 LIMIARES_CHAVES = frozenset({"media", "alta"})
+
+# Retencao: quantos dias de detalhe ficam no ledger e quantos backups do config
+# se guardam. Fica no config para o painel e o CLI lerem o mesmo numero — um
+# limite escrito em dois sitios divergem sempre.
+RETENCAO_PADRAO: dict[str, int] = {
+    "dias_completo": 7,
+    "backups_manter": 10,
+    "backups_semanais": 1,
+}
+_CHAVES_RETENCAO = frozenset(RETENCAO_PADRAO)
 _CHAVES_TAREFA = frozenset({"termos", "prioridade"})
 _CHAVES_ENTRADA = frozenset({
     "id", "provider", "modelo", "complexidade", "niveis", "acesso",
@@ -754,6 +787,90 @@ def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str
     return saida
 
 
+def normalizar_retencao(valor: Any, prefixo: str = "retencao",
+                        erros: list[str] | None = None
+                        ) -> tuple[dict[str, int], list[str]]:
+    """Normaliza o bloco de retencao: tres inteiros, listas fechadas.
+
+    So devolve o que foi declarado — ausente significa "vale o padrao", como na
+    estrategia. Um `0` explicito no `dias_completo` e legitimo (nao compacta
+    nada); o que nao e legitimo e um valor que nao seja inteiro nao negativo, ou
+    um `backups_manter` a zero, que apagaria todos os backups de rotina.
+    """
+    if erros is None:
+        erros = []
+    if valor is None or valor == "":
+        return {}, erros
+    if not isinstance(valor, dict):
+        erros.append(f"{prefixo} tem de ser um objecto com "
+                     f"{sorted(_CHAVES_RETENCAO)}")
+        return {}, erros
+    _recusar_desconhecidas(valor, _CHAVES_RETENCAO, prefixo, erros)
+    saida: dict[str, int] = {}
+    minimos = {"dias_completo": 0, "backups_manter": 1, "backups_semanais": 0}
+    for chave in sorted(_CHAVES_RETENCAO):
+        if chave not in valor:
+            continue
+        bruto = valor[chave]
+        if isinstance(bruto, bool) or not isinstance(bruto, (int, str)):
+            erros.append(f"{prefixo}.{chave} tem de ser um inteiro (veio {bruto!r})")
+            continue
+        try:
+            numero = int(bruto)
+        except (TypeError, ValueError):
+            erros.append(f"{prefixo}.{chave} tem de ser um inteiro (veio {bruto!r})")
+            continue
+        if numero < minimos[chave]:
+            erros.append(f"{prefixo}.{chave} tem de ser >= {minimos[chave]} (veio {numero})")
+            continue
+        saida[chave] = numero
+    return saida, erros
+
+
+def normalizar_tarefa_persistente(valor: Any,
+                                 prefixo: str = "analise.tarefa_persistente",
+                                 erros: list[str] | None = None
+                                 ) -> dict[str, Any]:
+    """Normaliza o bloco da tarefa persistente; devolve **so** o declarado.
+
+    Devolver so o declarado e o que mantem a heranca: em `perfil_config` uma
+    chave ausente cai no global, e preencher aqui as que faltam transformava
+    todo o perfil numa copia fixa do dia em que foi gravado.
+
+    Chave desconhecida e erro. Os numeros tem limites porque `0` e o valor que
+    parece inocente e desliga a heranca com o `activo` ainda a `true`: o dono
+    julgaria que a tarefa persistia enquanto o modelo continuava a mudar a meio
+    da conversa — o defeito que este bloco existe para corrigir.
+    """
+    if erros is None:
+        erros = []
+    if valor is None or valor == "":
+        return {}
+    if not isinstance(valor, dict):
+        erros.append(f"{prefixo} tem de ser um objecto")
+        return {}
+    _recusar_desconhecidas(valor, TAREFA_PERSISTENTE_CHAVES, prefixo, erros)
+    limite = {"expira_turnos": 50, "expira_min": 1440}
+    saida: dict[str, Any] = {}
+    for chave, valor_chave in valor.items():
+        if chave not in TAREFA_PERSISTENTE_CHAVES:
+            continue
+        if chave == "activo":
+            if isinstance(valor_chave, bool):
+                saida[chave] = valor_chave
+            else:
+                erros.append(f"{prefixo}.activo tem de ser booleano")
+            continue
+        if isinstance(valor_chave, bool) or not isinstance(valor_chave, int):
+            erros.append(f"{prefixo}.{chave} tem de ser inteiro")
+            continue
+        if not 1 <= valor_chave <= limite[chave]:
+            erros.append(f"{prefixo}.{chave} fora de [1, {limite[chave]}]")
+            continue
+        saida[chave] = valor_chave
+    return saida
+
+
 def normalizar_estrategia(valor: Any, prefixo: str = "estrategia",
                           erros: list[str] | None = None
                           ) -> tuple[dict[str, str], list[str]]:
@@ -815,6 +932,42 @@ def opcoes_estrategia() -> dict[str, list[dict[str, str]]]:
         campo: [{"valor": v, "rotulo": ROTULOS_ESTRATEGIA[campo][v]} for v in valores]
         for campo, valores in (("modo", ESTRATEGIAS), ("por", POR))
     }
+
+
+SOMBRA_PADRAO: dict[str, Any] = {"activo": False, "vida_ttl_h": 24}
+_CHAVES_SOMBRA = frozenset(SOMBRA_PADRAO)
+
+
+def normalizar_sombra(valor: Any,
+                      campo: str = "sombra") -> tuple[dict[str, Any], list[str]]:
+    """Bloco do ensaio em sombra: interruptor e validade da sonda de vida.
+
+    Mesma regra da estrategia e da retencao — so se grava o que foi declarado.
+    `activo` ausente **nao** e `false` por acidente: e "nao decidido", e o ensaio
+    so corre com `activo` verdadeiro. `vida_ttl_h` tem tecto de uma semana: uma
+    sonda esquecida nao pode autorizar para sempre modelos que ja morreram — foi
+    assim que um slug gratuito retirado pela OpenRouter ia entrar em trafego.
+    """
+    erros: list[str] = []
+    if valor is None:
+        return {}, erros
+    if not isinstance(valor, dict):
+        return {}, [f"{campo} nao e um objecto"]
+    _recusar_desconhecidas(valor, _CHAVES_SOMBRA, campo, erros)
+    saida: dict[str, Any] = {}
+    if "activo" in valor:
+        saida["activo"] = bool(valor["activo"])
+    if "vida_ttl_h" in valor:
+        try:
+            ttl = float(valor["vida_ttl_h"])
+        except (TypeError, ValueError):
+            erros.append(f"{campo}.vida_ttl_h nao e um numero")
+        else:
+            if not 1 <= ttl <= 168:
+                erros.append(f"{campo}.vida_ttl_h fora de 1..168 horas")
+            else:
+                saida["vida_ttl_h"] = int(ttl) if ttl.is_integer() else ttl
+    return saida, erros
 
 
 def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
@@ -894,6 +1047,12 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
             elif chave == "superficies":
                 saida["analise"]["superficies"] = normalizar_superficies(
                     valor, "'analise.superficies'", erros)
+            elif chave == "tarefa_persistente":
+                # Funde sobre o padrao: um global que declare so o prazo mantem
+                # o `activo` do padrao, que e o que o dono espera.
+                saida["analise"]["tarefa_persistente"].update(
+                    normalizar_tarefa_persistente(
+                        valor, "'analise.tarefa_persistente'", erros))
             else:
                 saida["analise"][chave] = valor
 
@@ -909,6 +1068,21 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
     # omissao", que e a informacao util quando nada foi decidido.
     if est_global:
         saida["estrategia"] = dict(est_global)
+
+    # Retencao: bloco opcional, mesma regra da estrategia — so se grava o que
+    # foi declarado, e a ausencia vale o padrao.
+    retencao, erros_ret = normalizar_retencao(cfg.get("retencao"), "retencao")
+    erros.extend(erros_ret)
+    if retencao:
+        saida["retencao"] = dict(retencao)
+
+    # Ensaio em sombra: bloco opcional, mesma regra da estrategia e da retencao.
+    # Sem esta fiacao o interruptor era escrito e deitado fora na leitura, e o
+    # ensaio aparecia "ligado" no ficheiro e desligado no turno.
+    sombra, erros_sombra = normalizar_sombra(cfg.get("sombra"))
+    erros.extend(erros_sombra)
+    if sombra:
+        saida["sombra"] = dict(sombra)
 
     perfis = cfg.get("perfis")
     if not isinstance(perfis, dict):
@@ -993,6 +1167,17 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
                     # Guardado bruto: a validacao estreita precisa do
                     # catalogo, que so existe depois deste laco.
                     panalise["superficies"] = valor
+                elif chave == "tarefa_persistente":
+                    # Chave a chave, e so o que difere do global: repetir o
+                    # valor global era fixar o perfil ao dia (a mesma armadilha
+                    # dos `limiares`).
+                    limpo_tp = normalizar_tarefa_persistente(
+                        valor, f"perfis.{nome}.analise.tarefa_persistente", erros)
+                    globais_tp = saida["analise"].get("tarefa_persistente") or {}
+                    declarados_tp = {k: v for k, v in limpo_tp.items()
+                                     if globais_tp.get(k) != v}
+                    if declarados_tp:
+                        panalise["tarefa_persistente"] = declarados_tp
                 else:
                     # Mesma regra para as chaves simples: um valor igual ao
                     # global nao e uma declaracao, e uma copia que fixa o perfil
@@ -1174,6 +1359,55 @@ def _podar_registo(registo: Path) -> None:
         pass
 
 
+def _reconciliar(saida: dict[str, Any], registo: Path) -> None:
+    """Separa quebra **explicada** de quebra **por explicar**.
+
+    Uma escrita fora do caminho unico deixa o registo com um salto entre o
+    `depois_sha` de uma linha e o `antes_sha` da seguinte. Ha duas causas
+    possiveis e o registo sozinho nao as distingue: corrupcao (alguem mexeu no
+    ficheiro ou no log) ou uma escrita manual conhecida e reversivel.
+
+    O ficheiro ``escritas-quem.reconciliacao.json`` ao lado do registo declara
+    as quebras conhecidas. Cada declaracao tem de trazer a **testemunha** — os
+    tres shas medidos naquela linha. Sem isso, uma entrada generica desculparia
+    tambem as quebras futuras, e o alarme morria por excesso de confianca.
+
+    O que fica: `quebras` continua a listar **todas** (a evidencia nao se apaga),
+    `quebras_reconciliadas` as que teem declaracao com testemunha igual, e
+    `quebras_nao_explicadas` as restantes — so estas fazem a auditoria falhar.
+    """
+    saida["quebras_nao_explicadas"] = list(saida["quebras"])
+    ficheiro = registo.parent / "escritas-quem.reconciliacao.json"
+    try:
+        dados = json.loads(ficheiro.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return
+    declaradas = dados.get("quebras") if isinstance(dados, dict) else None
+    if not isinstance(declaradas, list):
+        return
+    for item in declaradas:
+        if not isinstance(item, dict):
+            continue
+        bruto = item.get("linha")
+        if bruto is None or isinstance(bruto, bool):
+            continue
+        try:
+            numero = int(bruto)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        testemunha = saida["_testemunhas"].get(numero)
+        if not testemunha:
+            continue
+        if (str(item.get("antes_sha") or "") != testemunha["antes_sha"]
+                or str(item.get("depois_sha") or "") != testemunha["depois_sha"]
+                or str(item.get("ultimo_depois_sha") or "") != testemunha["ultimo_depois_sha"]):
+            # Declaracao que nao casa com o medido nao desculpa nada.
+            continue
+        if numero in saida["quebras_nao_explicadas"]:
+            saida["quebras_nao_explicadas"].remove(numero)
+            saida["quebras_reconciliadas"].append(numero)
+
+
 def verificar_cadeia(caminho: Path | None = None) -> dict[str, Any]:
     """Diz se a config no disco foi escrita pelo caminho unico.
 
@@ -1199,6 +1433,9 @@ def verificar_cadeia(caminho: Path | None = None) -> dict[str, Any]:
         "linhas": 0,
         "ilegiveis": 0,
         "quebras": [],
+        "quebras_reconciliadas": [],
+        "quebras_nao_explicadas": [],
+        "_testemunhas": {},
         "ultimo_depois_sha": "",
         "vivo_sha": "",
         "cadeia_continua": True,
@@ -1232,10 +1469,19 @@ def verificar_cadeia(caminho: Path | None = None) -> dict[str, Any]:
         # A primeira escrita legitima de todas tem `antes_sha` vazio.
         if anterior and antes and antes != anterior:
             saida["quebras"].append(numero)
+            # Guarda a testemunha da quebra: e o que impede uma reconciliacao
+            # generica de desculpar uma quebra que ainda nao aconteceu.
+            saida["_testemunhas"][numero] = {
+                "antes_sha": antes,
+                "depois_sha": depois,
+                "ultimo_depois_sha": anterior,
+            }
         anterior = depois
     saida["ultimo_depois_sha"] = anterior
-    saida["cadeia_continua"] = not saida["quebras"]
+    _reconciliar(saida, registo)
+    saida["cadeia_continua"] = not saida["quebras_nao_explicadas"]
     saida["fora_da_cadeia"] = bool(anterior) and saida["vivo_sha"] != anterior
+    saida.pop("_testemunhas", None)
     return saida
 
 
@@ -1286,6 +1532,56 @@ def _trava(caminho: Path):
                 pass
 
 
+def _podar_backups(caminho: Path, manter: int = 10,
+                   semanas: int = 8) -> list[Path]:
+    """Poda os backups de config: `manter` recentes mais um por semana.
+
+    Politica decidida a 2026-11-04 e ate agora nunca implementada: cada gravacao
+    copiava o ficheiro e nada apagava, e a directoria chegou a 21 copias. O que
+    se mantem e o que serve para repor: as ultimas `manter` gravacoes (o
+    historico curto que se usa a seguir a um erro) e a copia mais recente de
+    cada uma das ultimas `semanas` semanas ISO (a rede para "voltar a semana
+    passada").
+
+    O tecto de semanas e deliberado: "uma por semana" sem limite cresce 52
+    ficheiros por ano e volta ao mesmo problema por outra porta. Com 10 + 8 o
+    maximo e 18.
+
+    Duas guardas: so se apagam ficheiros com o carimbo exato que `_escrever`
+    produz (`<nome>.bak-AAAAMMDDTHHMMSS`), para nao tocar em copias nomeadas a
+    mao, e o ficheiro recem-criado nunca sai porque esta entre os mais recentes.
+    """
+    padrao = re.compile(rf"^{re.escape(caminho.name)}\.bak-\d{{8}}T\d{{6}}$")
+    copias = [p for p in caminho.parent.glob(caminho.name + ".bak-*")
+              if p.is_file() and padrao.match(p.name)]
+    copias.sort(key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+    if len(copias) <= manter:
+        return []
+    manter_set = {p.name for p in copias[:manter]}
+    semanas_vistas: list[str] = [
+        time.strftime("%G-%V", time.localtime(p.stat().st_mtime))
+        for p in copias[:manter]
+    ]
+    for copia in copias[manter:]:
+        chave = time.strftime("%G-%V", time.localtime(copia.stat().st_mtime))
+        if chave in semanas_vistas:
+            continue
+        if len(semanas_vistas) >= manter + semanas:
+            continue
+        semanas_vistas.append(chave)
+        manter_set.add(copia.name)
+    apagadas: list[Path] = []
+    for copia in copias:
+        if copia.name in manter_set:
+            continue
+        try:
+            copia.unlink()
+            apagadas.append(copia)
+        except OSError:
+            continue
+    return apagadas
+
+
 def _escrever(cfg: dict[str, Any], caminho: Path) -> Path:
     """Valida, faz backup, escreve em `.tmp` e troca com `os.replace`."""
     limpo, erros = validar(cfg)
@@ -1296,6 +1592,11 @@ def _escrever(cfg: dict[str, Any], caminho: Path) -> Path:
     if caminho.exists():
         carimbo = time.strftime("%Y%m%dT%H%M%S")
         shutil.copy2(caminho, caminho.with_suffix(f".json.bak-{carimbo}"))
+        # Poda logo a seguir a copiar: a politica "10 mais um semanal" so vale
+        # se for aplicada na gravacao. Deixar a limpeza para um job externo
+        # significa que o dia em que o job nao correr volta o lixo todo.
+        with contextlib.suppress(Exception):
+            _podar_backups(caminho)
         try:
             antes = caminho.read_bytes()
         except OSError:
@@ -1614,6 +1915,12 @@ def perfil_config(cfg: dict[str, Any], perfil: str) -> dict[str, Any] | None:
                     base = dict(analise.get("superficies") or {})
                     base.update(copy.deepcopy(valor))
                     analise["superficies"] = base
+                elif chave == "tarefa_persistente" and isinstance(valor, dict):
+                    # Chave a chave, como a estrategia: um perfil que declare
+                    # so o prazo herda o `activo` do global.
+                    base = dict(analise.get("tarefa_persistente") or {})
+                    base.update(valor)
+                    analise["tarefa_persistente"] = base
                 else:
                     analise[chave] = copy.deepcopy(valor)
         saida["analise"] = analise
@@ -1659,6 +1966,40 @@ def estrategia_efectiva(cfg: dict[str, Any], perfil: str) -> dict[str, str]:
     return {"modo": str(est.get("modo") or "rodizio"),
             "por": str(est.get("por") or "sessao"),
             "origem": str(pcfg.get("estrategia_origem") or "padrao")}
+
+
+def tarefa_persistente_efectiva(cfg: dict[str, Any], perfil: str) -> dict[str, Any]:
+    """O bloco da tarefa persistente em vigor neste perfil, com a origem.
+
+    Tres camadas pela mesma regra da estrategia: o perfil sobrepoe-se ao global
+    **chave a chave**, e o que ninguem declarar fica no valor por omissao. A
+    origem e o que o painel mostra ao lado do bloco — sem ela, um perfil que
+    herda parece ter escolhido, e o dono muda o global sem saber o que mudou.
+    """
+    pcfg = perfil_config(cfg, perfil) or {}
+    bloco = (pcfg.get("analise") or {}).get("tarefa_persistente")
+    saida: dict[str, Any] = dict(TAREFA_PERSISTENTE_PADRAO)
+    if isinstance(bloco, dict):
+        saida.update({k: bloco[k] for k in TAREFA_PERSISTENTE_CHAVES if k in bloco})
+    nome_cfg = str(pcfg.get("origem_config") or perfil)
+    cru = (((cfg.get("perfis") or {}).get(nome_cfg) or {}).get("analise") or {})
+    proprio = cru.get("tarefa_persistente") if isinstance(cru, dict) else None
+    global_tp = (cfg.get("analise") or {}).get("tarefa_persistente")
+    # O `validar` materializa o bloco global com os valores por omissao, logo
+    # "existe no ficheiro" nao quer dizer "foi declarado". Se o resultado e
+    # igual ao padrao, a origem honesta e `padrao` — dizer `global` faria o
+    # painel anunciar uma escolha que ninguem fez.
+    global_efectivo = dict(TAREFA_PERSISTENTE_PADRAO)
+    if isinstance(global_tp, dict):
+        global_efectivo.update({k: global_tp[k] for k in TAREFA_PERSISTENTE_CHAVES if k in global_tp})
+    if isinstance(proprio, dict) and proprio:
+        origem = "proprio"
+    elif global_efectivo != dict(TAREFA_PERSISTENTE_PADRAO):
+        origem = "global"
+    else:
+        origem = "padrao"
+    saida["origem"] = origem
+    return saida
 
 
 def classificador_efectivo(cfg: dict[str, Any], perfil: str) -> dict[str, Any]:
