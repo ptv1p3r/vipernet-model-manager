@@ -1672,9 +1672,36 @@ def middleware_llm_request(
         try:
             aplicado = _trocar(agente, entrada, rota, perfil, session_id)
         except Exception as exc:
+            agora = time.monotonic()
+            chave_falha = (perfil, entrada["provider"].lower(), entrada["modelo"])
             with _lock:
-                _maus_expira[(perfil, entrada["provider"].lower(), entrada["modelo"])] = \
-                    time.monotonic() + _TTL_MAU
+                # Regista a falha para o circuit breaker
+                _falhas_recente.setdefault(chave_falha, []).append(agora)
+                
+                # Obtem config do circuit breaker para este perfil
+                cfg = _config()
+                pcfg = gestor.perfil_config(cfg, perfil) or {}
+                analise = pcfg.get("analise") or {}
+                cb = analise.get("circuit_breaker") or {}
+                
+                # Usa valores do config ou padrao
+                ativo = cb.get("ativo", True)
+                limite_falhas = cb.get("limite_falhas", 3)
+                janela_minutos = cb.get("janela_minutos", 5)
+                multiplicador = cb.get("multiplicador_cooldown", 1.5)
+                
+                # Calcula cooldown base (TTL_MAU) e aplica multiplicador se threshold atingido
+                cooldown_base = _TTL_MAU
+                if ativo:
+                    # Remove falhas fora da janela
+                    corte = agora - (janela_minutos * 60.0)
+                    falhas_na_janela = [t for t in _falhas_recente[chave_falha] if t >= corte]
+                    _falhas_recente[chave_falha] = falhas_na_janela
+                    
+                    if len(falhas_na_janela) >= limite_falhas:
+                        cooldown_base = cooldown_base * multiplicador
+                
+                _maus_expira[chave_falha] = agora + cooldown_base
             _registar({**resumo_de(base), "evento": "falha_troca", "entrada": entrada["id"],
                        "acesso": entrada.get("acesso", ""),
                        "de": destino, "erro": f"{type(exc).__name__}: {exc}"[:300]},

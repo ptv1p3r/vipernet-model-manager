@@ -1370,6 +1370,122 @@ def config_post(request: Request, corpo: Any = Body(default=None)) -> JSONRespon
         content={"ok": True, "rev": rev_novo, "config": cfg, "sem_rev": not bool(rev_cliente)},
     )
 
+
+@router.get("/circuit-breaker")
+def circuit_breaker_get(perfil: str = Query(default="")) -> dict[str, Any]:
+    """Config do circuit breaker efetiva para um perfil (com heranca do global)."""
+    cfg, _ = gestor.carregar()
+    if perfil:
+        pcfg = gestor.perfil_config(cfg, perfil)
+        if pcfg:
+            analise = pcfg.get("analise") or {}
+            cb = analise.get("circuit_breaker") or {}
+            # Mostra a origem de cada valor
+            global_analise = cfg.get("analise") or {}
+            global_cb = global_analise.get("circuit_breaker") or {}
+            result = {}
+            for key in ["ativo", "limite_falhas", "janela_minutos", "multiplicador_cooldown"]:
+                result[key] = {
+                    "valor": cb.get(key, global_cb.get(key, gestor.CIRCUIT_BREAKER_PADRAO[key])),
+                    "origem": "perfil" if key in cb else ("global" if key in global_cb else "padrao")
+                }
+            return {"perfil": perfil, "circuit_breaker": result}
+    # Se nao tem perfil ou perfil nao gerido, devolve o global
+    global_analise = cfg.get("analise") or {}
+    global_cb = global_analise.get("circuit_breaker") or {}
+    result = {}
+    for key in ["ativo", "limite_falhas", "janela_minutos", "multiplicador_cooldown"]:
+        result[key] = {
+            "valor": global_cb.get(key, gestor.CIRCUIT_BREAKER_PADRAO[key]),
+            "origem": "global" if key in global_cb else "padrao"
+        }
+    return {"perfil": "global", "circuit_breaker": result}
+
+
+@router.post("/circuit-breaker")
+async def circuit_breaker_post(request: Request, corpo: Any = Body(default=None)) -> JSONResponse:
+    """Atualiza o bloco circuit_breaker (global ou de um perfil).
+
+    Corpo esperado:
+    - `perfil` (opcional): string. Se ausente ou vazio, edita o global.
+    - `circuit_breaker`: object com as chaves a atualizar (todas opcionais).
+    - `rev`: string (obrigatorio se edita config completa via envelope, mas aqui
+      fazemos merge parcial entao usamos o rev atual da config).
+    """
+    corpo = _corpo_objeto(corpo)
+    if not corpo:
+        raise HTTPException(status_code=400, detail="JSON invalido: nao e um objecto")
+    
+    perfil = str(corpo.get("perfil") or "").strip()
+    cb_novo = corpo.get("circuit_breaker")
+    if not isinstance(cb_novo, dict):
+        raise HTTPException(status_code=400, detail="campo 'circuit_breaker' deve ser um objecto")
+    
+    # Valida chaves
+    chaves_validas = {"ativo", "limite_falhas", "janela_minutos", "multiplicador_cooldown"}
+    chaves_invalidas = set(cb_novo.keys()) - chaves_validas
+    if chaves_invalidas:
+        raise HTTPException(status_code=400, detail=f"chaves invalidas em circuit_breaker: {sorted(chaves_invalidas)}")
+    
+    # Carrega config atual
+    cfg, _ = gestor.carregar()
+    rev_atual = _rev(cfg)
+    
+    if perfil:
+        # Edita perfil
+        perfis = cfg.get("perfis") or {}
+        if perfil not in perfis:
+            raise HTTPException(status_code=404, detail=f"perfil '{perfil}' nao existe")
+        pcfg = perfis[perfil]
+        analise = pcfg.get("analise")
+        if not isinstance(analise, dict):
+            analise = {}
+        cb_atual = analise.get("circuit_breaker")
+        if not isinstance(cb_atual, dict):
+            cb_atual = {}
+        # Merge: so atualiza chaves fornecidas
+        cb_atual.update(cb_novo)
+        analise["circuit_breaker"] = cb_atual
+        pcfg["analise"] = analise
+        perfis[perfil] = pcfg
+        cfg["perfis"] = perfis
+    else:
+        # Edita global
+        global_analise = cfg.get("analise") or {}
+        cb_atual = global_analise.get("circuit_breaker")
+        if not isinstance(cb_atual, dict):
+            cb_atual = {}
+        cb_atual.update(cb_novo)
+        global_analise["circuit_breaker"] = cb_atual
+        cfg["analise"] = global_analise
+    
+    # Grava via gestor.gravar (validacao + backup + atomic)
+    try:
+        origem = "%s %s" % (request.client.host if request and request.client else "-",
+                            (request.headers.get("user-agent") if request else "") or "-")
+    except Exception:
+        origem = "-"
+    try:
+        gestor.gravar(cfg, rev_esperado=rev_atual)
+    except gestor.Conflito as exc:
+        return JSONResponse(
+            status_code=409,
+            content={"erro": "config mudou durante a gravacao", "rev": exc.rev_actual},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    
+    cfg_novo, _ = gestor.carregar()
+    rev_novo = _rev(cfg_novo)
+    _registar_escrita(
+        rev_antes=rev_atual, rev_depois=rev_novo, rev_cliente=rev_atual,
+        conflito=False, origem=origem,
+    )
+    return JSONResponse(
+        status_code=200,
+        content={"ok": True, "rev": rev_novo, "config": cfg_novo},
+    )
+
 @router.post("/validar")
 def validar_post(corpo: Any = Body(default=None)) -> dict[str, Any]:
     """Valida a config sem a escrever; devolve o config normalizado e uma lista de erros.

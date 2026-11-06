@@ -2200,7 +2200,103 @@
       })
     );
 
-    // ---- bloco 4: superficies -------------------------------------------
+
+    // ---- bloco 4: circuit breaker -----------------------------------------
+    // Regra: "se modelo falha X vezes em Y minutos, aumentar cooldown em Z%"
+    // Configuravel global e por perfil com heranca chave a chave.
+    const blocoCircuitBreaker = h("div", { className: "vmm-bloco", key: "circuit-breaker" },
+      tituloBloco("Circuit Breaker",
+        "se um modelo falha repetidamente, o tempo de espera (cooldown) aumenta progressivamente."),
+      linhas.map(function (perfil) {
+        const [cbEfectivo, setCbEfectivo] = useState({});
+        const [cbCarregando, setCbCarregando] = useState(true);
+
+        useEffect(function () {
+          setCbCarregando(true);
+          pedir("/circuit-breaker" + (perfil ? "?perfil=" + encodeURIComponent(perfil) : ""))
+            .then(function (r) { setCbEfectivo(r.circuit_breaker || {}); })
+            .catch(function () { setCbEfectivo({}); })
+            .then(function () { setCbCarregando(false); });
+        }, [perfil]);
+
+        function aplicarCB(campo, valor) {
+          const corpo = { circuit_breaker: {} };
+          corpo.circuit_breaker[campo] = valor;
+          if (perfil) corpo.perfil = perfil;
+          return pedir("/circuit-breaker", {
+            method: "POST",
+            body: corpo,
+          }).then(function () { return carregar(); });
+        }
+
+        const cb = cbEfectivo || {};
+        const ativo = cb.ativo !== undefined ? cb.ativo.valor : true;
+        const limiteFalhas = cb.limite_falhas !== undefined ? cb.limite_falhas.valor : 3;
+        const janelaMin = cb.janela_minutos !== undefined ? cb.janela_minutos.valor : 5;
+        const multiplicador = cb.multiplicador_cooldown !== undefined ? cb.multiplicador_cooldown.valor : 1.5;
+
+        const isGlobal = perfil === null;
+
+        return h("div", { key: isGlobal ? "@global" : perfil, className: "vmm-classif-linha vmm-linha-cb" },
+          h("span", { className: "vmm-classif-nome" },
+            (isGlobal ? "global" : perfil),
+            h("span", { className: "vmm-mudo" },
+              isGlobal ? " · aplica-se a quem não declara" : ""
+            )
+          ),
+          h(Seletor, {
+            key: "cb-ativo",
+            rotulo: "circuit breaker",
+            valor: ativo ? "true" : "false",
+            opcoes: [{ valor: "true", rotulo: "activo" }, { valor: "false", rotulo: "desligado" }],
+            onChange: function (v) { aplicarCB("ativo", v === "true"); },
+            disabled: cbCarregando,
+          }),
+          h(Seletor, {
+            key: "cb-limite",
+            rotulo: "limite de falhas",
+            valor: String(limiteFalhas),
+            opcoes: [{ valor: "", rotulo: "por omissão (3)" }].concat(
+              [1, 2, 3, 4, 5, 6, 8, 10, 15, 20, 30, 50].map(function (n) {
+                return { valor: String(n), rotulo: "falhar " + n + " vez" + (n === 1 ? "" : "es") };
+              })
+            ),
+            onChange: function (v) { aplicarCB("limite_falhas", v === "" ? undefined : parseInt(v, 10)); },
+            disabled: cbCarregando || !ativo,
+          }),
+          h(Seletor, {
+            key: "cb-janela",
+            rotulo: "janela (minutos)",
+            valor: String(janelaMin),
+            opcoes: [{ valor: "", rotulo: "por omissão (5)" }].concat(
+              [1, 2, 3, 4, 5, 6, 10, 15, 20, 30, 60, 120, 240, 480, 720, 1440].map(function (n) {
+                return { valor: String(n), rotulo: n >= 60 ? (n / 60) + " h" : n + " min" };
+              })
+            ),
+            onChange: function (v) { aplicarCB("janela_minutos", v === "" ? undefined : parseInt(v, 10)); },
+            disabled: cbCarregando || !ativo,
+          }),
+          h(Seletor, {
+            key: "cb-mult",
+            rotulo: "multiplicador de cooldown",
+            valor: String(multiplicador),
+            opcoes: [{ valor: "", rotulo: "por omissão (1.5x)" }].concat(
+              [1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0, 7.5, 10.0].map(function (n) {
+                return { valor: String(n), rotulo: n + "x" };
+              })
+            ),
+            onChange: function (v) { aplicarCB("multiplicador_cooldown", v === "" ? undefined : parseFloat(v)); },
+            disabled: cbCarregando || !ativo,
+          }),
+          h("div", { className: "vmm-mudo vmm-campo-ajuda" },
+            "Cooldown base: 2 min. Exemplo: 3 falhas em 5 min → 2 min × 1.5 = 3 min de espera. "
+            + "Herança chave a chave: perfil só declara o que quer mudar.")
+        );
+      })
+    );
+
+    // ---- bloco 5: superficies -------------------------------------------
+
     // "Se a superficie da sessao for cron, o turno vai para este modelo." Fica
     // aqui, e nao nos cartoes: e configuracao como as outras duas. Escreve
     // pelo endpoint `/superficies` (cada regra e um delta com rev) e nao pelo
@@ -2259,6 +2355,7 @@
       blocoComplexidade,
       blocoTarefa,
       blocoEstrategia,
+      blocoCircuitBreaker,
       blocoSuperficies,
       blocoSombra
     );
