@@ -179,6 +179,9 @@ _contadores: dict[str, int] = {}
 _maus: set[tuple[str, str, str]] = set()
 _avisados: set[tuple[str, str, str]] = set()
 _maus_expira: dict[tuple[str, str, str], float] = {}
+# Circuit breaker: rastreio de falhas com timestamps para aplicar regra
+# "X falhas em Y minutos -> cooldown * Z". Chave: (perfil, provider, modelo) -> lista de timestamps (monotonic).
+_falhas_recente: dict[tuple[str, str, str], list[float]] = {}
 _ultimo_perfil: dict[str, str] = {}
 _ultima_decisao: dict[str, dict[str, Any]] = {}
 # Decisao fixada por turno: nivel, tarefa, origem e rota do primeiro pedido.

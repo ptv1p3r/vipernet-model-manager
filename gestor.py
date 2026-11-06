@@ -123,6 +123,16 @@ TAREFA_PERSISTENTE_PADRAO: dict[str, Any] = {
 }
 TAREFA_PERSISTENTE_CHAVES = frozenset(TAREFA_PERSISTENTE_PADRAO)
 
+# Circuit breaker / failure tracking: regra "se modelo falha X vezes em Y minutos,
+# aumentar cooldown em Z%". Configuravel global e por perfil (heranca chave a chave).
+CIRCUIT_BREAKER_PADRAO: dict[str, Any] = {
+    "ativo": True,
+    "limite_falhas": 3,
+    "janela_minutos": 5,
+    "multiplicador_cooldown": 1.5,
+}
+_CHAVES_CIRCUIT_BREAKER = frozenset(CIRCUIT_BREAKER_PADRAO)
+
 ANALISE_PADRAO: dict[str, Any] = {
     "janela_mensagens": 8,
     "varredura_max_mensagens": 60,
@@ -145,6 +155,10 @@ ANALISE_PADRAO: dict[str, Any] = {
     # `TAREFA_PERSISTENTE_PADRAO`. Herda-se do global chave a chave, como a
     # estrategia: declarar so o prazo nao obriga a repetir o `activo`.
     "tarefa_persistente": dict(TAREFA_PERSISTENTE_PADRAO),
+    # Circuit breaker: regra de falhas repetidas -> cooldown progressivo.
+    # Herda-se do global chave a chave (ativo, limite_falhas, janela_minutos,
+    # multiplicador_cooldown). Ausente = herda do global.
+    "circuit_breaker": dict(CIRCUIT_BREAKER_PADRAO),
     # `classificador` e preenchido mais abaixo, a partir de
     # `analise_modelo.PADRAO`: os limites do classificador (timeout, tokens,
     # cache) tem UMA casa. Duplica-los aqui foi o que deixou a config viva com
@@ -327,7 +341,7 @@ _CHAVES_CONFIG = frozenset({"versao", "activo", "registar", "analise",
 _CHAVES_PERFIL = frozenset({"activo", "estrategia", "analise", "catalogo",
                             "tarefas", "latencia_max_ms", "rodizio"})
 _CHAVES_ANALISE = frozenset(set(ANALISE_PADRAO) | {"pesos", "aprendiz",
-                                                   "classificador"})
+                                                  "classificador", "circuit_breaker"})
 # `limiares` so tem dois limiares: sao os que `analise.nivel_de_score` le.
 LIMIARES_CHAVES = frozenset({"media", "alta"})
 
@@ -340,6 +354,7 @@ RETENCAO_PADRAO: dict[str, int] = {
     "backups_semanais": 1,
 }
 _CHAVES_RETENCAO = frozenset(RETENCAO_PADRAO)
+
 _CHAVES_TAREFA = frozenset({"termos", "prioridade"})
 _CHAVES_ENTRADA = frozenset({
     "id", "provider", "modelo", "complexidade", "niveis", "acesso",
@@ -970,6 +985,54 @@ def normalizar_sombra(valor: Any,
     return saida, erros
 
 
+def normalizar_circuit_breaker(valor: Any,
+                                prefixo: str = "circuit_breaker",
+                                erros: list[str] | None = None
+                                ) -> tuple[dict[str, Any], list[str]]:
+    """Normaliza o bloco do circuit breaker: valida chaves e limites.
+
+    Mesma regra da estrategia/retencao/sombra — so se grava o que foi declarado.
+    A ausencia da chave no ficheiro = herda do global/padrao; a presenca da
+    chave = declaracao explicita. Um valor igual ao global nao e declaracao
+    (a regra do delta na validacao do perfil trata disso).
+    """
+    if erros is None:
+        erros = []
+    if valor is None or valor == "":
+        return {}, erros
+    if not isinstance(valor, dict):
+        return {}, [f"{prefixo} tem de ser um objecto com {sorted(_CHAVES_CIRCUIT_BREAKER)}"]
+    _recusar_desconhecidas(valor, _CHAVES_CIRCUIT_BREAKER, prefixo, erros)
+    saida: dict[str, Any] = {}
+    if "ativo" in valor:
+        if isinstance(valor["ativo"], bool):
+            saida["ativo"] = bool(valor["ativo"])
+        else:
+            erros.append(f"{prefixo}.ativo tem de ser booleano")
+    if "limite_falhas" in valor:
+        if isinstance(valor["limite_falhas"], bool) or not isinstance(valor["limite_falhas"], int):
+            erros.append(f"{prefixo}.limite_falhas tem de ser inteiro")
+        elif not 1 <= valor["limite_falhas"] <= 50:
+            erros.append(f"{prefixo}.limite_falhas fora de 1..50 (veio {valor['limite_falhas']})")
+        else:
+            saida["limite_falhas"] = int(valor["limite_falhas"])
+    if "janela_minutos" in valor:
+        if isinstance(valor["janela_minutos"], bool) or not isinstance(valor["janela_minutos"], int):
+            erros.append(f"{prefixo}.janela_minutos tem de ser inteiro")
+        elif not 1 <= valor["janela_minutos"] <= 1440:
+            erros.append(f"{prefixo}.janela_minutos fora de 1..1440 (veio {valor['janela_minutos']})")
+        else:
+            saida["janela_minutos"] = int(valor["janela_minutos"])
+    if "multiplicador_cooldown" in valor:
+        if isinstance(valor["multiplicador_cooldown"], bool) or not isinstance(valor["multiplicador_cooldown"], (int, float)):
+            erros.append(f"{prefixo}.multiplicador_cooldown tem de ser numero")
+        elif not 1.0 <= float(valor["multiplicador_cooldown"]) <= 10.0:
+            erros.append(f"{prefixo}.multiplicador_cooldown fora de 1.0..10.0 (veio {valor['multiplicador_cooldown']})")
+        else:
+            saida["multiplicador_cooldown"] = float(valor["multiplicador_cooldown"])
+    return saida, erros
+
+
 def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
     """Normaliza e valida; devolve `(config, erros)`. Nunca levanta."""
     erros: list[str] = []
@@ -1053,6 +1116,11 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
                 saida["analise"]["tarefa_persistente"].update(
                     normalizar_tarefa_persistente(
                         valor, "'analise.tarefa_persistente'", erros))
+            elif chave == "circuit_breaker":
+                # Circuit breaker: valida e normaliza (so o que foi declarado).
+                limpo, erros_cb = normalizar_circuit_breaker(valor, "'analise.circuit_breaker'")
+                saida["analise"]["circuit_breaker"].update(limpo)
+                erros.extend(erros_cb)
             else:
                 saida["analise"][chave] = valor
 
@@ -1178,6 +1246,15 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
                                      if globais_tp.get(k) != v}
                     if declarados_tp:
                         panalise["tarefa_persistente"] = declarados_tp
+                elif chave == "circuit_breaker":
+                    # Circuit breaker do perfil: so o delta (chaves que diferem do global).
+                    limpo_cb = normalizar_circuit_breaker(
+                        valor, f"perfis.{nome}.analise.circuit_breaker", erros)[0]
+                    globais_cb = saida["analise"].get("circuit_breaker") or {}
+                    declarados_cb = {k: v for k, v in limpo_cb.items()
+                                     if globais_cb.get(k) != v}
+                    if declarados_cb:
+                        panalise["circuit_breaker"] = declarados_cb
                 else:
                     # Mesma regra para as chaves simples: um valor igual ao
                     # global nao e uma declaracao, e uma copia que fixa o perfil
@@ -1921,6 +1998,11 @@ def perfil_config(cfg: dict[str, Any], perfil: str) -> dict[str, Any] | None:
                     base = dict(analise.get("tarefa_persistente") or {})
                     base.update(valor)
                     analise["tarefa_persistente"] = base
+                elif chave == "circuit_breaker" and isinstance(valor, dict):
+                    # Circuit breaker: heranca chave a chave (mesma regra da tarefa_persistente).
+                    base = dict(analise.get("circuit_breaker") or {})
+                    base.update(valor)
+                    analise["circuit_breaker"] = base
                 else:
                     analise[chave] = copy.deepcopy(valor)
         saida["analise"] = analise
