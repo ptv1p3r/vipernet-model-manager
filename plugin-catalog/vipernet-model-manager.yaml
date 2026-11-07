@@ -43,7 +43,7 @@ repo: https://github.com/ptv1p3r/vipernet-model-manager
 
 # Commit EXATO que o revisor le, 40 hex. Release merge de `dev` em `main`
 # (2026-11-07), versao 3.47.0, validado com o comando do CI.
-sha: "97607687fd646ceacd194ba79923feee9b00373d"
+sha: "72293cc276c2a0ee9d33d04e92d3cd8e4142e757"
 
 description: >-
   Picks the provider and model for each turn from the profile's own catalog,
