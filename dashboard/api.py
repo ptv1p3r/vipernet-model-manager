@@ -33,6 +33,10 @@ if str(_RAIZ_PLUGIN) not in sys.path:
 
 import gestor  # noqa: E402  (depende do sys.path acima)
 import sombra as _sombra  # noqa: E402  (idem: o modulo vive na raiz do plugin)
+import i18n as _i18n  # noqa: E402  (idem)
+
+# Alias curto: as mensagens de recusa sao todas `t(...)`.
+t = _i18n.t
 
 router = APIRouter()
 
@@ -470,7 +474,7 @@ def _corpo_objeto(corpo: Any, *, obrigatorio: bool = True) -> Optional[dict[str,
             if obrigatorio:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"corpo nao e um objecto JSON (recebido bytes, nao e utf-8)",
+                    detail=t("corpo nao e um objecto JSON (recebido bytes, nao e utf-8)"),
                 )
             return None
     if isinstance(corpo, str):
@@ -485,7 +489,7 @@ def _corpo_objeto(corpo: Any, *, obrigatorio: bool = True) -> Optional[dict[str,
         if obrigatorio:
             raise HTTPException(
                 status_code=400,
-                detail=f"corpo nao e um objecto JSON (recebido {corpo[:60]!r})",
+                detail=t("corpo nao e um objecto JSON (recebido {valor!r})", valor=corpo[:60]),
             )
         return None
     if isinstance(corpo, list) and corpo:
@@ -494,7 +498,7 @@ def _corpo_objeto(corpo: Any, *, obrigatorio: bool = True) -> Optional[dict[str,
         return None
     raise HTTPException(
         status_code=400,
-        detail=f"corpo nao e um objecto JSON (recebido o tipo {type(corpo).__name__})",
+        detail=t("corpo nao e um objecto JSON (recebido o tipo {tipo})", tipo=type(corpo).__name__),
     )
 
 
@@ -829,11 +833,11 @@ def toggle(corpo: Any = Body(default=None)) -> JSONResponse:
     corpo = _corpo_objeto(corpo)
     activo = corpo.get("activo")
     if not isinstance(activo, bool):
-        raise HTTPException(status_code=400, detail="'activo' tem de ser booleano")
+        raise HTTPException(status_code=400, detail=t("'activo' tem de ser booleano"))
     ambito = (corpo.get("ambito") or "global").strip().lower()
     nome = (corpo.get("perfil") or "").strip()
     if ambito not in ("global", "perfil"):
-        raise HTTPException(status_code=400, detail="'ambito' tem de ser 'global' ou 'perfil'")
+        raise HTTPException(status_code=400, detail=t("'ambito' tem de ser 'global' ou 'perfil'"))
 
     def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
         """Muda so o interruptor — o resto do documento vem fresco do disco."""
@@ -842,7 +846,7 @@ def toggle(corpo: Any = Body(default=None)) -> JSONResponse:
             return cfg
         perfis = cfg.get("perfis") or {}
         if nome not in perfis:
-            raise HTTPException(status_code=404, detail=f"perfil {nome!r} nao existe na configuracao")
+            raise HTTPException(status_code=404, detail=t("perfil {nome!r} nao existe na configuracao", nome=nome))
         perfis[nome]["activo"] = activo
         return cfg
 
@@ -854,7 +858,7 @@ def toggle(corpo: Any = Body(default=None)) -> JSONResponse:
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001 - 500 com a razao real, nao um OK mentiroso
-        raise HTTPException(status_code=500, detail=f"nao gravou: {type(exc).__name__}: {exc}") from exc
+        raise HTTPException(status_code=500, detail=t("nao gravou: {erro}", erro=f"{type(exc).__name__}: {exc}")) from exc
 
     # Releitura independente: o estado devolvido e o que ficou no disco, nao o que se quis escrever.
     confirmado = _cfg()
@@ -865,7 +869,7 @@ def toggle(corpo: Any = Body(default=None)) -> JSONResponse:
     if lido != activo:
         raise HTTPException(
             status_code=500,
-            detail=f"gravacao nao confirmada: pedido {activo}, lido {lido}",
+            detail=t("gravacao nao confirmada: pedido {pedido}, lido {lido}", pedido=activo, lido=lido),
         )
     return JSONResponse({"ok": True, "ambito": ambito, "alvo": alvo, "activo": lido})
 
@@ -883,7 +887,7 @@ def idioma_post(corpo: Any = Body(default=None)) -> JSONResponse:
     codigo, erros = gestor.normalizar_idioma(corpo.get("idioma"))
     if erros or not codigo:
         raise HTTPException(status_code=400,
-                            detail="; ".join(erros) or "'idioma' ausente")
+                            detail="; ".join(erros) or t("'idioma' ausente"))
 
     def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
         cfg["idioma"] = codigo
@@ -903,13 +907,13 @@ def idioma_post(corpo: Any = Body(default=None)) -> JSONResponse:
         raise
     except Exception as exc:  # noqa: BLE001 - 500 com a razao real, nao um OK mentiroso
         raise HTTPException(status_code=500,
-                            detail=f"nao gravou: {type(exc).__name__}: {exc}") from exc
+                            detail=t("nao gravou: {erro}", erro=f"{type(exc).__name__}: {exc}")) from exc
 
     # Releitura independente: vale o que ficou no disco, nao o que se pediu.
     lido = gestor.idioma_efectivo(_cfg())
     if lido != codigo:
         raise HTTPException(status_code=500,
-                            detail=f"gravacao nao confirmada: pedido {codigo}, lido {lido}")
+                            detail=t("gravacao nao confirmada: pedido {pedido}, lido {lido}", pedido=codigo, lido=lido))
     return JSONResponse({"ok": True, "idioma": lido})
 
 
@@ -932,10 +936,10 @@ def estrategia_post(corpo: Any = Body(default=None)) -> JSONResponse:
     rev = str(corpo.get("rev") or "")
     campos = {k: corpo[k] for k in ("modo", "por") if k in corpo}
     if not herdar and not campos:
-        raise HTTPException(status_code=400, detail="indique 'modo' e/ou 'por'")
+        raise HTTPException(status_code=400, detail=t("indique 'modo' e/ou 'por'"))
     nome = str(corpo.get("perfil") or "").strip()
     if ambito not in ("global", "perfil"):
-        raise HTTPException(status_code=400, detail="'ambito' tem de ser 'global' ou 'perfil'")
+        raise HTTPException(status_code=400, detail=t("'ambito' tem de ser 'global' ou 'perfil'"))
 
     def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
         """Aplica o delta da estrategia sobre a config que esta no disco agora."""
@@ -951,7 +955,7 @@ def estrategia_post(corpo: Any = Body(default=None)) -> JSONResponse:
         perfis = cfg.get("perfis") or {}
         if nome not in perfis:
             raise HTTPException(status_code=404,
-                                detail=f"perfil {nome!r} nao existe na configuracao")
+                                detail=t("perfil {nome!r} nao existe na configuracao", nome=nome))
         perfil = perfis[nome]
         if herdar:
             perfil.pop("estrategia", None)
@@ -973,14 +977,14 @@ def estrategia_post(corpo: Any = Body(default=None)) -> JSONResponse:
     except gestor.Conflito:
         raise HTTPException(
             status_code=409,
-            detail="a configuração mudou desde que este painel leu o estado",
+            detail=t("a configuração mudou desde que este painel leu o estado"),
         )
     except HTTPException:
         raise
     except ValueError as exc:
         # Erro de validacao (valor fora da lista, config inconsistente) e 400
         # com a razao, nao 500: o pedido e que estava errado, o servidor nao.
-        raise HTTPException(status_code=400, detail=f"nao gravou: {exc}") from exc
+        raise HTTPException(status_code=400, detail=t("nao gravou: {erro}", erro=exc)) from exc
 
     # Releitura independente: o que se devolve e o que ficou no disco.
     confirmado = _cfg()
@@ -1019,16 +1023,16 @@ def superficies_post(corpo: Any = Body(default=None)) -> JSONResponse:
     superficie = str(corpo.get("superficie") or "").strip().lower()
     alvo = str(corpo.get("alvo") or "").strip()
     if not superficie:
-        raise HTTPException(status_code=400, detail="indique 'superficie'")
+        raise HTTPException(status_code=400, detail=t("indique 'superficie'"))
     if ambito not in ("global", "perfil"):
-        raise HTTPException(status_code=400, detail="'ambito' tem de ser 'global' ou 'perfil'")
+        raise HTTPException(status_code=400, detail=t("'ambito' tem de ser 'global' ou 'perfil'"))
 
     cfg = _cfg()
     rev = str(corpo.get("rev") or "")
     if rev and _conflito(rev, _rev(cfg)):
         raise HTTPException(
             status_code=409,
-            detail="a configuração mudou desde que este painel leu o estado",
+            detail=t("a configuração mudou desde que este painel leu o estado"),
         )
 
     if alvo == "":
@@ -1045,8 +1049,7 @@ def superficies_post(corpo: Any = Body(default=None)) -> JSONResponse:
     else:
         raise HTTPException(
             status_code=400,
-            detail="'alvo' tem de ser entrada:<id>, nivel:<nivel>, provider/modelo, "
-                   "'nunca' ou vazio (apagar)",
+            detail=t("'alvo' tem de ser entrada:<id>, nivel:<nivel>, provider/modelo, 'nunca' ou vazio (apagar)"),
         )
 
     nome = "global" if ambito == "global" else str(corpo.get("perfil") or "").strip()
@@ -1059,7 +1062,7 @@ def superficies_post(corpo: Any = Body(default=None)) -> JSONResponse:
             perfis = cfg.get("perfis") or {}
             if nome not in perfis:
                 raise HTTPException(status_code=404,
-                                    detail=f"perfil {nome!r} nao existe na configuracao")
+                                    detail=t("perfil {nome!r} nao existe na configuracao", nome=nome))
             destino = (perfis[nome].setdefault("analise", {})
                        .setdefault("superficies", {}))
         if regra is None:
@@ -1073,12 +1076,12 @@ def superficies_post(corpo: Any = Body(default=None)) -> JSONResponse:
     except gestor.Conflito:
         raise HTTPException(
             status_code=409,
-            detail="a configuração mudou desde que este painel leu o estado",
+            detail=t("a configuração mudou desde que este painel leu o estado"),
         )
     except HTTPException:
         raise
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"nao gravou: {exc}") from exc
+        raise HTTPException(status_code=400, detail=t("nao gravou: {erro}", erro=exc)) from exc
 
     # Releitura independente: devolve-se o que ficou no disco, nao o que se quis.
     # Le o bloco **efectivo** (global + delta do perfil), nao `regra_de_superficie`:
@@ -1114,7 +1117,7 @@ def sombra_post(corpo: Any = Body(default=None)) -> JSONResponse:
     tem_activo = "activo" in corpo
     tem_ttl = "vida_ttl_h" in corpo
     if not tem_activo and not tem_ttl:
-        raise HTTPException(status_code=400, detail="indique 'activo' e/ou 'vida_ttl_h'")
+        raise HTTPException(status_code=400, detail=t("indique 'activo' e/ou 'vida_ttl_h'"))
 
     def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
         bloco = cfg.get("sombra")
@@ -1131,12 +1134,12 @@ def sombra_post(corpo: Any = Body(default=None)) -> JSONResponse:
     except gestor.Conflito:
         raise HTTPException(
             status_code=409,
-            detail="a configuração mudou desde que este painel leu o estado",
+            detail=t("a configuração mudou desde que este painel leu o estado"),
         )
     except HTTPException:
         raise
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"nao gravou: {exc}") from exc
+        raise HTTPException(status_code=400, detail=t("nao gravou: {erro}", erro=exc)) from exc
 
     confirmado = _cfg()
     return JSONResponse({"ok": True, "sombra": _sombra_estado(confirmado),
@@ -1192,8 +1195,7 @@ def sombra_bracos_post(corpo: Any = Body(default=None)) -> JSONResponse:
     if not _verdadeiro(corpo.get("confirmar_reabertura")):
         raise HTTPException(
             status_code=409,
-            detail=("reabrir o ensaio invalida a amostra ja recolhida; "
-                    "reenvie com 'confirmar_reabertura: true'"),
+            detail=t("reabrir o ensaio invalida a amostra ja recolhida; reenvie com 'confirmar_reabertura: true'"),
         )
 
     actual, caminho_actual = _pre_registo_actual()
@@ -1204,10 +1206,10 @@ def sombra_bracos_post(corpo: Any = Body(default=None)) -> JSONResponse:
     braco_b = str(corpo.get("braco_b") or "").strip()
     if not braco_a or not braco_b:
         raise HTTPException(status_code=400,
-                            detail="indique 'braco_a' (pago) e 'braco_b' (gratuito)")
+                            detail=t("indique 'braco_a' (pago) e 'braco_b' (gratuito)"))
     if braco_a == braco_b:
         raise HTTPException(status_code=400,
-                            detail="os dois bracos nao podem ser o mesmo modelo")
+                            detail=t("os dois bracos nao podem ser o mesmo modelo"))
 
     # Um slug so nao identifica a rota. O provider entra no selo: ou vem dito,
     # ou sai do catalogo por consulta exacta (zero ou duas entradas recusam em
@@ -1235,29 +1237,28 @@ def sombra_bracos_post(corpo: Any = Body(default=None)) -> JSONResponse:
             if declarado not in disponiveis:
                 raise HTTPException(
                     status_code=400,
-                    detail=(f"'{campo_provider}' = '{declarado}' nao serve "
-                            f"nenhuma entrada do catalogo; disponiveis: "
-                            f"{disponiveis or ['(nenhum)']}"))
+                    detail=t("'{campo_provider}' = '{declarado}' nao serve nenhuma entrada do catalogo; disponiveis: {disponiveis}",
+                                campo_provider=campo_provider, declarado=declarado,
+                                disponiveis=disponiveis or ['(nenhum)']))
             if declarado not in candidatos:
                 raise HTTPException(
                     status_code=400,
-                    detail=(f"'{campo_provider}': o par {declarado}/"
-                            f"{modelo} nao existe no catalogo"
-                            + (f" (esse modelo esta em {candidatos})"
-                               if candidatos else "")))
+                    detail=t("'{campo_provider}': o par {declarado}/{modelo} nao existe no catalogo{sufixo}",
+                                campo_provider=campo_provider, declarado=declarado, modelo=modelo,
+                                sufixo=(f" (esse modelo esta em {candidatos})" if candidatos else "")))
             return declarado, "declarado"
         if len(candidatos) == 1:
             return candidatos[0], "catalogo"
         if not candidatos:
             raise HTTPException(
                 status_code=400,
-                detail=(f"'{campo_modelo}': o modelo '{modelo}' nao esta em "
-                        "nenhum catalogo; sem entrada o middleware nao o pode "
-                        "servir"))
+                detail=t("'{campo_modelo}': o modelo '{modelo}' nao esta em nenhum catalogo; sem entrada o middleware nao o pode servir",
+                        campo_modelo=campo_modelo, modelo=modelo))
         raise HTTPException(
             status_code=400,
-            detail=(f"'{campo_modelo}': '{modelo}' existe em {candidatos}; "
-                    f"indique '{campo_provider}' para desempatar"))
+            detail=t("'{campo_modelo}': '{modelo}' existe em {candidatos}; indique '{campo_provider}' para desempatar",
+                    campo_modelo=campo_modelo, modelo=modelo, candidatos=candidatos,
+                    campo_provider=campo_provider))
 
     provider_a, origem_a = _provider("braco_a", "braco_a_provider", braco_a)
     provider_b, origem_b = _provider("braco_b", "braco_b_provider", braco_b)
@@ -1268,20 +1269,20 @@ def sombra_bracos_post(corpo: Any = Body(default=None)) -> JSONResponse:
             return float(valor)
         except (TypeError, ValueError):
             raise HTTPException(status_code=400,
-                                detail=f"'{campo}' tem de ser um numero") from None
+                                detail=t("'{campo}' tem de ser um numero", campo=campo)) from None
 
     p0 = num("p0", actual.get("p0", 0.0463))
     margem = num("margem", actual.get("margem_nao_inferioridade", 0.01))
     deff = num("design_effect", actual.get("design_effect", 3.08))
     por_dia = num("chamadas_por_dia", actual.get("chamadas_por_dia", 16194.0))
     if not (0.0 <= p0 <= 1.0):
-        raise HTTPException(status_code=400, detail="'p0' tem de estar em [0, 1]")
+        raise HTTPException(status_code=400, detail=t("'p0' tem de estar em [0, 1]"))
     if not (0.0 < margem <= 1.0):
         raise HTTPException(status_code=400,
-                            detail="'margem' tem de estar em ]0, 1]")
+                            detail=t("'margem' tem de estar em ]0, 1]"))
     if deff <= 0:
         raise HTTPException(status_code=400,
-                            detail="'design_effect' tem de ser positivo")
+                            detail=t("'design_effect' tem de ser positivo"))
 
     registo = _sombra.desenhar(
         caro=braco_a,
@@ -1300,7 +1301,7 @@ def sombra_bracos_post(corpo: Any = Body(default=None)) -> JSONResponse:
     )
     if not _sombra.verificar(registo):
         raise HTTPException(status_code=500,
-                            detail="o pre-registo nao ficou selado; nada gravado")
+                            detail=t("o pre-registo nao ficou selado; nada gravado"))
 
     destino = _dir_sombra() / f"{_proximo_nome_pre_registo()}.json"
     escrito = _sombra.escrever(registo, destino)
@@ -1353,14 +1354,14 @@ def config_post(request: Request, corpo: Any = Body(default=None)) -> JSONRespon
     """
     corpo = _corpo_objeto(corpo)
     if not corpo:
-        raise HTTPException(status_code=400, detail="JSON inválido: não é um objecto")
+        raise HTTPException(status_code=400, detail=t("JSON inválido: não é um objecto"))
     envelope = isinstance(corpo.get("config"), dict)
     novo = corpo["config"] if envelope else corpo
     rev_cliente = str(corpo.get("rev") or "") if envelope else ""
     if not (novo.get("perfis") or {}):
         raise HTTPException(
             status_code=400,
-            detail="config sem nenhum perfil: recusado (o plugin ficaria sem rotas)",
+            detail=t("config sem nenhum perfil: recusado (o plugin ficaria sem rotas)"),
         )
     if envelope and not rev_cliente:
         # Documento inteiro sem versao de origem e uma escrita as cegas: reporia
@@ -1368,8 +1369,7 @@ def config_post(request: Request, corpo: Any = Body(default=None)) -> JSONRespon
         # sempre o `rev` que leu; quem escreve por API tem de o mandar tambem.
         raise HTTPException(
             status_code=400,
-            detail="falta 'rev': substituir a config inteira exige a versão que foi lida "
-                   "(POST /config devolve-a em 'rev')",
+            detail=t("falta 'rev': substituir a config inteira exige a versão que foi lida (POST /config devolve-a em 'rev')"),
         )
     actual, _ = gestor.carregar()
     rev_actual = _rev(actual)
@@ -1463,18 +1463,18 @@ async def circuit_breaker_post(request: Request, corpo: Any = Body(default=None)
     """
     corpo = _corpo_objeto(corpo)
     if not corpo:
-        raise HTTPException(status_code=400, detail="JSON invalido: nao e um objecto")
+        raise HTTPException(status_code=400, detail=t("JSON invalido: nao e um objecto"))
     
     perfil = str(corpo.get("perfil") or "").strip()
     cb_novo = corpo.get("circuit_breaker")
     if not isinstance(cb_novo, dict):
-        raise HTTPException(status_code=400, detail="campo 'circuit_breaker' deve ser um objecto")
+        raise HTTPException(status_code=400, detail=t("campo 'circuit_breaker' deve ser um objecto"))
     
     # Valida chaves
     chaves_validas = {"ativo", "limite_falhas", "janela_minutos", "multiplicador_cooldown"}
     chaves_invalidas = set(cb_novo.keys()) - chaves_validas
     if chaves_invalidas:
-        raise HTTPException(status_code=400, detail=f"chaves invalidas em circuit_breaker: {sorted(chaves_invalidas)}")
+        raise HTTPException(status_code=400, detail=t("chaves invalidas em circuit_breaker: {chaves}", chaves=sorted(chaves_invalidas)))
     
     # Carrega config atual
     cfg, _ = gestor.carregar()
@@ -1484,7 +1484,7 @@ async def circuit_breaker_post(request: Request, corpo: Any = Body(default=None)
         # Edita perfil
         perfis = cfg.get("perfis") or {}
         if perfil not in perfis:
-            raise HTTPException(status_code=404, detail=f"perfil '{perfil}' nao existe")
+            raise HTTPException(status_code=404, detail=t("perfil {nome!r} nao existe", nome=perfil))
         pcfg = perfis[perfil]
         analise = pcfg.get("analise")
         if not isinstance(analise, dict):
@@ -1616,7 +1616,7 @@ def _perfil_da_config(cfg: dict[str, Any], perfil: str) -> tuple[dict[str, Any],
     if not isinstance(dados, dict):
         conhecidos = ", ".join(sorted((cfg.get("perfis") or {}).keys())) or "nenhum"
         raise HTTPException(status_code=404,
-                            detail=f"perfil {perfil!r} nao existe na configuracao (tem: {conhecidos})")
+                            detail=t("perfil {nome!r} nao existe na configuracao (tem: {conhecidos})", nome=perfil, conhecidos=conhecidos))
     catalogo = dados.get("catalogo")
     return dados, (catalogo if isinstance(catalogo, list) else [])
 
@@ -1651,7 +1651,7 @@ def modelo_get(perfil: str = Query(...), id: Optional[str] = Query(None)) -> dic
         indice = _entrada_por_id(catalogo, id)
         if indice is None:
             raise HTTPException(status_code=404,
-                                detail=f"modelo {id!r} nao existe no catalogo de {perfil!r}")
+                                detail=t("modelo {id!r} nao existe no catalogo de {perfil!r}", id=id, perfil=perfil))
         return {"perfil": perfil, "id": id, "novo": False,
                 "entrada": catalogo[indice], "opcoes": opcoes, "rev": _rev(cfg)}
 
@@ -1676,15 +1676,15 @@ def modelo_post(corpo: Any = Body(default=None)) -> JSONResponse:
     perfil = str(corpo.get("perfil") or "").strip()
     entrada = corpo.get("entrada")
     if not perfil:
-        raise HTTPException(status_code=400, detail="falta 'perfil'")
+        raise HTTPException(status_code=400, detail=t("falta 'perfil'"))
     if not isinstance(entrada, dict):
-        raise HTTPException(status_code=400, detail="'entrada' tem de ser um objecto")
+        raise HTTPException(status_code=400, detail=t("'entrada' tem de ser um objecto"))
     apenas_validar = bool(corpo.get("validar"))
     id_original = str(corpo.get("id") or "").strip() or None
     novo_id = str(entrada.get("id") or "").strip()
     if not novo_id:
         raise HTTPException(status_code=400,
-                            detail="o modelo precisa de um id (e por ele que as superficies e as tarefas lhe chamam)")
+                            detail=t("o modelo precisa de um id (e por ele que as superficies e as tarefas lhe chamam)"))
 
     rev = str(corpo.get("rev") or "")
 
@@ -1699,11 +1699,11 @@ def modelo_post(corpo: Any = Body(default=None)) -> JSONResponse:
         posicao = _entrada_por_id(catalogo, id_original) if id_original else None
         if id_original and posicao is None:
             raise HTTPException(status_code=404,
-                                detail=f"modelo {id_original!r} ja nao existe no catalogo de {perfil!r}")
+                                detail=t("modelo {id!r} ja nao existe no catalogo de {perfil!r}", id=id_original, perfil=perfil))
         colisao = _entrada_por_id(catalogo, novo_id)
         if colisao is not None and colisao != posicao:
             raise HTTPException(status_code=400,
-                                detail=f"ja existe um modelo com o id {novo_id!r} no perfil {perfil!r}")
+                                detail=t("ja existe um modelo com o id {id!r} no perfil {perfil!r}", id=novo_id, perfil=perfil))
         nova_lista = list(catalogo)
         limpa = dict(entrada)
         if posicao is None:
@@ -1752,7 +1752,7 @@ def modelo_post(corpo: Any = Body(default=None)) -> JSONResponse:
     _, catalogo_lido = _perfil_da_config(confirmado, perfil)
     indice = _entrada_por_id(catalogo_lido, novo_id)
     if indice is None:  # pragma: no cover - so se o `gravar` mentir
-        raise HTTPException(status_code=500, detail="gravou mas a rota não aparece na releitura")
+        raise HTTPException(status_code=500, detail=t("gravou mas a rota não aparece na releitura"))
     return JSONResponse(content={
         "ok": True, "perfil": perfil, "id": novo_id,
         "entrada": catalogo_lido[indice], "rev": _rev(confirmado),
@@ -1836,7 +1836,7 @@ def perfil_get(nome: str = Query(...)) -> dict[str, Any]:
     cfg = _cfg()
     perfis = cfg.get("perfis") or {}
     if nome not in perfis:
-        raise HTTPException(status_code=404, detail=f"perfil {nome!r} nao existe")
+        raise HTTPException(status_code=404, detail=t("perfil {nome!r} nao existe", nome=nome))
     cru = perfis.get(nome) or {}
     _analise_cru = cru.get("analise")
     analise: dict[str, Any] = _analise_cru if isinstance(_analise_cru, dict) else {}

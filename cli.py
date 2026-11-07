@@ -27,6 +27,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Traducao do i18n na mesma raiz do plugin. Import directo (o `cli.py` corre com
+# a raiz do plugin no `sys.path`, tal como o `gestor`), sem caminho magico.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import i18n as _i18n  # noqa: E402
+
 _AQUI = Path(__file__).resolve().parent
 
 
@@ -1273,7 +1278,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_status)
 
     for nome in ("on", "off"):
-        s = sub.add_parser(nome, help=f"{nome} o plugin")
+        s = sub.add_parser(nome, help=_i18n.t("{nome} o plugin", nome=nome))
         s.add_argument("--perfil")
         s.set_defaults(func=cmd_on_off)
 
@@ -1449,7 +1454,29 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--caminho", help="ficheiro de config alternativo (testes)")
     s.set_defaults(func=cmd_auditoria)
 
+    _traduzir_ajuda(p)
     return p
+
+
+def _traduzir_ajuda(parser: argparse.ArgumentParser) -> None:
+    """Traduz a ajuda do argparse para a lingua em vigor, numa passagem.
+
+    A ajuda e texto auto-contido: nao se cruza com as mensagens do validador nem
+    com valores da config, por isso e a parte do CLI que se traduz sem deixar
+    metade de uma frase numa lingua. Roda na construcao do parser, uma vez.
+    """
+    for acao in parser._actions:
+        if isinstance(acao, argparse._SubParsersAction):
+            for escolha in acao._choices_actions:
+                ajuda = getattr(escolha, "help", None)
+                if ajuda:
+                    escolha.help = _i18n.t(str(ajuda))
+            for sub in acao.choices.values():
+                _traduzir_ajuda(sub)
+        else:
+            ajuda = getattr(acao, "help", None)
+            if ajuda:
+                acao.help = _i18n.t(str(ajuda))
 
 
 def main(argv: list[str] | None = None) -> int:
