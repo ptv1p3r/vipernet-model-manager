@@ -360,7 +360,7 @@ def main() -> int:
     check("painel: mensagem com contagens medidas",
           "Validado com sucesso — " in js and "rota(s)" in js and "0 erros" in js)
     check("painel: validar com erros nao deixa aviso verde",
-          "setValidacaoOk(null);\n              setErro(\"Configuração inválida" in js)
+          "setValidacaoOk(null);\n              setErro(T(\"Configuração inválida: \")" in js)
     # Na pagina exclusiva o verde vive no botao principal: validar confirma onde
     # se grava, nao num botao secundario que some ao mudar de pagina.
     check("painel: botao principal confirma a validacao",

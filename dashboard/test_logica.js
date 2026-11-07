@@ -67,6 +67,11 @@ function carregar() {
   vm.createContext(contexto);
   vm.runInContext(codigo, contexto, { filename: "index.js" });
   ferramentas.__registos = registos;
+  // Estes testes verificam o texto em portugues, que e a lingua de origem do
+  // painel (o dicionario tem PT como chave). O padrao da instalacao e ingles,
+  // por isso a lingua e fixada aqui; o ingles testa-se a parte, no bloco de
+  // i18n abaixo, com o dicionario a ser virado de proposito.
+  ferramentas.idioma.setIdioma("pt");
   return ferramentas;
 }
 
@@ -973,17 +978,30 @@ check("render: o painel principal nao tem um unico controlo de configuracao",
           && corpo.indexOf("<select") === -1;
       })());
 
-check("render: o editor tem os cinco blocos com titulo proprio",
+check("render: o editor tem os seis blocos com titulo proprio",
       (function () {
-        const titulos = (srcPainel.match(/tituloBloco\("/g) || []).length;
-        return titulos === 5
-          && srcPainel.indexOf('tituloBloco("Complexidade"') !== -1
-          && srcPainel.indexOf('tituloBloco("Tarefa persistente"') !== -1
-          && srcPainel.indexOf('tituloBloco("Estratégia"') !== -1
-          && srcPainel.indexOf('tituloBloco("Superfícies"') !== -1
+        // O titulo pode chegar ao `tituloBloco` em portugues (lingua de origem)
+        // ou ja passado por `T(...)`, que e a forma que o painel usa para
+        // traduzir. Aceitam-se as duas: o que se prova e que o bloco existe e
+        // que o titulo e o certo, nao a forma sintactica da chamada.
+        const comTitulo = function (texto) {
+          return srcPainel.indexOf('tituloBloco("' + texto + '"') !== -1
+            || srcPainel.indexOf('tituloBloco(T("' + texto + '")') !== -1;
+        };
+        const titulos = (srcPainel.match(/tituloBloco\("/g) || []).length
+          + (srcPainel.match(/tituloBloco\(T\("/g) || []).length;
+        return titulos === 6
+          && comTitulo("Complexidade")
+          && comTitulo("Tarefa persistente")
+          && comTitulo("Estratégia")
+          // O circuit breaker e configuracao global e por perfil desde que a
+          // regra "X falhas em Y minutos -> cooldown +Z%" entrou: o bloco tem de
+          // estar no formulario, nao so no JSON.
+          && comTitulo("Circuit Breaker")
+          && comTitulo("Superfícies")
           // O ensaio A/B e configuracao como as outras: os modelos dos bracos
           // estavam so no pre-registo e nao apareciam em nenhum formulario.
-          && srcPainel.indexOf('tituloBloco("Ensaio A/B em sombra"') !== -1;
+          && comTitulo("Ensaio A/B em sombra");
       })());
 
 check("render: com JSON invalido a seccao avisa em vez de desaparecer",
@@ -1849,6 +1867,112 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
         /className: "vmm-pagina" \},\s*\n\s*h\(AvisoConfig/.test(srcPainel));
   check("aviso de config: montado na pagina de configuracao",
         /"vmm-pagina vmm-pagina-config" \},\s*\n\s*h\(AvisoConfig/.test(srcPainel));
+})();
+
+// ── i18n: ingles (padrao) e portugues de Portugal ──────────────────────────
+// O que se prova aqui e o que um teste de ecra nao prova de forma estavel:
+// que o dicionario nao tem chaves vazias, que um texto desconhecido cai no PT
+// em vez de desaparecer, e que o wrapper `h` traduz texto e titulos mas NAO
+// toca em `className` nem em `value` — uma traducao que mexesse numa classe
+// partia o CSS e uma que mexesse num `value` partia um select.
+(function () {
+  const I = T.idioma;
+
+  check("i18n: as duas linguas sao en e pt", I.IDIOMAS.join(",") === "en,pt");
+  check("i18n: normaliza formas regionais",
+        I.normalizarIdioma("pt-PT") === "pt"
+        && I.normalizarIdioma("PT_br") === "pt"
+        && I.normalizarIdioma("en-US") === "en");
+  check("i18n: codigo desconhecido cai no padrao (ingles)",
+        I.normalizarIdioma("fr") === "en"
+        && I.normalizarIdioma("") === "en"
+        && I.normalizarIdioma(null) === "en");
+
+  const chaves = Object.keys(I.PT_EN);
+  check("i18n: o dicionario tem as 402 chaves medidas",
+        chaves.length === 402, "tem " + chaves.length);
+  check("i18n: nenhuma traducao vazia",
+        chaves.every(function (k) { return String(I.PT_EN[k]).trim() !== ""; }));
+  // Nomes proprios e termos tecnicos ficam iguais nas duas linguas — o que nao
+  // pode haver e prosa portuguesa a passar por traducao.
+  const INTENCIONAIS = ["Model Manager", "Circuit Breaker"];
+  check("i18n: nenhuma traducao igual a chave com maiuscula inicial",
+        chaves.filter(function (k) {
+          const v = I.PT_EN[k];
+          return v === k && /^[A-ZÀ-Ú]/.test(k) && k.length > 6
+            && INTENCIONAIS.indexOf(k) === -1;
+        }).length === 0);
+  check("i18n: as chaves de interface principais estao traduzidas",
+        I.PT_EN["Gravar"] === "Save"
+        && I.PT_EN["Cancelar"] === "Cancel"
+        && I.PT_EN["Classificador"] === "Classifier"
+        && I.PT_EN["Estratégia"] === "Strategy"
+        && I.PT_EN["Circuit Breaker"] === "Circuit Breaker"
+        && I.PT_EN["Idioma"] === "Language");
+
+  // Em portugues a funcao devolve o texto intacto: PT e a lingua de origem.
+  I.setIdioma("pt");
+  check("i18n: em pt o texto nao e tocado",
+        I.t("Gravar") === "Gravar" && I.t("Cancelar") === "Cancelar");
+  check("i18n: em en o texto e traduzido",
+        I.setIdioma("en") === true && I.t("Gravar") === "Save");
+  check("i18n: texto fora do dicionario cai no original",
+        I.t("texto que nao existe no dicionario") === "texto que nao existe no dicionario");
+
+  // Tempo decorrido: a ordem das palavras muda com a lingua.
+  check("i18n: tempo decorrido com a ordem de cada lingua",
+        I.tQuanto(5, "min") === " 5 min ago"
+        && I.tHa(12) === "12 min ago"
+        && I.tInstantes() === "moments ago");
+  I.setIdioma("pt");
+  check("i18n: tempo decorrido em pt volta a forma original",
+        I.tQuanto(5, "min") === " há 5 min"
+        && I.tHa(12) === "há 12 min"
+        && I.tInstantes() === "instantes");
+  check("i18n: datas em pt usam pt-PT e em en usam en-GB",
+        I.localeHora() === "pt-PT");
+  I.setIdioma("en");
+  check("i18n: datas em en mantem dia/mes (en-GB, nao en-US)",
+        I.localeHora() === "en-GB");
+
+  // O wrapper: traduz o que e texto, nao toca no que e logica.
+  const arvore = I.h("div", { className: "vmm-opcao-on", title: "Gravar" }, "Gravar");
+  check("i18n: o wrapper traduz o filho de texto", arvore.filhos[0] === "Save");
+  check("i18n: o wrapper traduz o titulo", arvore.props.title === "Save");
+  check("i18n: o wrapper NAO toca no className",
+        arvore.props.className === "vmm-opcao-on");
+  const select = I.h("select", { value: "en", className: "vmm-select" },
+    I.h("option", { value: "en" }, "English"));
+  check("i18n: o wrapper NAO toca no value de um select",
+        select.props.value === "en");
+
+  // Uma string que e chave do dicionario mas nao e texto visivel (por exemplo
+  // um identificador igual a uma palavra traduzida) so muda quando e filho de
+  // texto — e ai e mesmo texto.
+  check("i18n: um filho que nao e string passa intacto",
+        I.h("div", null, 42, null).filhos[0] === 42);
+
+  // O seletor: duas opcoes, valor corrente, rotulo traduzido.
+  const sel = I.SeletorIdioma({ idioma: "pt", onMudar: function () {} });
+  const campo = sel.filhos[1];
+  // O stub de `h` recebe o array de opcoes como um so filho: `filhos[0]` e a
+  // lista, nao a primeira opcao.
+  const opcoes = campo.filhos[0];
+  check("i18n: o seletor mostra as duas linguas",
+        Array.isArray(opcoes) && opcoes.length === 2
+        && opcoes[0].props.value === "en"
+        && opcoes[1].props.value === "pt");
+  check("i18n: o seletor mostra a lingua em vigor",
+        campo.props.value === "pt");
+  check("i18n: o seletor tem rotulo traduzido",
+        sel.filhos[0].filhos[0] === "Language"
+        && sel.props.title === "Change the panel language");
+  check("i18n: o seletor desliga enquanto grava",
+        I.SeletorIdioma({ idioma: "en", ocupado: true }).filhos[1].props.disabled === true);
+
+  // Volta ao portugues: o resto do teste (e o resto dos ficheiros de teste)
+  // verifica texto em portugues.
+  I.setIdioma("pt");
 })();
 
 console.log("");

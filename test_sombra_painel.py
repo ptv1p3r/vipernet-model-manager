@@ -39,6 +39,19 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+try:
+    from zoneinfo import ZoneInfo
+
+    _FUSO = ZoneInfo("Europe/Lisbon")
+except Exception:  # pragma: no cover - ambiente sem tzdata
+    _FUSO = None
+
+from datetime import datetime as _dt
+
+# `_proximo_nome_pre_registo` compoe o nome com a data de hoje: um fixture
+# com data fixa so passa no dia em que foi escrito.
+HOJE_PRE_REGISTO = _dt.now(_FUSO).strftime("%Y%m%d") if _FUSO else _dt.now().strftime("%Y%m%d")
+
 AQUI = Path(__file__).resolve().parent
 _RESULTADOS: list[tuple[str, bool, str]] = []
 
@@ -82,7 +95,8 @@ def _preparar(base: Path) -> None:
         chamadas_por_dia=16194.0,
         nota="teste",
     )
-    sombra.escrever(registo, base / "aprendiz" / "sombra" / "pre-registo-20261105b.json")
+    sombra.escrever(registo, base / "aprendiz" / "sombra"
+                   / ("pre-registo-" + HOJE_PRE_REGISTO + "b.json"))
     (base / "aprendiz" / "sombra" / "vida.json").write_text(json.dumps({
         "ts": "2026-11-05T10:29:59+00:00",
         "sha_registo": registo["sha256"],
@@ -122,7 +136,8 @@ def testes() -> None:
               estado["activo"] is True and estado["vida_ttl_h"] == 24)
 
         # -------------------------------------------------- 2. selo adulterado
-        caminho = base / "aprendiz" / "sombra" / "pre-registo-20261105b.json"
+        caminho = (base / "aprendiz" / "sombra"
+                   / ("pre-registo-" + HOJE_PRE_REGISTO + "b.json"))
         original = caminho.read_text(encoding="utf-8")
         adulterado = json.loads(original)
         adulterado["p0"] = 0.001  # margem escolhida depois de ver os dados
@@ -144,7 +159,7 @@ def testes() -> None:
         check("nome: o proximo ficheiro ordena depois do actual",
               proximo > caminho.stem, f"{proximo} vs {caminho.stem}")
         check("nome: e o sufixo seguinte da mesma data",
-              proximo == "pre-registo-20261105c", proximo)
+              proximo == "pre-registo-" + HOJE_PRE_REGISTO + "c", proximo)
 
         # -------------------------------------------------- 4. recusa sem confirmacao
         try:
@@ -198,7 +213,8 @@ def testes() -> None:
               corpo_r["sombra"]["providers_disponiveis"] == ["deepseek", "openrouter"],
               json.dumps(corpo_r["sombra"].get("providers_disponiveis")))
         check("bracos: o ficheiro novo e o que a leitura escolhe",
-              Path(corpo_r["sombra"]["pre_registo"]).name == "pre-registo-20261105c.json",
+              Path(corpo_r["sombra"]["pre_registo"]).name
+              == "pre-registo-" + HOJE_PRE_REGISTO + "c.json",
               corpo_r["sombra"]["pre_registo"])
         check("bracos: herda p0/deff/chamadas medidos do anterior",
               corpo_r["sombra"]["p0"] == 0.0463

@@ -888,7 +888,13 @@ def idioma_post(corpo: Any = Body(default=None)) -> JSONResponse:
         return cfg
 
     try:
-        gestor.alterar(mutar, rev_esperado=str(corpo.get("rev") or "") or None)
+        # Sem `rev`: o `alterar` ja parte do estado fresco do disco e este
+        # mutador toca UMA chave, por isso nao ha nada para repor. Passar o rev
+        # que a pagina tem fazia o gesto falhar com 409 quando a config mudou
+        # noutra chave qualquer — medido no teste: uma mudanca de estrategia
+        # noutra aba impedia o utilizador de mudar a lingua, e ele via 409 a
+        # pedir para repetir um gesto que nao tem nada a ver.
+        gestor.alterar(mutar)
     except gestor.Conflito as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except HTTPException:
