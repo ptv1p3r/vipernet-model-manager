@@ -1889,8 +1889,8 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
         && I.normalizarIdioma(null) === "en");
 
   const chaves = Object.keys(I.PT_EN);
-  check("i18n: o dicionario tem as 402 chaves medidas",
-        chaves.length === 402, "tem " + chaves.length);
+  check("i18n: o dicionario tem as 462 chaves medidas",
+        chaves.length === 462, "tem " + chaves.length);
   check("i18n: nenhuma traducao vazia",
         chaves.every(function (k) { return String(I.PT_EN[k]).trim() !== ""; }));
   // Nomes proprios e termos tecnicos ficam iguais nas duas linguas — o que nao
@@ -1951,6 +1951,40 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   // texto — e ai e mesmo texto.
   check("i18n: um filho que nao e string passa intacto",
         I.h("div", null, 42, null).filhos[0] === 42);
+
+  // Rotulos que vem do BACKEND (valores de listas fechadas: niveis, esforcos,
+  // acessos, origem e efeito do registo). O `h()` traduz por lookup exacto,
+  // logo o valor tem de ser chave; e quando o painel o compoe com prefixo
+  // ("nivel " + valor), a composicao tem de traduzir a parte tambem. Nasceu de
+  // um defeito real: `"nivel " + n` dava «level leve» no painel ingles.
+  check("i18n: o wrapper traduz o rotulo que vem do backend",
+        I.h("option", null, "desligado").filhos[0] === "off"
+        && I.h("span", null, "sombra").filhos[0] === "shadow"
+        && I.h("span", null, "media").filhos[0] === "medium"
+        && I.h("span", null, "subscricao").filhos[0] === "subscription");
+  const alvoEn = T.opcoesAlvo([], ["leve", "media"]);
+  const alvoLeve = alvoEn.filter(function (o) { return o.valor === "nivel:leve"; })[0];
+  check("i18n: o rotulo composto traduz as duas partes",
+        !!alvoLeve && !/\bleve\b/.test(alvoLeve.rotulo)
+        && /light/.test(alvoLeve.rotulo), alvoLeve && alvoLeve.rotulo);
+  check("i18n: o valor do select continua o identificador da config",
+        !!alvoLeve && alvoLeve.valor === "nivel:leve");
+  const regraEn = T.rotuloRegra({ nivel: "alta" }, []);
+  check("i18n: o rotulo da regra nao deixa o nivel em portugues",
+        regraEn.indexOf("alta") === -1, regraEn);
+
+  // Tempo decorrido: a ordem das palavras muda entre linguas. Uma chave com
+  // {n}/{u} resolve as duas sem ramos por idioma e sem traducao vazia.
+  check("i18n: tempo decorrido em ingles poe o 'ago' no fim",
+        I.tHa(5) === "5 min ago" && I.tQuanto(5, "min") === " 5 min ago",
+        I.tHa(5) + " | " + I.tQuanto(5, "min"));
+  check("i18n: instantes em ingles", I.tInstantes() === "moments ago", I.tInstantes());
+  I.setIdioma("pt");
+  check("i18n: tempo decorrido em portugues mantem a ordem",
+        I.tHa(5) === "há 5 min" && I.tQuanto(5, "min") === " há 5 min"
+        && I.tInstantes() === "instantes",
+        I.tHa(5) + " | " + I.tQuanto(5, "min"));
+  I.setIdioma("en");
 
   // O seletor: duas opcoes, valor corrente, rotulo traduzido.
   const sel = I.SeletorIdioma({ idioma: "pt", onMudar: function () {} });

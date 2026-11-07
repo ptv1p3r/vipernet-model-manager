@@ -28,6 +28,7 @@ if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
 import gestor  # noqa: E402
+import i18n  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("vmm_dashboard_api", RAIZ / "dashboard" / "api.py")
 assert _spec is not None and _spec.loader is not None
@@ -88,6 +89,10 @@ def test_idade() -> None:
 
 
 def test_decidir_rasto() -> None:
+    # A lingua da config viva nao pode decidir o resultado deste teste: fixa-se
+    # o portugues, que e o texto que estas verificacoes comparam. A variante
+    # inglesa e verificada no fim, para a traducao nao voltar a escapar.
+    i18n.definir_para_testes("pt")
     deepseek = {"modo": "modelo", "provider": "deepseek", "modelo": "deepseek-flash", "esforco": "baixo"}
     inception = {"modo": "modelo", "provider": "inception", "modelo": "mercury-3", "esforco": "baixo"}
     leitura = {"provider": "deepseek", "modelo": "deepseek-flash", "lido": "alta", "ms": 1355,
@@ -163,6 +168,24 @@ def test_decidir_rasto() -> None:
         datetime.now(timezone.utc).isoformat(), _ts(30))
     verificar("motivo recente: continua visivel como estado",
               valido is False and motivo.startswith("provider_indisponivel"))
+
+    # (j) a mesma decisao em ingles: o cartao nao pode mostrar portugues
+    i18n.MISSES.clear()
+    i18n.definir_para_testes("en")
+    _v, _m, hist_en = api._decidir_rasto(
+        deepseek, leitura, "provider_indisponivel: actual", _ts(5))
+    verificar("en: o historico sai traduzido",
+              hist_en is not None and hist_en.get("motivo") == "older than the current error",
+              str((hist_en or {}).get("motivo")))
+    _v, _m, hist_en = api._decidir_rasto(
+        deepseek, leitura, "provider_indisponivel: actual", _ts(5),
+        datetime.now(timezone.utc).isoformat())
+    porque_en = ((hist_en or {}).get("motivo_antigo") or {}).get("porque")
+    verificar("en: o porque sai traduzido",
+              porque_en is not None and "older than the current config"
+              in str(porque_en), str(porque_en))
+    verificar("en: nenhuma chave ficou em falta", not i18n.MISSES, str(sorted(i18n.MISSES)[:3]))
+    i18n.definir_para_testes(None)
 
 
 # ----------------------------------------------------------------------- e2e
