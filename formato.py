@@ -43,6 +43,12 @@ FUSO = ZoneInfo("Europe/Lisbon")
 
 #: Separador de milhares. `pt`: U+00A0 (CLDR pt-PT). `en`: virgula.
 SEP_MILHARES = {"pt": "\u00a0", "en": ","}
+#: A partir de quantos digitos se agrupa. Nao e o mesmo nos dois idiomas: o
+#: pt-PT tem `minimumGroupingDigits=2`, logo um numero de quatro digitos fica
+#: inteiro ("1234") e so a partir de cinco se separa ("12 345"). O `en-GB`
+#: agrupa desde os quatro. Isto foi medido contra o `Intl` do painel, que estava
+#: certo, e nao escolhido por gosto.
+MIN_DIGITOS_AGRUPAR = {"pt": 5, "en": 4}
 #: Separador decimal.
 SEP_DECIMAL = {"pt": ",", "en": "."}
 #: Simbolo por moeda. `None` significa "sem simbolo conhecido": usa-se o codigo.
@@ -109,9 +115,13 @@ def _tabela(escolha: dict[str, Any], codigo: str) -> Any:
     return escolha.get(codigo, escolha.get("en"))
 
 
-def _agrupar(inteiro: str, sep: str) -> str:
-    """Mete o separador de milhares em triplos, da direita para a esquerda."""
-    if len(inteiro) <= 3:
+def _agrupar(inteiro: str, sep: str, minimo: int = 4) -> str:
+    """Mete o separador de milhares em triplos, da direita para a esquerda.
+
+    `minimo` e o numero de digitos a partir do qual se agrupa: abaixo disso o
+    numero fica inteiro, que e o que o pt-PT faz com quatro digitos.
+    """
+    if len(inteiro) < minimo or len(inteiro) <= 3:
         return inteiro
     partes: list[str] = []
     resto = inteiro
@@ -154,7 +164,7 @@ def numero(valor: Any, casas: int | None = None, locale: Any = None) -> str:
         inteiro, decimal = texto.split(".", 1)
     else:
         inteiro, decimal = texto, ""
-    inteiro = _agrupar(inteiro, sep_mil)
+    inteiro = _agrupar(inteiro, sep_mil, _tabela(MIN_DIGITOS_AGRUPAR, codigo))
     saida = inteiro + (sep_dec + decimal if decimal else "")
     return ("-" if num < 0 and float(abs(num)) != 0 else "") + saida
 

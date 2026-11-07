@@ -45,9 +45,12 @@ def verificar(nome: str, condicao: bool, detalhe: str = "") -> None:
 
 # --------------------------------------------------------------- 1. numero
 def test_numero() -> None:
-    verificar("pt milhar usa ESPACO (U+00A0) e virgula decimal",
-              formato.numero(1234.5, 1, "pt") == f"1{NBSP}234,5",
+    verificar("pt: quatro digitos NAO agrupam (minimumGroupingDigits=2)",
+              formato.numero(1234.5, 1, "pt") == "1234,5",
               repr(formato.numero(1234.5, 1, "pt")))
+    verificar("pt: cinco digitos agrupam com ESPACO (U+00A0)",
+              formato.numero(12345, 0, "pt") == f"12{NBSP}345",
+              repr(formato.numero(12345, 0, "pt")))
     verificar("en milhar usa virgula e ponto decimal",
               formato.numero(1234.5, 1, "en") == "1,234.5",
               repr(formato.numero(1234.5, 1, "en")))
@@ -58,8 +61,8 @@ def test_numero() -> None:
               formato.numero(1234567, 0, "en") == "1,234,567",
               repr(formato.numero(1234567, 0, "en")))
     verificar("negativo leva o sinal antes do primeiro digito",
-              formato.numero(-1234.5, 2, "pt") == f"-1{NBSP}234,50",
-              repr(formato.numero(-1234.5, 2, "pt")))
+              formato.numero(-12345.5, 2, "pt") == f"-12{NBSP}345,50",
+              repr(formato.numero(-12345.5, 2, "pt")))
     verificar("zero e zero, nao vazio", formato.numero(0, 0, "pt") == "0")
     verificar("None e celula vazia, nao zero", formato.numero(None, 2, "pt") == "")
     verificar("sem casas fixas: inteiro nao ganha decimais",
@@ -105,7 +108,7 @@ def test_percentagem() -> None:
 # -------------------------------------------------------------- 4. moeda
 def test_moeda() -> None:
     verificar("pt: simbolo depois do valor",
-              formato.moeda(1234.5, "EUR", 2, "pt") == f"1{NBSP}234,50{NBSP}\u20ac",
+              formato.moeda(1234.5, "EUR", 2, "pt") == f"1234,50{NBSP}\u20ac",
               repr(formato.moeda(1234.5, "EUR", 2, "pt")))
     verificar("en: simbolo antes do valor",
               formato.moeda(1234.5, "EUR", 2, "en") == "\u20ac1,234.50",
@@ -160,7 +163,7 @@ def test_locale() -> None:
     verificar("codigo desconhecido cai no padrao", formato.locale("xx") == "en")
     i18n.definir_para_testes("pt")
     verificar("sem argumento segue o i18n (pt)", formato.locale() == "pt")
-    verificar("e o numero acompanha", formato.numero(1234.5, 1) == f"1{NBSP}234,5",
+    verificar("e o numero acompanha", formato.numero(1234.5, 1) == "1234,5",
               repr(formato.numero(1234.5, 1)))
     i18n.definir_para_testes("en")
     verificar("sem argumento segue o i18n (en)", formato.locale() == "en")
