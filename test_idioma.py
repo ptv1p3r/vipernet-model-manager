@@ -222,8 +222,9 @@ def _chaves_do_codigo() -> set[str]:
     O AST, e nao regex, porque o Python junta literais adjacentes numa unica
     `Constant`: uma ajuda partida em tres linhas conta como uma chave so, que e
     exactamente o que o dicionario tem de cobrir. Apanha as duas formas em uso —
-    `t("...")` na API e `_i18n.t("...", nome=...)` no CLI — e as `help="..."`
-    (que so se traduzem por `_traduzir_ajuda`, mas contam para a cobertura).
+    `t("...")` na API, `_i18n.t("...", nome=...)` no CLI e `_t("...")` no gestor — e
+    as `help="..."` (que so se traduzem por `_traduzir_ajuda`, mas contam para a
+    cobertura).
     """
     import ast
 
@@ -233,12 +234,12 @@ def _chaves_do_codigo() -> set[str]:
     def _e_chamada_t(no: ast.Call) -> bool:
         f = no.func
         if isinstance(f, ast.Name):
-            return f.id == "t"
+            return f.id in ("t", "_t")
         if isinstance(f, ast.Attribute):
             return f.attr == "t"
         return False
 
-    for rel in ("dashboard/api.py", "cli.py"):
+    for rel in ("dashboard/api.py", "cli.py", "gestor.py"):
         arvore = ast.parse((raiz / rel).read_text(encoding="utf-8"))
         for no in ast.walk(arvore):
             if isinstance(no, ast.Call) and _e_chamada_t(no) and no.args:
@@ -340,7 +341,54 @@ _IDENTICAS_DE_PROPOSITO = {
     "modelo que classifica leve/media/alta",
     "leve,media,alta (lista separada por virgulas)",
     "quem afirma: gate, releitura, testes, ha, jira, wiki, git, skill, manual",
+    # Molde de embrulho: so identificadores e um `{p3}` que ja vem traduzido de
+    # dentro. Verter os separadores mudaria a leitura sem mudar o sentido.
+    "catalogo[{p0}] ({p1}:{p2}) {p3}",
 }
+
+
+def test_validador_fala_a_lingua_activa() -> None:
+    """A ligacao, e nao o dicionario: a recusa real sai na lingua escolhida.
+
+    `test_en_traduz_sem_faltas` prova que ha ingles para as chaves que o codigo
+    usa, mas nao que a mensagem do validador passe por la. Sem este teste, as 75
+    mensagens podiam estar traduzidas no dicionario e continuar a sair em
+    portugues na sessao inglesa — que era exactamente o defeito.
+    """
+    import i18n
+
+    casos = [
+        (
+            {"versao": 9},
+            "config.versao 9 nao suportada (este plugin le a versao 3)",
+            "config.versao 9 not supported (this plugin reads version 3)",
+        ),
+        (
+            {"idioma": "xx"},
+            "idioma invalido: 'xx' (aceita: en, pt)",
+            "invalid idioma: 'xx' (accepts: en, pt)",
+        ),
+        (
+            {"sombra": []},
+            "sombra nao e um objecto",
+            "sombra is not an object",
+        ),
+        (
+            {"perfis": {"default": {"catalogo": [], "analise": {"circuit_breaker": {"limite_falhas": 999}}}}},
+            "perfis.default.analise.circuit_breaker.limite_falhas fora de 1..50 (veio 999)",
+            "perfis.default.analise.circuit_breaker.limite_falhas out of range 1..50 (got 999)",
+        ),
+    ]
+    for cfg, esperado_pt, esperado_en in casos:
+        for codigo, esperado in (("pt", esperado_pt), ("en", esperado_en)):
+            i18n.definir_para_testes(codigo)
+            _, erros = gestor.validar(copy.deepcopy(cfg))
+            verificar(
+                f"validador em {codigo} diz {esperado[:34]!r}",
+                esperado in erros,
+                f"erros={erros[:2]}",
+            )
+    i18n.definir_para_testes(None)
 
 
 def main() -> int:
@@ -351,6 +399,7 @@ def main() -> int:
     test_pt_devolve_a_chave_intacta()
     test_en_traduz_sem_faltas()
     test_marcadores_sobrevivem_a_traducao()
+    test_validador_fala_a_lingua_activa()
     test_ingles_e_o_primeiro_e_o_padrao()
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d) / "config.json"

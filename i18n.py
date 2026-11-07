@@ -36,6 +36,13 @@ _CACHE: dict[str, Any] = {"mtime": None, "idioma": IDIOMA_PADRAO, "caminho": Non
 # Lingua fixada por testes. `None` = seguir a config (o normal).
 _FORCAR: str | None = None
 
+#: Via deterministica, por ambiente, para testes e para uma sessao pontual de
+#: CLI. Existe porque `definir_para_testes` so tem efeito no modulo ja carregado,
+#: e ha ficheiros de teste que carregam o `gestor` (e portanto o `i18n`) dentro de
+#: um metodo: a ordem de import deixava esses testes a medir a lingua errada.
+#: Aceita as formas regionais (`pt-PT`, `pt_BR`), como a config.
+ENV_IDIOMA = "VMM_IDIOMA"
+
 
 def normalizar(codigo: Any) -> str:
     """Reduz o codigo a `en`/`pt`. Formas regionais (`pt-PT`, `pt_BR`) colapsam."""
@@ -63,9 +70,14 @@ def _caminho_config() -> Path:
 
 
 def idioma() -> str:
-    """Lingua em vigor, lida da config viva. Nunca levanta e nunca bloqueia."""
+    """Lingua em vigor: `_FORCAR`, depois `VMM_IDIOMA`, depois a config viva."""
     if _FORCAR is not None:
         return _FORCAR
+    env = (os.environ.get(ENV_IDIOMA) or "").strip().lower()
+    if env:
+        base = env.replace("_", "-").split("-")[0]
+        if base in IDIOMAS:
+            return base
     caminho = _caminho_config()
     try:
         mtime = caminho.stat().st_mtime_ns
@@ -310,4 +322,91 @@ _EN: dict[str, str] = {
          "after those that declare one"),
     "quem afirma: gate, releitura, testes, ha, jira, wiki, git, skill, manual":
         "who asserts it: gate, releitura, testes, ha, jira, wiki, git, skill, manual",
+    # -- Validador do gestor (75 mensagens) -------------------------------
+    # Chave = texto portugues, valor = ingles. Sao as recusas que sobem a
+    # API em `detail=str(exc)` e a saida do CLI; ficaram de fora da primeira
+    # passagem i18n e davam metade da linha em cada lingua.
+    # As palavras da config (`catalogo`, `acesso`, `superficie`, `entrada`,
+    # `nivel`, `tarefa`, `modo`, `por`, `termos`, `prioridade`) NAO se
+    # traduzem: sao identificadores que o utilizador escreve no JSON, e
+    # traduzi-las mandava-o escrever uma chave que o plugin nao le.
+    " (aceita: {p0})": " (accepts: {p0})",
+    # Achadas na verificacao de cobertura (fora do `erros.append`: devolvidas na
+    # lista, ou no normalizador de esforco, e saem para as mesmas superficies).
+    "{p0} nao e um objecto": "{p0} is not an object",
+    "config nao e um objecto": "config is not an object",
+    "esforco invalido: '{p0}' (use {p1}; low/medium/high tambem sao aceites)": "invalid esforco: '{p0}' (use {p1}; low/medium/high are also accepted)",
+    "'analise.aprendiz' tem de ser um objecto": "'analise.aprendiz' must be an object",
+    "'analise.fixar_nivel_por_turno' tem de ser booleano": "'analise.fixar_nivel_por_turno' must be a boolean",
+    "'analise.pesos' tem de ser um objecto": "'analise.pesos' must be an object",
+    "'analise.pesos': sinal invalido '{p0}'": "'analise.pesos': invalid sign '{p0}'",
+    "'analise.pesos.{p0}' fora de [-20, 20]": "'analise.pesos.{p0}' out of range [-20, 20]",
+    "'analise.pesos.{p0}' tem de ser inteiro": "'analise.pesos.{p0}' must be an integer",
+    "'perfis' ausente ou nao e um objecto": "'perfis' missing or not an object",
+    "; queria dizer '{p0}'?": "; did you mean '{p0}'?",
+    "catalogo[{p0}] ({p1}:{p2}) acesso 'subscricao' exige provider openai-codex": "catalogo[{p0}] ({p1}:{p2}) acesso 'subscricao' requires provider openai-codex",
+    "catalogo[{p0}] ({p1}:{p2}) acesso invalido: '{p3}' (use api|subscricao)": "catalogo[{p0}] ({p1}:{p2}) invalid acesso: '{p3}' (use api|subscricao)",
+    "catalogo[{p0}] ({p1}:{p2}) provider openai-codex e uma subscricao; use acesso 'subscricao'": "catalogo[{p0}] ({p1}:{p2}) provider openai-codex is a subscription; use acesso 'subscricao'",
+    "catalogo[{p0}] ({p1}:{p2}) sem complexidade": "catalogo[{p0}] ({p1}:{p2}) has no complexidade",
+    "catalogo[{p0}] ({p1}:{p2}) {p3}": "catalogo[{p0}] ({p1}:{p2}) {p3}",
+    "catalogo[{p0}] complexidade invalida: {p1}": "catalogo[{p0}] invalid complexidade: {p1}",
+    "catalogo[{p0}] nao e um objecto": "catalogo[{p0}] is not an object",
+    "catalogo[{p0}] sem provider/modelo": "catalogo[{p0}] has no provider/modelo",
+    "catalogo[{p0}].custo deve ser >= 0 (recebido {p1})": "catalogo[{p0}].custo must be >= 0 (got {p1})",
+    "catalogo[{p0}].custo deve ser numero (recebido {p1})": "catalogo[{p0}].custo must be a number (got {p1})",
+    "catalogo[{p0}].json_nativo deve ser booleano (recebido {p1})": "catalogo[{p0}].json_nativo must be a boolean (got {p1})",
+    "catalogo[{p0}].modalidades deve ser lista ({p1})": "catalogo[{p0}].modalidades must be a list ({p1})",
+    "catalogo[{p0}].modalidades invalidas: {p1} (use {p2})": "catalogo[{p0}] invalid modalidades: {p1} (use {p2})",
+    "catalogo[{p0}].ordem deve ser >= 0 (recebido {p1})": "catalogo[{p0}].ordem must be >= 0 (got {p1})",
+    "catalogo[{p0}].ordem deve ser inteiro (recebido {p1})": "catalogo[{p0}].ordem must be an integer (got {p1})",
+    "catalogo[{p0}].tarefas deve ser lista de identificadores": "catalogo[{p0}].tarefas must be a list of identifiers",
+    "catalogo[{p0}].{p1} deve ser inteiro positivo (recebido {p2})": "catalogo[{p0}].{p1} must be a positive integer (got {p2})",
+    "catalogo[{p0}].{p1} deve ser positivo (recebido {p2})": "catalogo[{p0}].{p1} must be positive (got {p2})",
+    "config.versao {p0} nao suportada (este plugin le a versao 3)": "config.versao {p0} not supported (this plugin reads version 3)",
+    "idioma invalido: {p0} (aceita: {p1})": "invalid idioma: {p0} (accepts: {p1})",
+    "idioma tem de ser texto (aceita: {p0})": "idioma must be text (accepts: {p0})",
+    "perfil com nome vazio": "profile with an empty name",
+    "perfis.{p0} nao e um objecto": "perfis.{p0} is not an object",
+    "perfis.{p0}.analise.superficies tem de ser um objecto (superficie -> regra)": "perfis.{p0}.analise.superficies must be an object (superficie -> rule)",
+    "perfis.{p0}.catalogo ausente ou nao e lista": "perfis.{p0}.catalogo missing or not a list",
+    "perfis.{p0}.latencia_max_ms deve ser inteiro positivo (recebido {p1})": "perfis.{p0}.latencia_max_ms must be a positive integer (got {p1})",
+    "perfis.{p0}.tarefas deve ser objecto": "perfis.{p0}.tarefas must be an object",
+    "perfis.{p0}.tarefas.{p1}: termos/prioridade invalidos": "perfis.{p0}.tarefas.{p1}: invalid termos/prioridade",
+    "perfis.{p0}.tarefas: regra invalida": "perfis.{p0}.tarefas: invalid rule",
+    "perfis.{p0}: id duplicado '{p1}'": "perfis.{p0}: duplicate id '{p1}'",
+    "perfis.{p0}: tarefa desconhecida '{p1}' em {p2}": "perfis.{p0}: unknown tarefa '{p1}' in {p2}",
+    "{p0} tem de ser objecto com 'modo' e 'por' (ou a string antiga com o modo)": "{p0} must be an object with 'modo' and 'por' (or the old string with the mode)",
+    "{p0} tem de ser um objecto": "{p0} must be an object",
+    "{p0} tem de ser um objecto (superficie -> regra)": "{p0} must be an object (superficie -> rule)",
+    "{p0} tem de ser um objecto com {p1}": "{p0} must be an object with {p1}",
+    "{p0}.activo tem de ser booleano": "{p0}.activo must be a boolean",
+    "{p0}.ativo tem de ser booleano": "{p0}.ativo must be a boolean",
+    "{p0}.janela_minutos fora de 1..1440 (veio {p1})": "{p0}.janela_minutos out of range 1..1440 (got {p1})",
+    "{p0}.janela_minutos tem de ser inteiro": "{p0}.janela_minutos must be an integer",
+    "{p0}.limite_falhas fora de 1..50 (veio {p1})": "{p0}.limite_falhas out of range 1..50 (got {p1})",
+    "{p0}.limite_falhas tem de ser inteiro": "{p0}.limite_falhas must be an integer",
+    "{p0}.modo invalido: {p1} (aceita: {p2})": "{p0}.invalid modo: {p1} (accepts: {p2})",
+    "{p0}.multiplicador_cooldown fora de 1.0..10.0 (veio {p1})": "{p0}.multiplicador_cooldown out of range 1.0..10.0 (got {p1})",
+    "{p0}.multiplicador_cooldown tem de ser numero": "{p0}.multiplicador_cooldown must be a number",
+    "{p0}.por invalido: {p1} (aceita: {p2})": "{p0}.invalid por: {p1} (accepts: {p2})",
+    "{p0}.superficies tem de ser um objecto (superficie -> true/false)": "{p0}.superficies must be an object (superficie -> true/false)",
+    "{p0}.superficies.{p1} tem de ser true ou false (recebido {p2})": "{p0}.superficies.{p1} must be true or false (got {p2})",
+    "{p0}.superficies.{p1}: superficie parecida com '{p2}' — corrija o nome ou use uma superficie real": "{p0}.superficies.{p1}: superficie looks like '{p2}' — fix the name or use a real superficie",
+    "{p0}.superficies: superficie com nome vazio": "{p0}.superficies: superficie with an empty name",
+    "{p0}.vida_ttl_h fora de 1..168 horas": "{p0}.vida_ttl_h out of range 1..168 hours",
+    "{p0}.vida_ttl_h nao e um numero": "{p0}.vida_ttl_h is not a number",
+    "{p0}.{p1} desconhecida (aceita: modo, por)": "{p0}.{p1} is unknown (accepts: modo, por)",
+    "{p0}.{p1} desconhecida{p2}": "{p0}.{p1} is unknown{p2}",
+    "{p0}.{p1} fora de [1, {p2}]": "{p0}.{p1} out of range [1, {p2}]",
+    "{p0}.{p1} tem de ser >= {p2} (veio {p3})": "{p0}.{p1} must be >= {p2} (got {p3})",
+    "{p0}.{p1} tem de ser inteiro": "{p0}.{p1} must be an integer",
+    "{p0}.{p1} tem de ser um inteiro (veio {p2})": "{p0}.{p1} must be an integer (got {p2})",
+    "{p0}.{p1} tem de ser um objecto": "{p0}.{p1} must be an object",
+    "{p0}.{p1}.nivel invalido: {p2}": "{p0}.{p1}.invalid nivel: {p2}",
+    "{p0}.{p1}: entrada desconhecida '{p2}' no catalogo do perfil": "{p0}.{p1}: unknown entrada '{p2}' in the profile catalogo",
+    "{p0}.{p1}: provider e modelo vao juntos": "{p0}.{p1}: provider and modelo go together",
+    "{p0}.{p1}: sem entrada, nivel nem provider/modelo": "{p0}.{p1}: no entrada, no nivel and no provider/modelo",
+    "{p0}.{p1}: superficie parecida com '{p2}' — corrija o nome ou use uma superficie real": "{p0}.{p1}: superficie looks like '{p2}' — fix the name or use a real superficie",
+    "{p0}.{p1}: {p2}/{p3} nao esta no catalogo do perfil": "{p0}.{p1}: {p2}/{p3} is not in the profile catalogo",
+    "{p0}: superficie com nome vazio": "{p0}: superficie with an empty name",
 }
