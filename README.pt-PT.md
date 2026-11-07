@@ -6,9 +6,11 @@ Escolhe **provider + modelo** em cada turno a partir da complexidade que o turno
 mostra — não a partir de uma etiqueta que o dono escreveu — dentro do catálogo
 que o dono declarou **para o perfil que está a ser servido**.
 
-**Repositório:** https://gitea.home.server/proldan/vipernet-model-manager — espelho automático
-a cada 15 min. A entrada de catálogo pronta a submeter vive em
-`plugin-catalog/vipernet-model-manager.yaml` (falta o pin `sha` e um repositório público).
+**Repositório:** https://github.com/ptv1p3r/vipernet-model-manager — público, e é daqui que o
+catálogo instala. O trabalho é feito no espelho privado no Gitea
+(`proldan/vipernet-model-manager`), que publica para aqui a cada commit e a cada 8 h.
+A entrada de catálogo a submeter vive em `plugin-catalog/vipernet-model-manager.yaml` e pina
+um commit que contém este ficheiro.
 
 Três frases que resumem o contrato:
 

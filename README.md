@@ -6,9 +6,11 @@ Picks **provider + model** on every turn from the complexity the turn
 shows — not from a label the owner wrote — inside the catalogue
 the owner declared **for the profile being served**.
 
-**Repository:** https://gitea.home.server/proldan/vipernet-model-manager — mirrored automatically
-every 15 minutes. The catalogue entry ready to submit lives in
-`plugin-catalog/vipernet-model-manager.yaml` (missing the `sha` pin and a public repository).
+**Repository:** https://github.com/ptv1p3r/vipernet-model-manager — public, and the place the
+catalogue installs from. Work happens on the private Gitea mirror
+(`proldan/vipernet-model-manager`), which push-mirrors here on every commit and every 8 h.
+The catalogue entry to submit lives in `plugin-catalog/vipernet-model-manager.yaml` and is
+pinned to a commit that carries this file.
 
 Three sentences that sum up the contract:
 
