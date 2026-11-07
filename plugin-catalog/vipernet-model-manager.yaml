@@ -19,10 +19,10 @@
 # ---------------------------------------------------------------------------
 # ESTADO MEDIDO 2026-11-07 23:01 WET
 # ---------------------------------------------------------------------------
-# Pin: commit que acrescenta as capturas do painel em `assets/` e a seccao de
-#   capturas aos dois README, sobre a 3.47.6 que ja' tinha a documentacao de
-#   catalogo corrigida (`main` do PR #14). Codigo identico ao pin anterior: o
-#   diff `63c2e4be..d188dc44` sao so' as tres imagens e os dois README.
+# Pin: commit que junta duas coisas sobre a 3.47.6 do PR #14: as tres capturas
+#   do painel em `assets/` (com a seccao de capturas nos dois README) e a
+#   correccao dos documentos de catalogo que ainda davam lacunas ja fechadas.
+#   Codigo identico ao pin anterior: `63c2e4be..54aef209` sao imagens e prosa.
 #
 # Regra 2 (repo clonavel por https, anonimamente): OK no GitHub.
 #   Provado por clone anonimo, nao pelo auto-relato do espelho:
@@ -55,9 +55,9 @@ name: vipernet-model-manager
 repo: https://github.com/ptv1p3r/vipernet-model-manager.git
 
 # Commit EXATO do catalogo, 40 hex — resolvido por `git rev-parse` nos dois
-# lados (Gitea e GitHub), nunca completado de memoria. Commit das capturas em
-# `main`, 2026-11-07.
-sha: "d188dc4431f23c1d71c8ee221c26df5130ed30d5"
+# lados (Gitea e GitHub), nunca completado de memoria. Capturas e documentos
+# de catalogo no `main`, 2026-11-07.
+sha: "54aef209e84c3f549a2032fe63bea6655766b476"
 
 description: >-
   Picks the provider and model for each turn from the profile's own catalog,
@@ -77,9 +77,9 @@ readme: true
 # Galeria de /docs/plugins/vipernet-model-manager. URLs no sha do pin: um bump
 # de pin obriga a re-pinar as imagens (regra 4).
 screenshots:
-  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/d188dc4431f23c1d71c8ee221c26df5130ed30d5/assets/01-visao-geral.png
-  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/d188dc4431f23c1d71c8ee221c26df5130ed30d5/assets/02-configuracao.png
-  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/d188dc4431f23c1d71c8ee221c26df5130ed30d5/assets/03-registo.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/54aef209e84c3f549a2032fe63bea6655766b476/assets/01-visao-geral.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/54aef209e84c3f549a2032fe63bea6655766b476/assets/02-configuracao.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/54aef209e84c3f549a2032fe63bea6655766b476/assets/03-registo.png
 
 # Capacidades = o que o plugin regista de facto em `__init__.py`. O validador
 # confirma-as no pin (`declared hooks/middleware — matches registrations`).
