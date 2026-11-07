@@ -1889,8 +1889,8 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
         && I.normalizarIdioma(null) === "en");
 
   const chaves = Object.keys(I.PT_EN);
-  check("i18n: o dicionario tem as 462 chaves medidas",
-        chaves.length === 462, "tem " + chaves.length);
+  check("i18n: o dicionario tem as 479 chaves medidas",
+        chaves.length === 479, "tem " + chaves.length);
   check("i18n: nenhuma traducao vazia",
         chaves.every(function (k) { return String(I.PT_EN[k]).trim() !== ""; }));
   // Nomes proprios e termos tecnicos ficam iguais nas duas linguas — o que nao
