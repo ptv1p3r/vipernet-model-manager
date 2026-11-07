@@ -8,51 +8,42 @@
 # 19 campos): o loader recusa `repo` sem https://, `sha` que nao seja 40 hex,
 # `tier` fora de official/verified/community e `category` fora de
 # desktop/memory/platform/web/tools/voice/automation/models/general. Verificado
-# com o parser do proprio core (`hermes_yaml`), nao a olho.
+# com o parser do proprio core (`hermes_yaml`) — 19 campos, zero chaves
+# descartadas em silencio.
 #
 # ---------------------------------------------------------------------------
-# ESTADO MEDIDO 2026-11-07 — LEIA ANTES DE ABRIR O PR
+# ESTADO MEDIDO 2026-11-07
 # ---------------------------------------------------------------------------
 # Regra 2 (repo publico clonavel por https + plugin carregavel no pin): OK.
-#   repo  https://github.com/ptv1p3r/vipernet-model-manager
-#   O commit pinado abaixo foi trazido por `git fetch` do GitHub e validado com
-#   o MESMO comando do CI: `hermes plugins validate <dir> --install-deps`.
-#   `Validation passed`, plugin carregavel por `__init__.py`, `README.md`
-#   ingles-primeiro (PT em `README.pt-PT.md`) — e' desse README que a pagina
-#   /docs/plugins/<nome> e' construida.
+#   O commit abaixo foi trazido por `git clone` do GitHub publico e validado com
+#   o MESMO comando do CI: `hermes plugins validate <dir> --install-deps`
+#   -> `Validation passed`. Entrypoints presentes no pin: `plugin.yaml`,
+#   `__init__.py`, `dashboard/manifest.json`, `README.md`.
 #
-# Regra 9 (so superficies publicas): BLOQUEIA A SUBMISSAO AINDA.
-#   No commit publico 45291b10 (3.46.0) o validador acusa:
+# Regra 9 (so superficies publicas): OK, e foi preciso mudar codigo.
+#   O pin anterior (03985e1d, 3.45.1) acusava dois imports privados:
 #     eval/aprender.py:164  hermes_cli.runtime_provider.resolve_runtime_provider
 #     seams.py:45           hermes_cli.runtime_provider.resolve_runtime_provider
-#   A correcao JA ESTA FEITA e provada fora do GitHub: no Gitea, ramo `dev`,
-#   commit b1cc51cc5be1d188a3c50b555b16ea065fc3883c (version 3.47.0), o
-#   `seams.py` resolve credenciais por `agent.credential_pool.load_pool`
-#   (superficie publica) e o validador responde `no core override — no runtime
-#   rebinds of Hermes core`. Falta esse commit chegar ao GitHub.
+#   A 3.47.0 substitui-os por `agent.credential_pool.load_pool`, superficie
+#   publica, e o validador responde `no core override — no runtime rebinds of
+#   Hermes core`. Nao foi pedido hook nenhum: a via publica existia.
 #
-# Porque nao chegou: o Gitea tem UM push mirror para o GitHub
-# (`remote_mirror_OgpOX3SFYj`, intervalo 8h, sync_on_commit) e o token dele
-# esta morto — `last_error: Invalid username or token. Password authentication
-# is not supported for Git operations` a 2026-11-07T16:50:12Z. Sem token
-# valido, o GitHub nao recebe a 3.47.0 e este pin nao pode avancar.
+# Pagina de documentacao: e' construida a partir do `README.md` DESTE commit.
+#   Por isso o README (EN, com `README.pt-PT.md` ao lado) e a interface do
+#   painel descrevem o mesmo comportamento, e o texto do README no pin foi
+#   corrigido para dizer a verdade sobre o repositorio publico.
 #
-# ENTREGA: assim que o `dev` chegar ao GitHub, trocar `sha` pelo commit que
-# contem a 3.47.0 e `version` para 3.47.0 (a regra exige que `version` da
-# entrada seja a do codigo NO PIN, nao a do disco).
-#
-# PENDENTE: `screenshots` — o plugin tem painel de dashboard e a regra pede
-# capturas, tiradas depois da correcao e de uma sessao autenticada. Nao ha URLs
-# inventados aqui: sem capturas reais a galeria fica vazia.
+# PENDENTE ANTES DO PR: `screenshots`. O plugin tem painel de dashboard e a
+#   regra pede capturas tiradas DEPOIS da correcao, numa sessao autenticada.
+#   Nao ha aqui URLs inventados: sem capturas reais a galeria fica vazia.
 # ---------------------------------------------------------------------------
 
 name: vipernet-model-manager
 repo: https://github.com/ptv1p3r/vipernet-model-manager
 
-# Commit EXATO que o revisor le, 40 hex. Este e' o HEAD real do repositorio
-# publico hoje (merge do PR #1, 2026-11-07T16:50:32Z). NAO e' o commit que se
-# quer submeter: e' o que existe. Ver a nota de regra 9 acima.
-sha: "45291b1099afd149d524a8f510b6a93b9bdca15a"
+# Commit EXATO que o revisor le, 40 hex. Release merge de `dev` em `main`
+# (2026-11-07), versao 3.47.0, validado com o comando do CI.
+sha: "97607687fd646ceacd194ba79923feee9b00373d"
 
 description: >-
   Picks the provider and model for each turn from the profile's own catalog,
@@ -65,12 +56,12 @@ maintainer: proldan
 tier: community
 category: models
 requires_hermes: ">=0.22.0"
-version: "3.46.0"
+version: "3.47.0"
 title: Vipernet Model Manager
 readme: true
 
-# Capacidades = o que o plugin regista de facto em `__init__.py`. Uma capacidade
-# por declarar e' falha de validacao; uma a mais e' deriva.
+# Capacidades = o que o plugin regista de facto em `__init__.py`. O validador
+# confirma-as no pin (`declared middleware — matches registrations`).
 capabilities:
   provides_tools: []
   provides_hooks:
