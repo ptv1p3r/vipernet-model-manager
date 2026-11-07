@@ -24,6 +24,18 @@ Three sentences that sum up the contract:
 3. Each **profile** decides whether it uses the plugin, how it uses it
    (strategy) and with which list. A profile absent from the config is untouched.
 
+## Screenshots
+
+The dashboard tab **Model Manager**, at `v3.47.6`, captured from a live install:
+
+| Capture | What it shows |
+|---|---|
+| ![Overview](assets/01-visao-geral.png) | **Overview** — manager state, the model that serves each profile, its complexity analysis and the task associations. |
+| ![Configuration](assets/02-configuracao.png) | **Configuration** — who decides each turn's level, how the model is chosen within the level, the persistent task and the circuit breaker. |
+| ![Usage log](assets/03-registo.png) | **Usage log** — what was served turn by turn: model, provider, profile, level, origin and surface. |
+
+The owner's full name is replaced by the public handle in these captures.
+
 ## Complexity analysis (3.5)
 
 Two paths, and the second is optional:
