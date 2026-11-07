@@ -353,6 +353,10 @@ _IDENTICAS_DE_PROPOSITO = {
     "global: {v0} / {v1} ({v2})",
     "ledger {v0}",
     "vmm: {v0}",
+    # Palavras que sao a mesma coisa nas duas linguas: "global" escreve-se igual,
+    # e "provider" e o termo tecnico que o plugin nunca verte (nem nos textos).
+    "global",
+    "provider",
 }
 
 

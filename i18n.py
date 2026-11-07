@@ -603,6 +603,8 @@ _EN: dict[str, str] = {
     "{v0}: {v1} superficie '{v2}' -> {v3}":
         "{v0}: {v1} surface '{v2}' -> {v3}",
     # -- CLI, 2.a passagem: mensagens de _erro, tabelas e palavras de estado --
+    'proprio': 'own',
+    'herdado': 'inherited',
     '--agregado exige --tarefa':
         '--agregado requires --tarefa',
     '--confianca-min deve estar entre 0 e 1':

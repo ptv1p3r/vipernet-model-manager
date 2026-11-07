@@ -137,10 +137,10 @@ def cmd_status(args) -> int:
     est_g = g.estrategia_global(cfg)
     if est_g["modo"] == "rodizio":
         print(_t("estrategia global: {v0} por {v1} ({v2})",
-                 v0=est_g["modo"], v1=est_g["por"], v2=est_g["origem"]))
+                 v0=est_g["modo"], v1=est_g["por"], v2=_t(est_g["origem"])))
     else:
         print(_t("estrategia global: {v0} ({v1})",
-                 v0=est_g["modo"], v1=est_g["origem"]))
+                 v0=est_g["modo"], v1=_t(est_g["origem"])))
     linhas = [[_t('perfil'), _t('activo'), _t('estrategia'), _t('rotacao'), _t('origem'), _t('rotas'), _t('niveis')]]
     for nome, p in sorted(perfis.items()):
         rotas = p.get("catalogo") or []
@@ -150,7 +150,7 @@ def cmd_status(args) -> int:
         # o que esta a decidir, e a coluna `origem` diz de onde vem.
         est = g.estrategia_efectiva(cfg, nome)
         linhas.append([nome, _t('sim') if p.get("activo", True) else _t('NAO'),
-                       est["modo"], est["por"], est["origem"],
+                       est["modo"], est["por"], _t(est["origem"]),
                        str(len(rotas)), ",".join(niveis) or "-"])
     print(_tabela(linhas))
     return 1 if erros else 0
@@ -356,7 +356,7 @@ def cmd_classificador(args) -> int:
                 c["modelo"] or "-",
                 c["via"],
                 alavanca,
-                c["origem"] + (f" ({c['motivo']})" if c["motivo"] else ""),
+                _t(c["origem"]) + (f" ({c['motivo']})" if c["motivo"] else ""),
             ])
         print(_tabela(linhas))
         global_c = (cfg.get("analise") or {}).get("classificador") or {}
@@ -547,11 +547,11 @@ def cmd_estrategia(args) -> int:
             }, ensure_ascii=False, indent=2))
             return 0
         eg = g.estrategia_global(cfg)
-        print(_t('global: {v0} / {v1} ({v2})', v0=eg['modo'], v1=eg['por'], v2=eg['origem']))
+        print(_t('global: {v0} / {v1} ({v2})', v0=eg['modo'], v1=eg['por'], v2=_t(eg['origem'])))
         linhas = [[_t('perfil'), _t('estrategia'), _t('rotacao'), _t('origem')]]
         for nome in sorted(perfis):
             e = g.estrategia_efectiva(cfg, nome)
-            linhas.append([nome, e["modo"], e["por"], e["origem"]])
+            linhas.append([nome, e["modo"], e["por"], _t(e["origem"])])
         print(_tabela(linhas))
         print(_t('valores possiveis: modo={v0} por={v1}', v0='|'.join(g.ESTRATEGIAS), v1='|'.join(g.POR)))
         return 0
@@ -590,7 +590,7 @@ def cmd_estrategia(args) -> int:
         print(_t('{v0}: voltou a herdar -> {v1} / {v2}', v0=args.perfil or 'global', v1=lido['modo'], v2=lido['por']))
     else:
         print(f"{args.perfil or 'global'}: {lido['modo']} / {lido['por']}"
-              f" ({lido.get('origem', 'global')})")
+              f" ({_t(lido.get('origem', 'global'))})")
     return 0
 
 
@@ -622,7 +622,7 @@ def cmd_rota_list(args) -> int:
     for nome in alvos:
         p = perfis[nome]
         est = g.estrategia_efectiva(cfg, nome)
-        print(_t('[{v0}] estrategia={v1} rotacao_por={v2} origem={v3} activo={v4}', v0=nome, v1=est['modo'], v2=est['por'], v3=est['origem'], v4=_t('sim') if p.get('activo', True) else _t('NAO')))
+        print(_t('[{v0}] estrategia={v1} rotacao_por={v2} origem={v3} activo={v4}', v0=nome, v1=est['modo'], v2=est['por'], v3=_t(est['origem']), v4=_t('sim') if p.get('activo', True) else _t('NAO')))
         linhas = [["id", _t('provider'), _t('modelo'), "acesso", "complexidade", "esforco"]]
         for r in p.get("catalogo") or []:
             linhas.append([r.get("id", ""), r.get("provider", ""), r.get("modelo", ""),
