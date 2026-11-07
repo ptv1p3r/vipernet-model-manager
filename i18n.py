@@ -444,18 +444,20 @@ _EN: dict[str, str] = {
         '  policy: detail for the last {v0} days (run --aplicar to compact)',
     '  politica: ficam {v0} + {v1}/semana (correr --aplicar para podar)':
         '  policy: keeps {v0} + {v1}/week (run --aplicar to prune)',
-    '  removidos {v0} de {v1} datados ({v2:.2f} MB livres), ficaram {v3}':
-        '  removed {v0} of {v1} dated ({v2:.2f} MB freed), {v3} left',
+    '  removidos {v0} de {v1} datados ({v2} MB livres), ficaram {v3}':
+        '  removed {v0} of {v1} dated ({v2} MB freed), {v3} left',
     '  semanais preservados: {v0}':
         '  weekly preserved: {v0}',
-    '  {v0:.2f} MB -> {v1:.2f} MB ({v2:.1f}%)':
-        '  {v0:.2f} MB -> {v1:.2f} MB ({v2:.1f}%)',
-    '  {v0:.2f} MB, {v1} linhas ({v2} de detalhe, {v3} resumos)':
-        '  {v0:.2f} MB, {v1} rows ({v2} detail, {v3} summaries)',
+    '  nada a podar':
+        '  nothing to prune',
+    '  {v0} MB -> {v1} MB ({v2})':
+        '  {v0} MB -> {v1} MB ({v2})',
+    '  {v0} MB, {v1} linhas ({v2} de detalhe, {v3} resumos)':
+        '  {v0} MB, {v1} rows ({v2} detail, {v3} summaries)',
     '  {v0:14s} (superficie -> permitido)':
         '  {v0:14s} (surface -> allowed)',
-    '  {v0} datados, {v1} a mao, {v2:.2f} MB':
-        '  {v0} dated, {v1} manual, {v2:.2f} MB',
+    '  {v0} datados, {v1} a mao, {v2} MB':
+        '  {v0} dated, {v1} manual, {v2} MB',
     '  {v0} linhas ilegiveis preservadas':
         '  {v0} unreadable rows preserved',
     '  {v0}: FALHA {v1}: {v2}':

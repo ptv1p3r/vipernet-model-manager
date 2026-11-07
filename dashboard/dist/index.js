@@ -949,7 +949,7 @@
     const lidas = (taxa.leituras || 0) + (taxa.falhas || 0);
     if (lidas > 0) {
       const taxaTxt = (taxa.leituras || 0) + "/" + lidas + T(" leituras ok")
-        + (taxa.falhas ? " (" + Math.round((taxa.falhas / lidas) * 100) + T("% falhas)") : "");
+        + (taxa.falhas ? " (" + fmtNum((taxa.falhas / lidas) * 100, 0) + T("% falhas)") : "");
       evidencia = evidencia ? evidencia + T(" · classificador: ") + taxaTxt : "classificador: " + taxaTxt;
     }
     const rasto = a.rasto || {};
@@ -1006,9 +1006,9 @@
       if (!motivoConfig && hist && hist.motivo_antigo && hist.motivo_antigo.motivo) {
         const idadeM = hist.motivo_antigo.idade_s;
         const quandoM = idadeM == null ? ""
-          : (idadeM < 90 ? " há " + Math.round(idadeM) + " s"
-            : idadeM < 5400 ? " há " + Math.round(idadeM / 60) + T(" min")
-            : " há " + Math.round(idadeM / 3600) + T(" h"));
+          : (idadeM < 90 ? tQuanto(fmtNum(idadeM, 0), T("s"))
+            : idadeM < 5400 ? tQuanto(fmtNum(idadeM / 60, 0), T("min"))
+            : tQuanto(fmtNum(idadeM / 3600, 0), T("h")));
         // Só a etiqueta do motivo (antes do «:»): o texto completo do erro do
         // provider é uma linha de traceback que nao cabe num cartao.
         const etiqueta = String(hist.motivo_antigo.motivo).split(":")[0];
@@ -4015,7 +4015,7 @@
           h(TabelaLog, { linhas: log }),
           estado && estado.ledger
             ? h("div", { className: "vmm-mudo vmm-pe" },
-                estado.ledger.caminho + " · " + Math.round((estado.ledger.bytes || 0) / 1024) + T(" KiB"))
+                estado.ledger.caminho + " · " + fmtNum((estado.ledger.bytes || 0) / 1024, 0) + T(" KiB"))
             : null
         )
       ),
