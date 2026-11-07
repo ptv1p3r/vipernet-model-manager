@@ -2,32 +2,57 @@
 #
 # Destino: `plugin-catalog/vipernet-model-manager.yaml` no repositorio
 # `NousResearch/hermes-agent`, por PR com revisao humana. Esta copia vive no
-# repositorio do plugin para que o que se submete seja versionado com o codigo
-# e nao se perca numa conversa.
+# repositorio do plugin para que o que se submete seja versionado com o codigo.
 #
-# Esquema lido de `hermes_cli/plugin_catalog.py` (dataclass PluginCatalogEntry):
-# o loader recusa `repo` que nao comece por https://, `sha` que nao seja 40 hex,
+# Esquema lido de `hermes_cli/plugin_catalog.py` (dataclass PluginCatalogEntry,
+# 19 campos): o loader recusa `repo` sem https://, `sha` que nao seja 40 hex,
 # `tier` fora de official/verified/community e `category` fora de
-# desktop/memory/platform/web/tools/voice/automation/models/general.
+# desktop/memory/platform/web/tools/voice/automation/models/general. Verificado
+# com o parser do proprio core (`hermes_yaml`), nao a olho.
 #
-# ESTADO 2026-11-05: entrada estruturalmente completa, NAO submissivel.
-# O `repo` aponta para o Gitea interno, por decisao do dono (so Gitea, nada no
-# GitHub). A regra 2 do catalogo exige um repositorio publico clonavel por
-# https em GitHub ou GitLab; um Gitea interno nao serve. Enquanto essa decisao
-# se mantiver, o caminho do catalogo esta fechado por decisao, nao por falta de
-# trabalho. Ver `references/admissao-ao-catalogo.md` na skill do plugin.
+# ---------------------------------------------------------------------------
+# ESTADO MEDIDO 2026-11-07 — LEIA ANTES DE ABRIR O PR
+# ---------------------------------------------------------------------------
+# Regra 2 (repo publico clonavel por https + plugin carregavel no pin): OK.
+#   repo  https://github.com/ptv1p3r/vipernet-model-manager
+#   O commit pinado abaixo foi trazido por `git fetch` do GitHub e validado com
+#   o MESMO comando do CI: `hermes plugins validate <dir> --install-deps`.
+#   `Validation passed`, plugin carregavel por `__init__.py`, `README.md`
+#   ingles-primeiro (PT em `README.pt-PT.md`) — e' desse README que a pagina
+#   /docs/plugins/<nome> e' construida.
+#
+# Regra 9 (so superficies publicas): BLOQUEIA A SUBMISSAO AINDA.
+#   No commit publico 45291b10 (3.46.0) o validador acusa:
+#     eval/aprender.py:164  hermes_cli.runtime_provider.resolve_runtime_provider
+#     seams.py:45           hermes_cli.runtime_provider.resolve_runtime_provider
+#   A correcao JA ESTA FEITA e provada fora do GitHub: no Gitea, ramo `dev`,
+#   commit b1cc51cc5be1d188a3c50b555b16ea065fc3883c (version 3.47.0), o
+#   `seams.py` resolve credenciais por `agent.credential_pool.load_pool`
+#   (superficie publica) e o validador responde `no core override — no runtime
+#   rebinds of Hermes core`. Falta esse commit chegar ao GitHub.
+#
+# Porque nao chegou: o Gitea tem UM push mirror para o GitHub
+# (`remote_mirror_OgpOX3SFYj`, intervalo 8h, sync_on_commit) e o token dele
+# esta morto — `last_error: Invalid username or token. Password authentication
+# is not supported for Git operations` a 2026-11-07T16:50:12Z. Sem token
+# valido, o GitHub nao recebe a 3.47.0 e este pin nao pode avancar.
+#
+# ENTREGA: assim que o `dev` chegar ao GitHub, trocar `sha` pelo commit que
+# contem a 3.47.0 e `version` para 3.47.0 (a regra exige que `version` da
+# entrada seja a do codigo NO PIN, nao a do disco).
+#
+# PENDENTE: `screenshots` — o plugin tem painel de dashboard e a regra pede
+# capturas, tiradas depois da correcao e de uma sessao autenticada. Nao ha URLs
+# inventados aqui: sem capturas reais a galeria fica vazia.
+# ---------------------------------------------------------------------------
 
 name: vipernet-model-manager
-repo: https://gitea.home.server/proldan/vipernet-model-manager.git
+repo: https://github.com/ptv1p3r/vipernet-model-manager
 
-# OBRIGATORIO: o commit EXATO que o revisor leu, 40 caracteres hexadecimais.
-# Pin medido por `git ls-remote origin refs/heads/dev` a 2026-11-05, no ramo
-# `dev` (o default do repositorio). O `main` fica em
-# a23f7f8671ef8a90f439e2dad6c18efe721b155c (3.28.0).
-# Verificado no pin: 66 ficheiros versionados, `plugin.yaml` presente,
-# `__init__.py` presente, `version: 3.38.0` no plugin.yaml e no
-# dashboard/manifest.json. Um pin so se declara depois de o conteudo existir.
-sha: "cdc41b213146ea9cbda1717fd9ed9db1a9b6cfcb"
+# Commit EXATO que o revisor le, 40 hex. Este e' o HEAD real do repositorio
+# publico hoje (merge do PR #1, 2026-11-07T16:50:32Z). NAO e' o commit que se
+# quer submeter: e' o que existe. Ver a nota de regra 9 acima.
+sha: "45291b1099afd149d524a8f510b6a93b9bdca15a"
 
 description: >-
   Picks the provider and model for each turn from the profile's own catalog,
@@ -40,14 +65,12 @@ maintainer: proldan
 tier: community
 category: models
 requires_hermes: ">=0.22.0"
-version: "3.38.0"
+version: "3.46.0"
 title: Vipernet Model Manager
 readme: true
 
-# Capacidades declaradas = o que o plugin regista de facto em `__init__.py`.
-# Regra 6 do catalogo: uma capacidade por declarar e' falha de validacao, uma
-# capacidade declarada a mais e' deriva. `post_tool_call` entrou na 3.35.0 (mede
-# o `exit_code` de cada chamada) e ficou por declarar ate' 2026-11-05.
+# Capacidades = o que o plugin regista de facto em `__init__.py`. Uma capacidade
+# por declarar e' falha de validacao; uma a mais e' deriva.
 capabilities:
   provides_tools: []
   provides_hooks:

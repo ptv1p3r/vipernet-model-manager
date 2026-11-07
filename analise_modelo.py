@@ -31,12 +31,38 @@ import difflib
 import hashlib
 import json
 import re
+import sys
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any, Callable
+
+
+def _carregar_formato():
+    """Uma unica instancia de `formato` (nome fixo em `sys.modules`).
+
+    Estes modulos vem de uma directoria que nao esta no `sys.path`, por isso o
+    import e por spec. O nome fixo garante que o `cli` e o gateway formatam com
+    a mesma tabela e o mesmo locale.
+    """
+    ja = sys.modules.get("formato")
+    if ja is not None:
+        return ja
+    import importlib.util as _ilu
+
+    spec = _ilu.spec_from_file_location("formato", Path(__file__).resolve().parent / "formato.py")
+    if spec is None or spec.loader is None:
+        raise ImportError("formato.py sem spec carregavel")
+    mod = _ilu.module_from_spec(spec)
+    sys.modules["formato"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_formato = _carregar_formato()
 
 NIVEIS = ("leve", "media", "alta")
 
@@ -713,7 +739,7 @@ def _suspenso(base: dict[str, Any], restante: float) -> dict[str, Any]:
     return {
         "sem_efeito": "classificador_suspenso",
         "motivo": (f"classificador_suspenso: o classificador falhou e esta suspenso "
-                   f"por mais {restante:.0f}s — os turnos seguem pela heuristica; "
+                   f"por mais {_formato.neutro(restante, 0)}s — os turnos seguem pela heuristica; "
                    f"mudar a config volta a tentar de imediato"),
         "classificador": {**base, "suspenso": True, "restante_s": round(restante, 1)},
         "origem": "modelo_suspenso",
@@ -1027,7 +1053,7 @@ def _classificar_decisoes(*, alvo: str, base: dict[str, Any], definicao: dict[st
         # — é o modelo a dizer que não sabe o suficiente para decidir sozinho.
         return {
             "sem_efeito": "confianca_baixa",
-            "motivo": f"confianca_baixa: {confianca:.2f} < piso {piso:.2f} "
+            "motivo": f"confianca_baixa: {_formato.neutro(confianca, 2)} < piso {_formato.neutro(piso, 2)} "
                       f"(o modelo escolheu {nivel})",
             "nivel_proposto": nivel,
             "classificador": {**classif, "abstencao": "confianca_baixa"},
@@ -1117,7 +1143,7 @@ def _extrair_nivel(payload: dict[str, Any]) -> tuple[str, str]:
             detalhe = str(escolhas[0].get("finish_reason") or "")
         uso = payload.get("usage") if isinstance(payload, dict) else None
         if isinstance(uso, dict) and uso.get("completion_tokens"):
-            detalhe += f" {uso.get('completion_tokens')}tok"
+            detalhe += f" {_formato.neutro(uso.get('completion_tokens'), 0)}tok"
         raise ValueError("resposta sem nivel reconhecivel"
                          + (f" ({detalhe.strip()})" if detalhe.strip() else ""))
     nivel = _canonico(achado.group(1))

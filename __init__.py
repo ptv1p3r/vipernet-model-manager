@@ -49,6 +49,7 @@ try:  # carregado como pacote do Hermes
     from . import gestor
     from . import analise as _analise_mod
     from . import analise_modelo as _analise_modelo_mod
+    from . import formato as _formato_mod
     from . import resultado as _resultado_mod
     from . import sombra as _sombra_mod
 except Exception:  # import directo (selftest / CLI fora do Hermes)
@@ -69,6 +70,7 @@ except Exception:  # import directo (selftest / CLI fora do Hermes)
     gestor = _mod("gestor")
     _analise_mod = _mod("analise")
     _analise_modelo_mod = _mod("analise_modelo")
+    _formato_mod = _mod("formato")
     _resultado_mod = _mod("resultado")
     _sombra_mod = _mod("sombra")
 
@@ -1473,7 +1475,7 @@ def middleware_llm_request(
             # ja era media/alta: se so ficar registado quando promove um `leve`,
             # um turno de 80k tokens nao deixa rasto nenhum de que a triagem
             # correu — e deixa de ser possivel provar que esta viva.
-            base["triagem"] = f"contexto {needs['tokens_entrada']}tok"
+            base["triagem"] = f"contexto {_formato_mod.neutro(needs['tokens_entrada'], 0)}tok"
             if nivel == "leve":
                 nivel = "media"
                 base["nivel"] = nivel

@@ -21,6 +21,7 @@ from __future__ import annotations
 import ast
 import re
 import sys
+import unicodedata
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent
@@ -193,75 +194,276 @@ def _fontes():
         yield caminho, str(rel)
 
 
+#: Isencoes declaradas: (ficheiro, tipo) -> razao por escrito.
+#:
+#: Uma isencao nunca e implicita: o ficheiro continua a ser varrido e o sitio
+#: tem de continuar a existir. Se o sitio desaparecer, a isencao fica orfa e o
+#: teste falha — uma isencao morta esconde o proximo sitio que aparecer ali.
+EXCECOES: dict[tuple[str, str], str] = {
+    ("bateria.py", "spec_numerico"):
+        "relatorio do proprio harness de testes (alinhamento de colunas); "
+        "nao e superficie do utilizador e nao sai do processo",
+}
+
+#: Funcoes do painel autorizadas a falar com o `Intl`: sao a fonte unica do
+#: locale no browser. Qualquer outra conversao numero->texto em JS e violacao.
+JS_AUXILIARES: frozenset[str] = frozenset({"fmtNum", "localeHora", "hora"})
+
+TIPOS_NUMERICOS = frozenset("diouxXeEfFgG%")
+_RE_PCT_NUM = re.compile(r"%[-+ #0]*[0-9]*(?:\.[0-9]+)?[diouxXeEfFgG]")
+_RE_MOLDE = re.compile(r"\{[A-Za-z_]\w*:([^}]*)\}")
+_RE_UNIDADE = re.compile(r"^(?:tok|ms|MB|KB|GB|USD|EUR|min|h|s)\b|^%")
+_RE_JS_NUM = re.compile(r"\.toFixed\(|\.toPrecision\(|\.toLocaleString\("
+                        r"|Intl\.NumberFormat|Intl\.DateTimeFormat")
+_RE_JS_CONCAT = re.compile(r"\+\s*[\"']\s*(?:ms|tok|%|MB|GB|KB)\s*[\"']")
+_FUNCOES_RE = frozenset({"compile", "match", "search", "fullmatch", "findall",
+                         "finditer", "sub", "subn", "split"})
+
+
+def _spec_e_numerico(spec: str) -> bool:
+    """Classifica um format_spec: formata um numero (e nao texto alinhado)?"""
+    if not spec:
+        return False
+    ultimo = spec[-1]
+    if ultimo in TIPOS_NUMERICOS:
+        return True
+    if ultimo in "sc":
+        return False
+    # Sem caracter de tipo: agrupamento, precisao implicita ou zero a esquerda
+    # continuam a ser formatacao numerica; largura sozinha sobre texto nao e.
+    return bool(re.search(r"[.,]", spec)) or spec.lstrip("<>^=+-").startswith("0")
+
+
+def _literais_regex(arvore: ast.AST) -> set[int]:
+    """Ids das constantes que sao padroes de regex (nunca texto apresentado).
+
+    Uma ancora `$` e `Sc` em Unicode tal como o euro; sem esta isencao
+    estrutural a regra de moeda dava cinco falsos positivos so neste plugin.
+    """
+    ids: set[int] = set()
+    for no in ast.walk(arvore):
+        if not isinstance(no, ast.Call):
+            continue
+        f = no.func
+        nome = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+        if nome not in _FUNCOES_RE:
+            continue
+        for arg in no.args:
+            for sub in ast.walk(arg):
+                ids.add(id(sub))
+    return ids
+
+
+def _violacoes(texto: str, rel: str) -> dict[str, list[str]]:
+    """A CLASSE de conversoes numero->texto num ficheiro, por tipo.
+
+    Devolve os sitios encontrados, sem julgar isencoes: quem chama decide. E
+    esta funcao que os fixtures sinteticos exercitam, para provar que uma forma
+    nova — que nao pertence a nenhuma lista catalogada — tambem e apanhada.
+    """
+    achados: dict[str, list[str]] = {}
+
+    def regista(tipo: str, sitio: str) -> None:
+        achados.setdefault(tipo, []).append(sitio)
+
+    if Path(rel).name.startswith("test_") or rel == "formato.py":
+        return achados
+
+    try:
+        arvore = ast.parse(texto)
+    except SyntaxError:
+        return achados
+
+    docstrings = {
+        id(n.body[0].value)
+        for n in ast.walk(arvore)
+        if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and n.body and isinstance(n.body[0], ast.Expr)
+        and isinstance(n.body[0].value, ast.Constant)
+        and isinstance(n.body[0].value.value, str)
+    }
+    regex = _literais_regex(arvore)
+
+    for no in ast.walk(arvore):
+        # --- (1) f-string que formata o valor com um especificador -----------
+        if isinstance(no, ast.FormattedValue):
+            spec = no.format_spec
+            if spec is None:
+                pass
+            else:
+                # Em Python o `format_spec` e sempre um `JoinedStr`, mesmo para
+                # `:.2f`: desembrulha-se quando e so texto e classifica-se.
+                partes = spec.values if isinstance(spec, ast.JoinedStr) else [spec]
+                if all(isinstance(p, ast.Constant) for p in partes):
+                    literal = "".join(str(p.value) for p in partes)  # type: ignore[union-attr]
+                    if _spec_e_numerico(literal):
+                        regista("spec_numerico", f"{rel}:{no.lineno} spec={literal!r}")
+                else:
+                    # Spec montado em tempo de execucao (`{v:{w}.{p}f}`): nao ha
+                    # como ler o formato, logo nao pode estar fora do modulo.
+                    regista("spec_numerico", f"{rel}:{no.lineno} spec=dinamico")
+
+        # --- (2) %-format com conversao numerica ----------------------------
+        if isinstance(no, ast.BinOp) and isinstance(no.op, ast.Mod) \
+                and isinstance(no.left, ast.Constant) and isinstance(no.left.value, str):
+            for m in _RE_PCT_NUM.finditer(no.left.value):
+                regista("pct_numerico", f"{rel}:{no.lineno} {m.group(0)!r}")
+
+        # --- (3) format(x, spec) --------------------------------------------
+        if isinstance(no, ast.Call) and isinstance(no.func, ast.Name) \
+                and no.func.id == "format" and len(no.args) >= 2:
+            arg = no.args[1]
+            if not (isinstance(arg, ast.Constant) and not _spec_e_numerico(str(arg.value))):
+                regista("format_builtin", f"{rel}:{no.lineno}")
+
+        # --- (4) datas e horas formatadas a mao -----------------------------
+        if isinstance(no, ast.Attribute) and no.attr == "strftime" and rel not in STRFTIME_PERMITIDO:
+            regista("strftime", f"{rel}:{no.lineno}")
+
+        if not (isinstance(no, ast.Constant) and isinstance(no.value, str)):
+            continue
+        if id(no) in docstrings or id(no) in regex:
+            continue
+        texto_no = no.value
+
+        # --- (5) simbolo monetario em texto, por categoria Unicode ----------
+        for ch in texto_no:
+            if unicodedata.category(ch) == "Sc":
+                regista("moeda", f"{rel}:{no.lineno} U+{ord(ch):04X} {ch!r}")
+                break
+
+        # --- (6) molde de traducao que ainda formata o valor ---------------
+        for m in _RE_MOLDE.finditer(texto_no):
+            if _spec_e_numerico(m.group(1)):
+                regista("molde_numerico", f"{rel}:{no.lineno} {m.group(0)!r}")
+                break
+
+        # --- (7) codigo ISO colado a frase ---------------------------------
+        for cod in ("USD", "EUR"):
+            if cod in texto_no and texto_no.strip() != cod:
+                regista("codigo_moeda", f"{rel}:{no.lineno}:{cod}")
+
+    # --- (8) valor cru com unidade colada (`f"{n}tok"`) ---------------------
+    # Nenhuma das guardas anteriores via esta classe: nao ha especificador, nao
+    # ha `%`, nao ha simbolo de moeda. O numero chega ao ecra tal como o Python
+    # o converte, e o separador passa a ser o do interpretador.
+    for no in ast.walk(arvore):
+        if not isinstance(no, ast.JoinedStr):
+            continue
+        vals = no.values
+        for i, v in enumerate(vals):
+            if not isinstance(v, ast.FormattedValue):
+                continue
+            if i + 1 >= len(vals):
+                continue
+            seguinte = vals[i + 1]
+            if not isinstance(seguinte, ast.Constant):
+                continue
+            seg = str(seguinte.value).lstrip()
+            if not _RE_UNIDADE.match(seg):
+                continue
+            expr = v.value
+            ja_formatado = (
+                isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute)
+                and isinstance(expr.func.value, ast.Name)
+                and (expr.func.value.id == "formato" or expr.func.value.id.startswith("_formato"))
+            )
+            if not ja_formatado:
+                regista("unidade_crua", f"{rel}:{v.lineno} + {seg[:10]!r}")
+    return achados
+
+
+def _violacoes_js(texto: str) -> list[str]:
+    """Conversao numero->texto no painel, fora dos auxiliares declarados."""
+    linhas = texto.splitlines()
+    inicio: list[tuple[int, str]] = []
+    for i, linha in enumerate(linhas):
+        m = re.match(r"\s*function\s+(\w+)\s*\(", linha)
+        if m:
+            inicio.append((i, m.group(1)))
+    fora: list[str] = []
+    for i, linha in enumerate(linhas):
+        dono = None
+        for j, nome in inicio:
+            if j <= i:
+                dono = nome
+            else:
+                break
+        if _RE_JS_NUM.search(linha) and dono not in JS_AUXILIARES:
+            fora.append(f"index.js:{i + 1} dentro de {dono or '<topo>'}")
+        if _RE_JS_CONCAT.search(linha):
+            fora.append(f"index.js:{i + 1} unidade concatenada")
+    return fora
+
+
 def test_nada_formata_fora_do_modulo() -> None:
-    moeda_literal: list[str] = []
-    float_a_mao: list[str] = []
-    strftime_fora: list[str] = []
-    # Especificador numerico dentro de um molde de traducao (`{v0:.2f}`): a
-    # classe que escapou as duas versoes anteriores desta verificacao, porque
-    # nao e uma f-string nem um %-format — e texto passado ao `t()`.
-    espec_em_molde: list[str] = []
-    codigo_moeda: list[str] = []
-    padrão_espec = re.compile(r"\{\w+:\.[0-9]*[fFd]\}")
+    observado: dict[tuple[str, str], int] = {}
     for caminho, rel in _fontes():
-        if rel == "formato.py":
-            continue
-        # Este ficheiro e quem declara os valores esperados: os simbolos de moeda
-        # aparecem aqui como comparacao, nao como formatacao. Os restantes
-        # `test_*.py` fixam texto e nao apresentam nada a ninguem.
-        if Path(rel).name.startswith("test_"):
-            continue
-        texto = caminho.read_text(encoding="utf-8")
-        try:
-            arvore = ast.parse(texto)
-        except SyntaxError:
-            continue
-        # Docstrings nao apresentam nada a ninguem: `custo.py` diz "Custo em
-        # USD" na docstring do modulo e isso e prosa, nao formatacao.
-        docstrings = {
-            id(n.body[0].value)
-            for n in ast.walk(arvore)
-            if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            and n.body and isinstance(n.body[0], ast.Expr)
-            and isinstance(n.body[0].value, ast.Constant)
-            and isinstance(n.body[0].value.value, str)
-        }
-        for no in ast.walk(arvore):
-            # Simbolo de moeda dentro de texto: a moeda passou a ser valor, e um
-            # simbolo escrito a mao no molde voltaria a fixa-la na lingua errada.
-            if isinstance(no, ast.Constant) and isinstance(no.value, str):
-                v = no.value
-                if "\u20ac" in v or "\u00a3" in v:
-                    moeda_literal.append(f"{rel}:{no.lineno}")
-            # `"%.2f" % x` — o `parent` nao existe no ast, por isso o teste e
-            # feito sobre o BinOp, e nao sobre a constante: a versao anterior
-            # desta verificacao passava sempre sem olhar para nada.
-            if isinstance(no, ast.BinOp) and isinstance(no.op, ast.Mod) \
-                    and isinstance(no.left, ast.Constant) and isinstance(no.left.value, str):
-                if any(t in no.left.value for t in ("%.1f", "%.2f", "%.3f", "%.4f", "%.6f")):
-                    float_a_mao.append(f"{rel}:{no.lineno}")
-            if isinstance(no, ast.Attribute) and no.attr == "strftime":
-                if rel not in STRFTIME_PERMITIDO:
-                    strftime_fora.append(f"{rel}:{no.lineno}")
-            # Molde de traducao que ainda formata o valor.
-            if isinstance(no, ast.Constant) and isinstance(no.value, str) and id(no) not in docstrings:
-                if padrão_espec.search(no.value):
-                    espec_em_molde.append(f"{rel}:{no.lineno}")
-                # Codigo ISO solto dentro de texto: passado como argumento ao
-                # `moeda_iso()` e legitimo; colado a uma frase nao e.
-                for cod in ("USD", "EUR"):
-                    if cod in no.value and no.value.strip() != cod:
-                        codigo_moeda.append(f"{rel}:{no.lineno}:{cod}")
-    verificar("nenhum simbolo de moeda em texto fora do formato.py",
-              not moeda_literal, ", ".join(moeda_literal))
-    verificar("nenhum %-format de decimal fora do formato.py",
-              not float_a_mao, ", ".join(float_a_mao))
-    verificar("strftime so nos ficheiros declarados",
-              not strftime_fora, ", ".join(strftime_fora))
-    verificar("nenhum especificador numerico em molde de traducao",
-              not espec_em_molde, ", ".join(espec_em_molde))
-    verificar("nenhum codigo de moeda colado a texto",
-              not codigo_moeda, ", ".join(codigo_moeda))
+        achados = _violacoes(caminho.read_text(encoding="utf-8"), rel)
+        for tipo, sitios in achados.items():
+            observado[(rel, tipo)] = len(sitios)
+            isento = (rel, tipo) in EXCECOES
+            verificar(f"{tipo} fora do formato.py em {rel}",
+                      isento, f"{len(sitios)} sitio(s): {', '.join(sitios)}")
+
+    js = RAIZ / "dashboard" / "dist" / "index.js"
+    if js.exists():
+        fora = _violacoes_js(js.read_text(encoding="utf-8"))
+        verificar("painel: Intl/toFixed so nos auxiliares declarados",
+                  not fora, ", ".join(fora))
+
+    # Prova de vida das isencoes: uma isencao cujo sitio desapareceu esconde o
+    # proximo sitio que ali aparecer, porque deixa de haver falha a espera.
+    orfas = [f"{r}:{t} ({EXCECOES[(r, t)]})" for (r, t) in EXCECOES if (r, t) not in observado]
+    verificar("nenhuma isencao orfa", not orfas, "; ".join(orfas))
+
+
+#: Formas que NAO pertencem a nenhuma lista negra anterior. Se a guarda voltar
+#: a ser uma lista de formas conhecidas, a primeira que aqui nao estiver passa a
+#: verde e este teste vermelho — que e o que se quer.
+FIXTURES_APANHADOS: dict[str, str] = {
+    "f-string com agrupamento": 'x = f"{v:,.0f}"\n',
+    "format() builtin": 'x = format(v, ".2f")\n',
+    "spec montado em runtime": 'x = f"{v:{larg}.{prec}f}"\n',
+    "tipo inteiro com largura": 'x = f"{v:5d}"\n',
+    "zero a esquerda": 'x = f"{v:08}"\n',
+    "unidade colada ao valor": 'x = f"{v} tok"\n',
+    "moeda fora do euro": 'x = f"{v} \u20b9"\n',
+    "pct-format inteiro": 'x = "%d itens" % v\n',
+    "molde de traducao": 'x = _t("{v0:,.2f} MB", v0=n)\n',
+    "strftime": 'x = d.strftime("%d/%m/%Y")\n',
+    "spec por nome em format": 'x = "{v:>12,.3f}".format(v=n)\n',
+}
+
+#: Formas que tem de continuar limpas: uma guarda que dispara em alinhamento de
+#: texto obriga a isencoes em massa e deixa de ser lida.
+FIXTURES_LIMPOS: dict[str, str] = {
+    "alinhamento de texto": 'x = f"{s:>38s}"\n',
+    "largura sem tipo": 'x = f"{s:20}"\n',
+    "moeda pelo formatador": 'x = f"{formato.moeda(v)}"\n',
+    "ancora de regex": 'p = re.compile(r"^\\d{4}$")\n',
+    "docstring": 'def f():\n    """Custo em USD."""\n    return 1\n',
+}
+
+
+def test_guarda_apanha_forma_nova() -> None:
+    for nome, fonte in FIXTURES_APANHADOS.items():
+        achados = _violacoes(fonte, "fixture_apresentacao.py")
+        verificar(f"guarda apanha: {nome}", bool(achados), "passou em claro")
+    for nome, fonte in FIXTURES_LIMPOS.items():
+        achados = _violacoes(fonte, "fixture_apresentacao.py")
+        verificar(f"guarda respeita: {nome}", not achados, f"falso positivo: {achados}")
+
+
+def test_guarda_js_apanha_forma_nova() -> None:
+    for nome, fonte in {
+        "toFixed no corpo do painel": "function cartao() {\n  return x.toFixed(2);\n}\n",
+        "concatena unidade": "function cartao() {\n  return y + \" ms\";\n}\n",
+    }.items():
+        verificar(f"painel apanha: {nome}", bool(_violacoes_js(fonte)), "passou em claro")
+    limpo = "function fmtNum(v) {\n  return new Intl.NumberFormat(localeHora()).format(v);\n}\n"
+    verificar("painel respeita o auxiliar declarado", not _violacoes_js(limpo))
+
 
 
 def main() -> int:
@@ -272,6 +474,8 @@ def main() -> int:
     test_datas()
     test_locale()
     test_nada_formata_fora_do_modulo()
+    test_guarda_apanha_forma_nova()
+    test_guarda_js_apanha_forma_nova()
 
     print("")
     if FALHAS:

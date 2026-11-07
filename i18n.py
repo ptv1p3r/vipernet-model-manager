@@ -683,8 +683,8 @@ _EN: dict[str, str] = {
         'unreadable pre-registration: {v0}',
     'provider':
         'provider',
-    'resolve_runtime_provider indisponivel: {v0}':
-        'resolve_runtime_provider unavailable: {v0}',
+    'credenciais do provider indisponiveis: {v0}':
+        'provider credentials unavailable: {v0}',
     "rota '{v0}' nao existe em {v1}":
         "route '{v0}' does not exist in {v1}",
     'rota: {v0}: {v1}':
