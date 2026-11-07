@@ -17,12 +17,12 @@
 # descartadas em silencio.
 #
 # ---------------------------------------------------------------------------
-# ESTADO MEDIDO 2026-11-07 22:55 WEST
+# ESTADO MEDIDO 2026-11-07 23:01 WET
 # ---------------------------------------------------------------------------
-# Pin: merge do PR #13 (`dev` -> `main`), que leva a 3.47.6 com a documentacao
-#   de catalogo corrigida (regra 2 fechada, regra 9 sem excecao). O pin anterior
-#   (d779ee92) tinha codigo certo e README errado: dizia que a regra 9 dependia
-#   de `resolve_runtime_provider`. Este pin e' o que corrige esse texto.
+# Pin: commit que acrescenta as capturas do painel em `assets/` e a seccao de
+#   capturas aos dois README, sobre a 3.47.6 que ja' tinha a documentacao de
+#   catalogo corrigida (`main` do PR #14). Codigo identico ao pin anterior: o
+#   diff `63c2e4be..d188dc44` sao so' as tres imagens e os dois README.
 #
 # Regra 2 (repo clonavel por https, anonimamente): OK no GitHub.
 #   Provado por clone anonimo, nao pelo auto-relato do espelho:
@@ -39,24 +39,25 @@
 #   (`readme: true`), e a seccao «Public catalogue readiness» ja' diz o estado
 #   medido — nao ha ressalva pendente.
 #
-# LACUNA DECLARADA — `screenshots:`: nao ha nenhuma imagem no repositorio (nem
-#   directoria `assets/`). O catalogo pede imagens para tudo o que tem UI e o
-#   painel e' a cara do plugin; as capturas tem de ser feitas na versao pinada e
-#   com URLs que embutam o sha. Sem elas a submissao vai incompleta.
+# `screenshots:` — tres capturas do painel na versao pinada, tiradas de uma
+#   instalacao viva (v3.47.6, separador Model Manager), guardadas em `assets/`
+#   e servidas por `raw.githubusercontent.com` no sha do pin. O nome completo do
+#   dono sai substituido pelo handle publico (`proldan`) nas imagens, e a
+#   substituicao esta declarada nos dois README.
 #
 # NOTA DE CONSTRUCAO: o `sha` abaixo nao pode conter o proprio commit (um
 #   ficheiro nao se cita a si mesmo). O commit que acrescenta esta versao do
 #   ficheiro ao `main` e' o seguinte na linhagem e difere so' neste ficheiro; o
-#   pin submetido no PR e' este `sha`, 63c2e4be.
+#   pin submetido no PR e' este `sha`, d188dc44.
 # ---------------------------------------------------------------------------
 
 name: vipernet-model-manager
 repo: https://github.com/ptv1p3r/vipernet-model-manager.git
 
 # Commit EXATO do catalogo, 40 hex — resolvido por `git rev-parse` nos dois
-# lados (Gitea e GitHub), nunca completado de memoria. Merge do PR #13 em
+# lados (Gitea e GitHub), nunca completado de memoria. Commit das capturas em
 # `main`, 2026-11-07.
-sha: "63c2e4be6f0542ea869970816d45cbec18580ff2"
+sha: "d188dc4431f23c1d71c8ee221c26df5130ed30d5"
 
 description: >-
   Picks the provider and model for each turn from the profile's own catalog,
@@ -72,6 +73,13 @@ requires_hermes: ">=0.22.0"
 version: "3.47.6"
 title: Vipernet Model Manager
 readme: true
+
+# Galeria de /docs/plugins/vipernet-model-manager. URLs no sha do pin: um bump
+# de pin obriga a re-pinar as imagens (regra 4).
+screenshots:
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/d188dc4431f23c1d71c8ee221c26df5130ed30d5/assets/01-visao-geral.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/d188dc4431f23c1d71c8ee221c26df5130ed30d5/assets/02-configuracao.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/d188dc4431f23c1d71c8ee221c26df5130ed30d5/assets/03-registo.png
 
 # Capacidades = o que o plugin regista de facto em `__init__.py`. O validador
 # confirma-as no pin (`declared hooks/middleware — matches registrations`).
