@@ -1328,11 +1328,14 @@ não fica escrito, `herdar` apaga o bloco, e um prazo fora dos limites volta com
 
 ## Limites conhecidos
 
-- Importa funções internas do Hermes (`resolve_runtime_provider`,
-  `get_active_profile_name`, `reload_gateway_plugins`, e os ContextVars de
-  home/escopo de segredos para o `verificar`) — é a única via para resolver a
-  credencial da rota no perfil certo. Pode partir num upgrade do Hermes; o
-  selftest apanha-o (`Validate` avisa, não falha).
+- Importa **um** módulo do Hermes:
+  `hermes_cli.auth.resolve_external_process_provider_credentials`, usado só como
+  recurso para as rotas de subscrição (Codex/ChatGPT) quando a pool de
+  credenciais não tem chave para elas. As rotas de API resolvem por
+  `agent.credential_pool.load_pool`, que é a resolução do próprio Hermes; nada é
+  remendado, envolvido ou re-ligado, e o `hermes plugins validate` diz
+  `no core override` sem aviso de chamada privada. O import pode partir num
+  upgrade do Hermes; o selftest apanha-o (`Validate` avisa, não falha).
 - A **contabilidade de custo** do Hermes continua a ler o modelo da sessão: a
   fatura interna não segue a troca. A prova vive no ledger.
 - Modelos free do OpenRouter têm limites próprios (alguns recusam chat directo,

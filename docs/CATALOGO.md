@@ -53,8 +53,11 @@ Até à 3.46.x o plugin dependia de **uma** superfície não pública,
 
 A 3.47.0 fechou-a: `seams.py` passou a usar `agent.credential_pool.load_pool`,
 que é a resolução do próprio Hermes. O validador deixou de ter o que assinalar,
-e não sobra import de módulo interno não documentado nem chamada privada a
-objecto do core.
+e não sobra chamada privada a objecto do core. Sobra **um** import de módulo do
+Hermes, `hermes_cli.auth.resolve_external_process_provider_credentials`, usado
+só como recurso nas rotas de subscrição (Codex/ChatGPT) quando a pool não tem
+chave para elas — o validador não o assinala e o `validate` continua a dizer
+`no core override`.
 
 Porque não bastava reimplementar as escadas por fora: mediu-se, no perfil
 `default`, a via pública `providers.get_provider_profile` +
@@ -88,11 +91,12 @@ porque a chave vem do resolver do Hermes) por uma regressão funcional.
 
 ## O que falta para submeter
 
-1. **Screenshots do painel** para o campo `screenshots:` da entrada. É a única
-   lacuna material: o catálogo pede imagens para tudo o que tem UI, o painel é a
-   cara do plugin, e não existe `assets/` no repositório. Têm de ser capturadas
-   na versão pinada e com URLs que embutam o sha — a reposição do pin obriga a
-   re-pinar as imagens.
+1. ~~**Screenshots do painel**~~ — **fechado nesta versão.** As três capturas
+   estão em `assets/` (`01-visao-geral.png`, `02-configuracao.png`,
+   `03-registo.png`), tiradas do painel vivo na `v3.47.6`, e a entrada declara-as
+   em `screenshots:` com URLs `raw.githubusercontent.com` no sha do pin. O nome
+   completo do dono sai substituído pelo handle público nas imagens.
 2. **Abrir o PR** em `NousResearch/hermes-agent` a acrescentar
-   `plugin-catalog/vipernet-model-manager.yaml`. Nenhum PR foi aberto até hoje.
+   `plugin-catalog/vipernet-model-manager.yaml`. Nenhum PR foi aberto até hoje —
+   é o único passo que falta, e é de processo, não de código.
    A descrição do PR leva a divulgação da regra 13 e as capturas.

@@ -1329,11 +1329,14 @@ does not get written, `herdar` deletes the block, and a deadline outside limits 
 
 ## Known limits
 
-- Imports internal Hermes functions (`resolve_runtime_provider`,
-  `get_active_profile_name`, `reload_gateway_plugins`, and the ContextVars of
-  home/secret scope for `verificar`) — this is the only way to resolve the
-  route credential in the right profile. Can break on a Hermes upgrade; the
-  selftest catches it (`Validate` warns, does not fail).
+- Imports one Hermes module:
+  `hermes_cli.auth.resolve_external_process_provider_credentials`, used only as
+  a fallback for the subscription routes (Codex/ChatGPT) when the credential pool
+  has no API key for them. The API routes resolve through
+  `agent.credential_pool.load_pool`, which is Hermes's own resolution; nothing is
+  patched, wrapped or rebound, and `hermes plugins validate` reports
+  `no core override` with no private-call warning. The import can still break on
+  a Hermes upgrade; the selftest catches it (`Validate` warns, does not fail).
 - Hermes **cost accounting** still reads the model from the session: the
   internal invoice does not follow the swap. The proof lives in the ledger.
 - OpenRouter free models have their own limits (some refuse direct chat,
@@ -1396,7 +1399,8 @@ and must be done on a development set and validated on a
 ## Public catalogue readiness
 
 The complete matrix, rule by rule (18 rules, with the evidence for each and
-the single gap still open), is in **`docs/CATALOGO.md`**. Summary here of what
+the one step still open, which is process and not code), is in
+**`docs/CATALOGO.md`**. Summary here of what
 changes the design, not what is process:
 
 Rules verified as of this version, with the evidence where it exists:
