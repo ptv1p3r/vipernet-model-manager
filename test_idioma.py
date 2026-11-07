@@ -344,6 +344,15 @@ _IDENTICAS_DE_PROPOSITO = {
     # Molde de embrulho: so identificadores e um `{p3}` que ja vem traduzido de
     # dentro. Verter os separadores mudaria a leitura sem mudar o sentido.
     "catalogo[{p0}] ({p1}:{p2}) {p3}",
+    # Saida do CLI: rotulos que sao a mesma palavra nas duas linguas ("global",
+    # "config", "ledger", "vmm", "MB", setas). Traduzir seria inventar diferenca.
+    "\nglobal: {v0} · {v1}/{v2}",
+    "  {v0:.2f} MB -> {v1:.2f} MB ({v2:.1f}%)",
+    "config:  {v0}",
+    "config: {v0}",
+    "global: {v0} / {v1} ({v2})",
+    "ledger {v0}",
+    "vmm: {v0}",
 }
 
 

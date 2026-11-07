@@ -313,7 +313,9 @@ _EN: dict[str, str] = {
         "show or change the strategy (global or per profile)",
     "veredicto de entrega: registar (com --estado) ou ler (sem ele)":
         "delivery verdict: record (with --estado) or read (without it)",
-    "{nome} o plugin": "{nome} the plugin",
+    "ligar o plugin": "turn the plugin on",
+    "desligar o plugin": "turn the plugin off",
+    "mostrar esta ajuda e sair": "show this help message and exit",
     "rota de acesso; por omissao infere do provider (openai-codex=subscricao, restantes=api)":
         ("access route; by default inferred from the provider "
          "(openai-codex=subscricao, restantes=api)"),
@@ -420,4 +422,289 @@ _EN: dict[str, str] = {
     "{p0}.{p1}: superficie parecida com '{p2}' — corrija o nome ou use uma superficie real": "{p0}.{p1}: superficie looks like '{p2}' — fix the name or use a real superficie",
     "{p0}.{p1}: {p2}/{p3} nao esta no catalogo do perfil": "{p0}.{p1}: {p2}/{p3} is not in the profile catalogo",
     "{p0}: superficie com nome vazio": "{p0}: superficie with an empty name",
+    # -- CLI: saida dos comandos (vmm) -------------------------------------
+    # Valores de dominio que o CLI imprime como rotulo (nao sao chaves de config).
+    'texto': 'text',
+    'nao declarado': 'not declared',
+    '\nglobal: {v0} · {v1}/{v2}':
+        '\nglobal: {v0} · {v1}/{v2}',
+    '\n{v0}/{v1} · {v2} pedido(s) · {v3} ms · formato={v4} · pedido={v5} · tokens {v6}→{v7}':
+        '\n{v0}/{v1} · {v2} request(s) · {v3} ms · format={v4} · request={v5} · tokens {v6}→{v7}',
+    '\n{v0}/{v1} · {v2} pedido(s) · {v3} ms · formato={v4} · pedido={v5} · tokens {v6}→{v7} · {v8} USD':
+        '\n{v0}/{v1} · {v2} request(s) · {v3} ms · format={v4} · request={v5} · tokens {v6}→{v7} · {v8} USD',
+    '  aviso: nao foi possivel montar o contexto do perfil: {v0}':
+        '  warning: could not build the profile context: {v0}',
+    '  braco {v0}: {v1} (HTTP {v2}) {v3}':
+        '  arm {v0}: {v1} (HTTP {v2}) {v3}',
+    '  dobradas {v0} linhas de {v1} dias em {v2} resumos':
+        '  folded {v0} rows from {v1} days into {v2} summaries',
+    '  nada a compactar (corte {v0})':
+        '  nothing to compact (cutoff {v0})',
+    '  politica: detalhe dos ultimos {v0} dias (correr --aplicar para compactar)':
+        '  policy: detail for the last {v0} days (run --aplicar to compact)',
+    '  politica: ficam {v0} + {v1}/semana (correr --aplicar para podar)':
+        '  policy: keeps {v0} + {v1}/week (run --aplicar to prune)',
+    '  removidos {v0} de {v1} datados ({v2:.2f} MB livres), ficaram {v3}':
+        '  removed {v0} of {v1} dated ({v2:.2f} MB freed), {v3} left',
+    '  semanais preservados: {v0}':
+        '  weekly preserved: {v0}',
+    '  {v0:.2f} MB -> {v1:.2f} MB ({v2:.1f}%)':
+        '  {v0:.2f} MB -> {v1:.2f} MB ({v2:.1f}%)',
+    '  {v0:.2f} MB, {v1} linhas ({v2} de detalhe, {v3} resumos)':
+        '  {v0:.2f} MB, {v1} rows ({v2} detail, {v3} summaries)',
+    '  {v0:14s} (superficie -> permitido)':
+        '  {v0:14s} (surface -> allowed)',
+    '  {v0} datados, {v1} a mao, {v2:.2f} MB':
+        '  {v0} dated, {v1} manual, {v2:.2f} MB',
+    '  {v0} linhas ilegiveis preservadas':
+        '  {v0} unreadable rows preserved',
+    '  {v0}: FALHA {v1}: {v2}':
+        '  {v0}: FAILED {v1}: {v2}',
+    '  {v0}: {v1}, {v2} rotas':
+        '  {v0}: {v1}, {v2} routes',
+    '  {v0}: {v1}; acesso={v2}; base_url={v3}; fonte={v4}; chave={v5} B':
+        '  {v0}: {v1}; access={v2}; base_url={v3}; source={v4}; key={v5} B',
+    'AUSENTE':
+        'MISSING',
+    'DESLIGADO':
+        'OFF',
+    'MORTO':
+        'DEAD',
+    'NAO':
+        'NO',
+    'VEREDITO: OK com quebras declaradas — a config viva veio do caminho unico; a historia tem escritas manuais reconciliadas':
+        'VERDICT: OK with declared breaks — the live config came from the single path; the history has reconciled manual writes',
+    'VEREDITO: cadeia quebrada SEM explicacao nas linhas {v0}':
+        'VERDICT: chain broken WITHOUT explanation at rows {v0}',
+    'VEREDITO: escrita FORA do caminho unico (o config vivo nao e o que o ultimo escritor deixou)':
+        'VERDICT: write OUTSIDE the single path (the live config is not what the last writer left)',
+    'VEREDITO: sem registo de escritas e sem config — nada a atribuir':
+        'VERDICT: no write log and no config — nothing to attribute',
+    '[{v0}] estrategia={v1} rotacao_por={v2} origem={v3} activo={v4}':
+        '[{v0}] strategy={v1} rotation_by={v2} origin={v3} active={v4}',
+    'analise; sem associacao':
+        'analysis; unassociated',
+    'aviso: contexto por perfil indisponivel ({v0}); a resolver no contexto do processo':
+        'warning: per-profile context unavailable ({v0}); resolving in the process context',
+    'aviso: {v0}':
+        'warning: {v0}',
+    'backups em {v0}':
+        'backups at {v0}',
+    'braco a = {v0} | braco b = {v1}':
+        'arm a = {v0} | arm b = {v1}',
+    'config:  {v0}':
+        'config:  {v0}',
+    'config: {v0}':
+        'config: {v0}',
+    'desligado':
+        'off',
+    'ensaio em sombra: {v0}':
+        'shadow trial: {v0}',
+    'ensaio: {v0} | unidade: {v1}':
+        'trial: {v0} | unit: {v1}',
+    'erro: {v0}':
+        'error: {v0}',
+    'estrategia global: {v0} ({v1})':
+        'global strategy: {v0} ({v1})',
+    'estrategia global: {v0} por {v1} ({v2})':
+        'global strategy: {v0} by {v1} ({v2})',
+    'existentes que nao estao na config (nao geridos):':
+        'existing entries not in the config (unmanaged):',
+    'global: {v0} / {v1} ({v2})':
+        'global: {v0} / {v1} ({v2})',
+    'global: {v0} · registar: {v1}':
+        'global: {v0} · record: {v1}',
+    'interruptor: {v0}':
+        'switch: {v0}',
+    'ledger {v0}':
+        'ledger {v0}',
+    'ledger {v0} (inexistente)':
+        'ledger {v0} (missing)',
+    'ligado':
+        'on',
+    'linhas:  {v0}':
+        'rows:  {v0}',
+    'linhas:  {v0} ({v1} ilegiveis)':
+        'rows:  {v0} ({v1} unreadable)',
+    'n por braco = {v0} | margem = {v1}':
+        'n per arm = {v0} | margin = {v1}',
+    'nao':
+        'no',
+    'nivel: {v0} (origem={v1}, score={v2}, sinais={v3})':
+        'level: {v0} (origin={v1}, score={v2}, signals={v3})',
+    'o gateway le a config a quente (cache de 5 s); nao e preciso reiniciar.':
+        'the gateway reads the config hot (5 s cache); no restart needed.',
+    "o perfil que quiser desligar um global ligado declara {'activo': false} no seu bloco.":
+        "a profile wanting to turn off a global that is on declares {'activo': false} in its block.",
+    "perfil '{v0}' acrescentado (copia de '{v1}')":
+        "profile '{v0}' added (copy of '{v1}')",
+    "perfil '{v0}' acrescentado (sem rotas)":
+        "profile '{v0}' added (no routes)",
+    "perfil '{v0}' removido (deixa de ser gerido)":
+        "profile '{v0}' removed (no longer managed)",
+    'perfil: {v0}':
+        'profile: {v0}',
+    'perfis geridos: {v0}':
+        'managed profiles: {v0}',
+    'pre-registo: {v0} | selo ok | sha {v1}':
+        'pre-registration: {v0} | seal ok | sha {v1}',
+    'reconciliadas: linhas {v0} (quebra declarada com testemunha igual)':
+        'reconciled: rows {v0} (break declared with matching witness)',
+    'registo: {v0} ({v1})':
+        'log: {v0} ({v1})',
+    "rota '{v0}' acrescentada a {v1} para {v2} ({v3})":
+        "route '{v0}' added to {v1} for {v2} ({v3})",
+    "rota '{v0}' de {v1}: esforco={v2}":
+        "route '{v0}' of {v1}: effort={v2}",
+    "rota '{v0}' removida de {v1}":
+        "route '{v0}' removed from {v1}",
+    "rota: nenhuma — o catalogo de {v0} nao cobre '{v1}'":
+        "route: none — the {v0} catalogue does not cover '{v1}'",
+    'sem classificador definido: a complexidade e decidida pela heuristica.':
+        'no classifier defined: complexity is decided by the heuristic.',
+    'sem veredictos registados':
+        'no verdicts recorded',
+    'sim':
+        'yes',
+    'tarefa: {v0} (origem={v1})':
+        'task: {v0} (origin={v1})',
+    'todos vivos: {v0} | gravado em {v1}':
+        'all alive: {v0} | written at {v1}',
+    'ultimo:  {v0}':
+        'last:  {v0}',
+    'um braco sem vida medido mantem o ensaio parado (vmm sombra vida).':
+        'an arm without a measured lifetime keeps the trial stopped (vmm sombra vida).',
+    'valores possiveis: modo={v0} por={v1}':
+        'possible values: mode={v0} by={v1}',
+    'veredicto registado: {v0} = {v1} (fonte {v2})':
+        'verdict recorded: {v0} = {v1} (source {v2})',
+    'vida: nunca medida — o ensaio nao aplica sem ela (vmm sombra vida)':
+        'lifetime: never measured — the trial does not apply without it (vmm sombra vida)',
+    'vida: {v0} | todos vivos: {v1}':
+        'lifetime: {v0} | all alive: {v1}',
+    'vivo':
+        'alive',
+    'vivo:    {v0}':
+        'alive:    {v0}',
+    'vmm: {v0}':
+        'vmm: {v0}',
+    '{v0}: classificador {v1}':
+        '{v0}: classifier {v1}',
+    '{v0}: classificador {v1} ({v2}/{v3}, esforco={v4})':
+        '{v0}: classifier {v1} ({v2}/{v3}, effort={v4})',
+    "{v0}: regra da superficie '{v1}' removida":
+        "{v0}: surface rule '{v1}' removed",
+    '{v0}: sem regras de superficie':
+        '{v0}: no surface rules',
+    "{v0}: superficie '{v1}' -> {v2}":
+        "{v0}: surface '{v1}' -> {v2}",
+    '{v0}: voltou a herdar -> {v1} / {v2}':
+        '{v0}: back to inheriting -> {v1} / {v2}',
+    "{v0}: {v1} superficie '{v2}' -> {v3}":
+        "{v0}: {v1} surface '{v2}' -> {v3}",
+    # -- CLI, 2.a passagem: mensagens de _erro, tabelas e palavras de estado --
+    '--agregado exige --tarefa':
+        '--agregado requires --tarefa',
+    '--confianca-min deve estar entre 0 e 1':
+        '--confianca-min must be between 0 and 1',
+    '--confianca-min deve ser um numero entre 0 e 1':
+        '--confianca-min must be a number between 0 and 1',
+    '--dias tem de ser >= 0':
+        '--dias must be >= 0',
+    '--formato deve ser auto, on ou off':
+        '--formato must be auto, on or off',
+    '--manter tem de ser >= 1':
+        '--manter must be >= 1',
+    '--semanais tem de ser >= 0':
+        '--semanais must be >= 0',
+    '--via deve ser chat ou decisoes':
+        '--via must be chat or decisoes',
+    'a escrita nao ficou no disco (mapa ainda presente)':
+        'the write did not land on disk (map still present)',
+    'a escrita nao ficou no disco (valor diferente)':
+        'the write did not land on disk (different value)',
+    'activo':
+        'active',
+    'comando desconhecido: {v0}':
+        'unknown command: {v0}',
+    'config com erros: {v0}':
+        'config with errors: {v0}',
+    'config recusada: {v0}':
+        'config refused: {v0}',
+    'estrategia':
+        'strategy',
+    'global':
+        'global',
+    'herda do perfil':
+        'inherits from the profile',
+    'ligar exige --provider e --modelo':
+        'turning on requires --provider and --modelo',
+    'lote exige pelo menos um texto':
+        'batch requires at least one text',
+    'modelo':
+        'model',
+    "modelo '{v0}' nao existe em {v1}: {v2}":
+        "model '{v0}' does not exist in {v1}: {v2}",
+    "modelo '{v0}' vem do catalogo global, nao de {v1}: declare-o no perfil antes de o limitar":
+        "model '{v0}' comes from the global catalogo, not from {v1}: declare it in the profile before limiting it",
+    'niveis':
+        'levels',
+    'nivel invalido: {v0}':
+        'invalid level: {v0}',
+    'origem':
+        'origin',
+    'perfil':
+        'profile',
+    "perfil '{v0}' ja existe":
+        "profile '{v0}' already exists",
+    "perfil '{v0}' nao e gerido por este config":
+        "profile '{v0}' is not managed by this config",
+    "perfil '{v0}' nao esta na config (vmm perfis)":
+        "profile '{v0}' is not in the config (vmm perfis)",
+    "perfil '{v0}' nao existe":
+        "profile '{v0}' does not exist",
+    "perfil '{v0}' nao existe (vmm perfil add {v1})":
+        "profile '{v0}' does not exist (vmm perfil add {v1})",
+    "perfil '{v0}' sem classificador por modelo ({v1})":
+        "profile '{v0}' without a per-model classifier ({v1})",
+    "perfil de origem '{v0}' nao existe":
+        "source profile '{v0}' does not exist",
+    'perfil {v0}':
+        'profile {v0}',
+    'perfis.{v0}.analise nao e um objecto':
+        'perfis.{v0}.analise is not an object',
+    'perfis.{v0}.analise.superficies nao e um objecto':
+        'perfis.{v0}.analise.superficies is not an object',
+    'pre-registo ilegivel: {v0}':
+        'unreadable pre-registration: {v0}',
+    'provider':
+        'provider',
+    'resolve_runtime_provider indisponivel: {v0}':
+        'resolve_runtime_provider unavailable: {v0}',
+    "rota '{v0}' nao existe em {v1}":
+        "route '{v0}' does not exist in {v1}",
+    'rota: {v0}: {v1}':
+        'route: {v0}: {v1}',
+    'rotacao':
+        'rotation',
+    'rotas':
+        'routes',
+    'seams.py nao encontrado junto de cli.py':
+        'seams.py not found next to cli.py',
+    'selo do pre-registo nao confere — recusado':
+        'pre-registration seal does not match — refused',
+    'sem choices':
+        'no choices',
+    'sem ledger em {v0}':
+        'no ledger at {v0}',
+    'sem pre-registo em aprendiz/sombra':
+        'no pre-registration in aprendiz/sombra',
+    'superficie vazia':
+        'superficie is empty',
+    "valor invalido '{v0}' (use on|off|herdar)":
+        "invalid value '{v0}' (use on|off|herdar)",
+    'veredicto recusado: {v0}':
+        'verdict refused: {v0}',
+    "{v0}: superficie '{v1}' nao tem regra propria":
+        "{v0}: superficie '{v1}' has no rule of its own",
 }
