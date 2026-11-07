@@ -10,24 +10,33 @@
 # `tier` fora de official/verified/community e `category` fora de
 # desktop/memory/platform/web/tools/voice/automation/models/general.
 #
-# ESTADO 2026-11-05: entrada estruturalmente completa, NAO submissivel.
-# O `repo` aponta para o Gitea interno, por decisao do dono (so Gitea, nada no
-# GitHub). A regra 2 do catalogo exige um repositorio publico clonavel por
-# https em GitHub ou GitLab; um Gitea interno nao serve. Enquanto essa decisao
-# se mantiver, o caminho do catalogo esta fechado por decisao, nao por falta de
-# trabalho. Ver `references/admissao-ao-catalogo.md` na skill do plugin.
+# ESTADO 2026-11-07: regra 2 SATISFEITA E MEDIDA.
+# `repo` aponta ao repositorio publico do GitHub. O pin foi clonado por https
+# (clone independente, nao o diretorio local) e validado com o mesmo comando
+# que o CI do catalogo corre:
+#   hermes plugins validate /opt/data/cache/scratch/gh-pin-check --install-deps
+# resultado: rc 0, "Validation passed", plugin carregavel em __init__.py.
+# No pin existem 72 ficheiros versionados, com `plugin.yaml`, `__init__.py`,
+# `dashboard/manifest.json` e `README.md` (ingles primeiro, PT em
+# `README.pt-PT.md`), que e' o que a pagina /docs/plugins/<name> renderiza.
+#
+# Resta um aviso de REGRA 9 (import de modulo core nao documentado) em dois
+# ficheiros de ferramenta de desenvolvimento: `seams.py:45` e
+# `eval/aprender.py:164`, ambos `hermes_cli.runtime_provider.
+# resolve_runtime_provider`. O runtime do plugin nao os importa (so o
+# `selftest.py` os simula), mas enquanto estiverem na arvore publicada a regra 9
+# e' motivo de recusa. Ver `references/admissao-ao-catalogo.md` na skill.
 
 name: vipernet-model-manager
-repo: https://gitea.home.server/proldan/vipernet-model-manager.git
+repo: https://github.com/ptv1p3r/vipernet-model-manager
 
 # OBRIGATORIO: o commit EXATO que o revisor leu, 40 caracteres hexadecimais.
-# Pin medido por `git ls-remote origin refs/heads/dev` a 2026-11-05, no ramo
-# `dev` (o default do repositorio). O `main` fica em
-# a23f7f8671ef8a90f439e2dad6c18efe721b155c (3.28.0).
-# Verificado no pin: 66 ficheiros versionados, `plugin.yaml` presente,
-# `__init__.py` presente, `version: 3.38.0` no plugin.yaml e no
-# dashboard/manifest.json. Um pin so se declara depois de o conteudo existir.
-sha: "cdc41b213146ea9cbda1717fd9ed9db1a9b6cfcb"
+# Pin medido por `git ls-remote https://github.com/ptv1p3r/...` e confirmado por
+# clone independente a 2026-11-07: HEAD de `main` =
+# 03985e1ddcfa5b8a7a0e07ab1f9f1a74c574b5e6, `version: 3.45.1` no `plugin.yaml`
+# e no `dashboard/manifest.json`. A `version` da entrada e' a do codigo NO PIN,
+# nunca a do disco local (que esta em 3.46.0): a regra 14 exige que coincidam.
+sha: "03985e1ddcfa5b8a7a0e07ab1f9f1a74c574b5e6"
 
 description: >-
   Picks the provider and model for each turn from the profile's own catalog,
@@ -40,7 +49,7 @@ maintainer: proldan
 tier: community
 category: models
 requires_hermes: ">=0.22.0"
-version: "3.38.0"
+version: "3.45.1"
 title: Vipernet Model Manager
 readme: true
 
@@ -57,3 +66,9 @@ capabilities:
   provides_middleware:
     - llm_request
   requires_env: []
+
+# PENDENTE antes do PR: `screenshots` (a regra pede capturas para tudo o que
+# tem UI, e este plugin tem um painel de dashboard). Nao ha URLs inventados
+# aqui: as capturas exigem uma sessao autenticada no browser do painel, que
+# ainda nao foi exercitada. Ate existirem, a galeria da pagina fica vazia e o
+# revisor ve o README so.
