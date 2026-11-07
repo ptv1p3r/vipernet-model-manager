@@ -711,4 +711,19 @@ _EN: dict[str, str] = {
         'verdict refused: {v0}',
     "{v0}: superficie '{v1}' nao tem regra propria":
         "{v0}: superficie '{v1}' has no rule of its own",
+    # Mensagens do backend do painel que chegavam ao ecra sem traducao.
+    "anterior à config actual":
+        "older than the current config",
+    "sem confirmação há mais de {v0} h":
+        "unconfirmed for over {v0} h",
+    "outro classificador":
+        "a different classifier",
+    "anterior ao erro actual":
+        "older than the current error",
+    "config desactualizado: o editor foi aberto noutra versao":
+        "config out of date: the editor was opened on another version",
+    "config mudou durante a gravação":
+        "config changed while saving",
+    "config sem nenhum perfil: o plugin ficaria sem rotas":
+        "config with no profile: the plugin would be left without routes",
 }

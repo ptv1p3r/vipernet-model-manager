@@ -388,8 +388,9 @@ def _decidir_rasto(
                 "motivo": str(motivo),
                 "ts": str(motivo_ts or ""),
                 "idade_s": idade,
-                "porque": ("anterior à config actual" if antes_da_config
-                           else "sem confirmação há mais de " + str(MOTIVO_VALIDADE_S // 3600) + " h"),
+                "porque": (t("anterior à config actual") if antes_da_config
+                           else t("sem confirmação há mais de {v0} h",
+                                  v0=MOTIVO_VALIDADE_S // 3600)),
             }
         else:
             motivo_actual = str(motivo)
@@ -405,7 +406,8 @@ def _decidir_rasto(
             "idade_s": _idade_s((rasto or {}).get("ts")) if rasto is not None else None,
             # Porque nao conta como estado: o classificador e outro, ou a
             # leitura e anterior ao erro que a config actual produz.
-            "motivo": (("outro classificador" if not mesmo else "anterior ao erro actual")
+            "motivo": ((t("outro classificador") if not mesmo
+                        else t("anterior ao erro actual"))
                        if rasto is not None else ""),
             "motivo_antigo": motivo_antigo,
         }
@@ -1387,7 +1389,7 @@ def config_post(request: Request, corpo: Any = Body(default=None)) -> JSONRespon
         return JSONResponse(
             status_code=409,
             content={
-                "erro": "config desactualizado: o editor foi aberto noutra versao",
+                "erro": t("config desactualizado: o editor foi aberto noutra versao"),
                 "rev": rev_actual,
                 "config": actual,
             },
@@ -1404,7 +1406,7 @@ def config_post(request: Request, corpo: Any = Body(default=None)) -> JSONRespon
         )
         return JSONResponse(
             status_code=409,
-            content={"erro": "config mudou durante a gravação", "rev": exc.rev_actual},
+            content={"erro": t("config mudou durante a gravação"), "rev": exc.rev_actual},
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -1519,7 +1521,7 @@ async def circuit_breaker_post(request: Request, corpo: Any = Body(default=None)
     except gestor.Conflito as exc:
         return JSONResponse(
             status_code=409,
-            content={"erro": "config mudou durante a gravacao", "rev": exc.rev_actual},
+            content={"erro": t("config mudou durante a gravação"), "rev": exc.rev_actual},
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -1548,7 +1550,7 @@ def validar_post(corpo: Any = Body(default=None)) -> dict[str, Any]:
         return {"config": cfg, "erros": erros}
     cfg, erros = gestor.validar(_corpo_objeto(corpo, obrigatorio=True))
     if not (cfg.get("perfis") or {}):
-        erros = list(erros) + ["config sem nenhum perfil: o plugin ficaria sem rotas"]
+        erros = list(erros) + [t("config sem nenhum perfil: o plugin ficaria sem rotas")]
     return {"config": cfg, "erros": erros}
 
 
