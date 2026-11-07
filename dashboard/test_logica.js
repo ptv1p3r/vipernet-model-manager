@@ -1975,6 +1975,30 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   I.setIdioma("pt");
 })();
 
+// Paridade do painel com o formato.py. Os literais abaixo sao os MESMOS que o
+// test_formato.py fixa do lado do Python: se um dos dois lados mudar sozinho
+// (separador, ou a regra pt-PT de nao agrupar quatro digitos), um falha.
+(function () {
+  const I = T.idioma;
+  I.setIdioma("pt");
+  check("paridade pt: 1234.5 nao agrupa (minimumGroupingDigits=2)",
+        I.fmtNum(1234.5, 1) === "1234,5", I.fmtNum(1234.5, 1));
+  check("paridade pt: 12345 agrupa com U+00A0",
+        I.fmtNum(12345, 0) === "12\u00a0345", I.fmtNum(12345, 0));
+  check("paridade pt: milhoes com dois separadores",
+        I.fmtNum(1234567, 0) === "1\u00a0234\u00a0567", I.fmtNum(1234567, 0));
+  check("paridade pt: negativo com virgula decimal",
+        I.fmtNum(-12345.5, 2) === "-12\u00a0345,50", I.fmtNum(-12345.5, 2));
+  I.setIdioma("en");
+  check("paridade en: quatro digitos agrupam",
+        I.fmtNum(1234.5, 1) === "1,234.5", I.fmtNum(1234.5, 1));
+  check("paridade en: milhoes com virgula",
+        I.fmtNum(1234567, 0) === "1,234,567", I.fmtNum(1234567, 0));
+  check("paridade: valor nao numerico devolve vazio",
+        I.fmtNum(null, 0) === "" && I.fmtNum(undefined, 0) === "");
+  I.setIdioma("pt");
+})();
+
 console.log("");
 if (falhas) {
   console.log(falhas + " de " + total + " verificacoes FALHARAM");

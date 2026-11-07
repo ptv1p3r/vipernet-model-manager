@@ -26,6 +26,12 @@ import importlib.util
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+import os
+
+# Mensagens fixadas nestes testes sao o texto de referencia (pt), que e a chave
+# do dicionario. O default do produto e `en`; forca-se a lingua aqui para a
+# medicao continuar a ser da mensagem e nao da lingua por omissao.
+os.environ.setdefault("VMM_IDIOMA", "pt")
 
 ROOT = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("vmm_tarefa_persistente_test",

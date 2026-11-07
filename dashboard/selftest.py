@@ -18,6 +18,11 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Mensagens fixadas nestes testes sao o texto de referencia (pt), que e a chave
+# do dicionario. O default do produto e `en`; forca-se a lingua aqui para a
+# medicao continuar a ser da mensagem e nao da lingua por omissao.
+os.environ.setdefault("VMM_IDIOMA", "pt")
+
 RAIZ = Path(__file__).resolve().parents[1]
 if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))

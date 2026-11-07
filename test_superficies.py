@@ -41,6 +41,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+# Mensagens fixadas nestes testes sao o texto de referencia (pt), que e a chave
+# do dicionario. O default do produto e `en`; forca-se a lingua aqui para a
+# medicao continuar a ser da mensagem e nao da lingua por omissao.
+os.environ.setdefault("VMM_IDIOMA", "pt")
+
 AQUI = Path(__file__).resolve().parent
 _RESULTADOS: list[tuple[str, bool, str]] = []
 

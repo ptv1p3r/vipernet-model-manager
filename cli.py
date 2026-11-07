@@ -32,6 +32,12 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import i18n as _i18n  # noqa: E402
 
+# Alias curto: a saida do CLI passa toda por aqui.
+_t = _i18n.t
+# Formato de valores: unica casa onde se formata (datas, numeros,
+# moedas). O locale vem do `i18n`, por isso ha uma so fonte.
+import formato as _f  # noqa: E402
+
 _AQUI = Path(__file__).resolve().parent
 
 
@@ -104,7 +110,7 @@ def _gravar_cas(cfg: dict[str, Any], rev_lido: str) -> None:
 
 
 def _erro(msg: str, codigo: int = 1) -> int:
-    print(f"vmm: {msg}", file=sys.stderr)
+    print(_t('vmm: {v0}', v0=msg), file=sys.stderr)
     return codigo
 
 
@@ -122,21 +128,23 @@ def _tabela(linhas: list[list[str]]) -> str:
 def cmd_status(args) -> int:
     cfg, erros = _cfg()
     for erro in erros:
-        print(f"aviso: {erro}", file=sys.stderr)
+        print(_t('aviso: {v0}', v0=erro), file=sys.stderr)
     perfis = cfg.get("perfis") or {}
     if args.json:
         print(json.dumps({"config": str(g.ficheiro_config()), "activo": cfg.get("activo", True),
                           "perfis": perfis}, ensure_ascii=False, indent=2))
         return 1 if erros else 0
-    print(f"config: {g.ficheiro_config()}")
-    print(f"global: {'ligado' if cfg.get('activo', True) else 'DESLIGADO'}"
-          f" · registar: {'sim' if cfg.get('registar', True) else 'nao'}")
-    print(f"perfis geridos: {len(perfis)}")
+    print(_t('config: {v0}', v0=g.ficheiro_config()))
+    print(_t('global: {v0} · registar: {v1}', v0=_t('ligado') if cfg.get('activo', True) else _t('DESLIGADO'), v1=_t('sim') if cfg.get('registar', True) else _t('nao')))
+    print(_t('perfis geridos: {v0}', v0=len(perfis)))
     est_g = g.estrategia_global(cfg)
-    print(f"estrategia global: {est_g['modo']}"
-          + (f" por {est_g['por']}" if est_g["modo"] == "rodizio" else "")
-          + f" ({est_g['origem']})")
-    linhas = [["perfil", "activo", "estrategia", "rotacao", "origem", "rotas", "niveis"]]
+    if est_g["modo"] == "rodizio":
+        print(_t("estrategia global: {v0} por {v1} ({v2})",
+                 v0=est_g["modo"], v1=est_g["por"], v2=_t(est_g["origem"])))
+    else:
+        print(_t("estrategia global: {v0} ({v1})",
+                 v0=est_g["modo"], v1=_t(est_g["origem"])))
+    linhas = [[_t('perfil'), _t('activo'), _t('estrategia'), _t('rotacao'), _t('origem'), _t('rotas'), _t('niveis')]]
     for nome, p in sorted(perfis.items()):
         rotas = p.get("catalogo") or []
         niveis = sorted({n for r in rotas for n in (r.get("complexidade") or [])},
@@ -144,8 +152,8 @@ def cmd_status(args) -> int:
         # A estrategia em vigor, nao o delta: um perfil que herda tem de mostrar
         # o que esta a decidir, e a coluna `origem` diz de onde vem.
         est = g.estrategia_efectiva(cfg, nome)
-        linhas.append([nome, "sim" if p.get("activo", True) else "NAO",
-                       est["modo"], est["por"], est["origem"],
+        linhas.append([nome, _t('sim') if p.get("activo", True) else _t('NAO'),
+                       est["modo"], est["por"], _t(est["origem"]),
                        str(len(rotas)), ",".join(niveis) or "-"])
     print(_tabela(linhas))
     return 1 if erros else 0
@@ -158,18 +166,18 @@ def cmd_on_off(args) -> int:
     if args.perfil:
         p = (cfg.get("perfis") or {}).get(args.perfil)
         if not isinstance(p, dict):
-            return _erro(f"perfil '{args.perfil}' nao esta na config (vmm perfis)", 3)
+            return _erro(_t("perfil '{v0}' nao esta na config (vmm perfis)", v0=args.perfil), 3)
         p["activo"] = ligar
-        alvo = f"perfil {args.perfil}"
+        alvo = _t("perfil {v0}", v0=args.perfil)
     else:
         cfg["activo"] = ligar
         alvo = "global"
     try:
         _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
-        return _erro(f"config recusada: {exc}")
-    print(f"{alvo}: {'ligado' if ligar else 'desligado'}")
-    print("o gateway le a config a quente (cache de 5 s); nao e preciso reiniciar.")
+        return _erro(_t('config recusada: {v0}', v0=exc))
+    print(f"{alvo}: {_t('ligado') if ligar else _t('desligado')}")
+    print(_t('o gateway le a config a quente (cache de 5 s); nao e preciso reiniciar.'))
     return 0
 
 
@@ -206,7 +214,7 @@ def _chamar_modelo(provider: str, modelo: str) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "http": 0, "provider": provider,
                 "provider_inferido": inferido,
-                "motivo": f"rota: {type(exc).__name__}: {str(exc)[:110]}"}
+                "motivo": _t("rota: {v0}: {v1}", v0=type(exc).__name__, v1=str(exc)[:110])}
     corpo = json.dumps({
         "model": modelo,
         "messages": [{"role": "user", "content": "Responde apenas: OK"}],
@@ -225,7 +233,7 @@ def _chamar_modelo(provider: str, modelo: str) -> dict[str, Any]:
         ok = bool(dados.get("choices"))
         return {"ok": ok, "http": resposta.status, "provider": provider,
                 "provider_inferido": inferido,
-                "motivo": "" if ok else "sem choices"}
+                "motivo": "" if ok else _t("sem choices")}
     except urllib.error.HTTPError as exc:
         texto = exc.read().decode(errors="replace")
         try:
@@ -255,10 +263,10 @@ def cmd_sombra(args) -> int:
         try:
             _gravar_cas(cfg, rev_lido)
         except ValueError as exc:
-            return _erro(f"config recusada: {exc}")
-        print(f"ensaio em sombra: {'ligado' if acao == 'on' else 'desligado'}")
+            return _erro(_t('config recusada: {v0}', v0=exc))
+        print(_t('ensaio em sombra: {v0}', v0=_t('ligado') if acao == 'on' else _t('desligado')))
         if acao == "on":
-            print("um braco sem vida medido mantem o ensaio parado (vmm sombra vida).")
+            print(_t('um braco sem vida medido mantem o ensaio parado (vmm sombra vida).'))
         return 0
 
     # Mesmo caminho que o middleware le (`_pre_registo_ensaio`): o desenho vive
@@ -267,14 +275,14 @@ def cmd_sombra(args) -> int:
     base = Path(g.directorio()) / "aprendiz" / "sombra"
     ficheiros = sorted(base.glob("pre-registo-*.json"))
     if not ficheiros:
-        return _erro("sem pre-registo em aprendiz/sombra", 3)
+        return _erro(_t('sem pre-registo em aprendiz/sombra'), 3)
     try:
         registo = json.loads(ficheiros[-1].read_text(encoding="utf-8"))
     except ValueError as exc:
-        return _erro(f"pre-registo ilegivel: {exc}")
+        return _erro(_t('pre-registo ilegivel: {v0}', v0=exc))
     sombra = _sombra_mod()
     if not sombra.verificar(registo):
-        return _erro("selo do pre-registo nao confere — recusado", 1)
+        return _erro(_t('selo do pre-registo nao confere — recusado'), 1)
 
     if acao == "vida":
         veredicto = sombra.sondar_vida(registo, _chamar_modelo)
@@ -286,20 +294,20 @@ def cmd_sombra(args) -> int:
         temporario.replace(destino)
         for braco in ("a", "b"):
             d = veredicto[f"braco_{braco}"]
-            estado = "vivo" if d.get("ok") else "MORTO"
+            estado = _t('vivo') if d.get("ok") else _t('MORTO')
             print(f"braco {braco}: {d.get('modelo')} — {estado} "
                   f"(HTTP {d.get('http')}) {d.get('motivo') or ''}".rstrip())
-        print(f"todos vivos: {veredicto['todos_vivos']} | gravado em {destino}")
+        print(_t('todos vivos: {v0} | gravado em {v1}', v0=veredicto['todos_vivos'], v1=destino))
         return 0 if veredicto["todos_vivos"] else 1
 
     cfg, _ = _cfg()
     _bloco = cfg.get("sombra")
     bloco = _bloco if isinstance(_bloco, dict) else {}
-    print(f"pre-registo: {ficheiros[-1].name} | selo ok | sha {str(registo.get('sha256'))[:16]}")
-    print(f"ensaio: {registo.get('ensaio')} | unidade: {registo.get('unidade_de_randomizacao')}")
-    print(f"braco a = {registo.get('braco_a')} | braco b = {registo.get('braco_b')}")
-    print(f"n por braco = {registo.get('n_por_braco')} | margem = {registo.get('margem_nao_inferioridade')}")
-    print(f"interruptor: {'ligado' if bloco.get('activo') else 'desligado'}")
+    print(_t('pre-registo: {v0} | selo ok | sha {v1}', v0=ficheiros[-1].name, v1=str(registo.get('sha256'))[:16]))
+    print(_t('ensaio: {v0} | unidade: {v1}', v0=registo.get('ensaio'), v1=registo.get('unidade_de_randomizacao')))
+    print(_t('braco a = {v0} | braco b = {v1}', v0=registo.get('braco_a'), v1=registo.get('braco_b')))
+    print(_t('n por braco = {v0} | margem = {v1}', v0=registo.get('n_por_braco'), v1=registo.get('margem_nao_inferioridade')))
+    print(_t('interruptor: {v0}', v0=_t('ligado') if bloco.get('activo') else _t('desligado')))
     vida = {}
     caminho_vida = base / "vida.json"
     if caminho_vida.exists():
@@ -308,13 +316,12 @@ def cmd_sombra(args) -> int:
         except ValueError:
             vida = {}
     if vida:
-        print(f"vida: {vida.get('ts')} | todos vivos: {vida.get('todos_vivos')}")
+        print(_t('vida: {v0} | todos vivos: {v1}', v0=vida.get('ts'), v1=vida.get('todos_vivos')))
         for braco in ("a", "b"):
             d = vida.get(f"braco_{braco}") or {}
-            print(f"  braco {braco}: {'vivo' if d.get('ok') else 'MORTO'} "
-                  f"(HTTP {d.get('http')}) {str(d.get('motivo') or '')[:90]}")
+            print(_t('  braco {v0}: {v1} (HTTP {v2}) {v3}', v0=braco, v1=_t('vivo') if d.get('ok') else _t('MORTO'), v2=d.get('http'), v3=str(d.get('motivo') or '')[:90]))
     else:
-        print("vida: nunca medida — o ensaio nao aplica sem ela (vmm sombra vida)")
+        print(_t('vida: nunca medida — o ensaio nao aplica sem ela (vmm sombra vida)'))
     return 0
 
 
@@ -328,12 +335,12 @@ def cmd_classificador(args) -> int:
     cfg, erros = _cfg()
     rev_lido = g.rev(cfg)
     for erro in erros:
-        print(f"aviso: {erro}", file=sys.stderr)
+        print(_t('aviso: {v0}', v0=erro), file=sys.stderr)
     perfis = cfg.get("perfis") or {}
 
     if args.cmd == "ver" or args.cmd is None:
-        linhas = [["perfil", "classificador", "provider", "modelo", "via", "esforco/confianca",
-                   "origem"]]
+        linhas = [[_t('perfil'), "classificador", _t('provider'), _t('modelo'), "via", "esforco/confianca",
+                   _t('origem')]]
         for nome in sorted(perfis):
             # Uma so casa para a pergunta: `classificador_efectivo` resolve a
             # heranca e o "e utilizavel?" — o CLI nao repete essa logica.
@@ -342,25 +349,24 @@ def cmd_classificador(args) -> int:
             # um piso de confianca. Mostrar os dois na mesma coluna evita uma
             # tabela larga cheia de celulas vazias.
             if c["via"] == "decisoes":
-                alavanca = f"conf>={c['confianca_min']:.2f}"
+                alavanca = "conf>=" + _f.numero(c['confianca_min'], 2)
             else:
                 alavanca = c["esforco"] or "-"
             linhas.append([
                 nome,
-                "ligado" if c["modo"] == "modelo" else "desligado",
+                _t('ligado') if c["modo"] == "modelo" else _t('desligado'),
                 c["provider"] or "-",
                 c["modelo"] or "-",
                 c["via"],
                 alavanca,
-                c["origem"] + (f" ({c['motivo']})" if c["motivo"] else ""),
+                _t(c["origem"]) + (f" ({c['motivo']})" if c["motivo"] else ""),
             ])
         print(_tabela(linhas))
         global_c = (cfg.get("analise") or {}).get("classificador") or {}
-        estado = "ligado" if global_c.get("activo") else "desligado"
-        print(f"\nglobal: {estado} · {global_c.get('provider') or '-'}"
-              f"/{global_c.get('modelo') or '-'}")
+        estado = _t('ligado') if global_c.get("activo") else _t('desligado')
+        print(_t('\nglobal: {v0} · {v1}/{v2}', v0=estado, v1=global_c.get('provider') or '-', v2=global_c.get('modelo') or '-'))
         if not (global_c.get("provider") and global_c.get("modelo")):
-            print("sem classificador definido: a complexidade e decidida pela heuristica.")
+            print(_t('sem classificador definido: a complexidade e decidida pela heuristica.'))
         return 1 if erros else 0
 
     if args.cmd == "lote":
@@ -368,14 +374,13 @@ def cmd_classificador(args) -> int:
         # corpus inteiro sem pagar uma chamada por caso.
         textos = list(getattr(args, "textos", None) or [])
         if not textos:
-            return _erro("lote exige pelo menos um texto", 2)
+            return _erro(_t('lote exige pelo menos um texto'), 2)
         perfil = args.perfil or "default"
         if perfil not in perfis:
-            return _erro(f"perfil '{perfil}' nao esta na config (vmm perfis)", 3)
+            return _erro(_t("perfil '{v0}' nao esta na config (vmm perfis)", v0=perfil), 3)
         c = g.classificador_efectivo(cfg, perfil)
         if c["modo"] != "modelo":
-            return _erro(f"perfil '{perfil}' sem classificador por modelo "
-                         f"({c['motivo'] or 'desligado'})", 1)
+            return _erro(_t("perfil '{v0}' sem classificador por modelo ({v1})", v0=perfil, v1=c['motivo'] or 'desligado'), 1)
         definicao, erros_d = _analise_modelo().normalizar(
             (g.perfil_config(cfg, perfil).get("analise") or {}).get("classificador"))
         if erros_d:
@@ -383,9 +388,9 @@ def cmd_classificador(args) -> int:
         try:
             _seams = _seams_mod()
             if not _seams.seam_disponivel():
-                return _erro(f"resolve_runtime_provider indisponivel: {_seams.seam_erro()}", 1)
+                return _erro(_t('resolve_runtime_provider indisponivel: {v0}', v0=_seams.seam_erro()), 1)
         except Exception as exc:  # noqa: BLE001
-            return _erro(f"resolve_runtime_provider indisponivel: {exc}", 1)
+            return _erro(_t('resolve_runtime_provider indisponivel: {v0}', v0=exc), 1)
 
         def resolver(provider: str, modelo: str) -> dict:
             rt = _seams.resolver_provider(provider, modelo)
@@ -394,14 +399,18 @@ def cmd_classificador(args) -> int:
 
         r = _analise_modelo().classificar_lote(textos, definicao, resolver, perfil=perfil)
         if r.get("erro"):
-            print(f"erro: {r['erro']}", file=sys.stderr)
+            print(_t('erro: {v0}', v0=r['erro']), file=sys.stderr)
         for texto_pedido, nivel in zip(textos, r.get("niveis") or []):
             print(f"{nivel or '?':6s}  {texto_pedido[:70]}")
-        print(f"\n{r['provider']}/{r['modelo']} · {r.get('pedidos')} pedido(s) · "
-              f"{r.get('ms')} ms · formato={r.get('formato')} · "
-              f"pedido={r.get('formato_pedido') or 'texto'} · "
-              f"tokens {r.get('tokens_entrada')}→{r.get('tokens_saida')}"
-              + (f" · {r['custo_usd']:.6f} USD" if r.get("custo_usd") is not None else ""))
+        _m = "\n{v0}/{v1} · {v2} pedido(s) · {v3} ms · formato={v4} · pedido={v5} · tokens {v6}→{v7}"
+        _v = {"v0": r["provider"], "v1": r["modelo"], "v2": _f.numero(r.get("pedidos"), 0),
+              "v3": _f.milissegundos(r.get("ms")), "v4": r.get("formato"),
+              "v5": r.get("formato_pedido") or _t("texto"),
+              "v6": _f.numero(r.get("tokens_entrada"), 0), "v7": _f.numero(r.get("tokens_saida"), 0)}
+        if r.get("custo_usd") is not None:
+            _m += " · {v8}"
+            _v["v8"] = _f.moeda_iso(r["custo_usd"], "USD", 6)
+        print(_t(_m, **_v))
         return 1 if r.get("erro") else 0
 
     alvo = "global"
@@ -409,11 +418,11 @@ def cmd_classificador(args) -> int:
         if args.perfil:
             p = perfis.get(args.perfil)
             if not isinstance(p, dict):
-                return _erro(f"perfil '{args.perfil}' nao esta na config (vmm perfis)", 3)
+                return _erro(_t("perfil '{v0}' nao esta na config (vmm perfis)", v0=args.perfil), 3)
             p.setdefault("analise", {})["classificador"] = dict(
                 p.get("analise", {}).get("classificador") or {})
             bloco = p["analise"]["classificador"]
-            alvo = f"perfil {args.perfil}"
+            alvo = _t("perfil {v0}", v0=args.perfil)
         else:
             cfg.setdefault("analise", {}).setdefault("classificador", {})
             bloco = cfg["analise"]["classificador"]
@@ -434,7 +443,7 @@ def cmd_classificador(args) -> int:
             if getattr(args, "formato", None) is not None:
                 valor_f = str(args.formato).strip().lower()
                 if valor_f not in ("auto", "on", "off"):
-                    return _erro("--formato deve ser auto, on ou off", 2)
+                    return _erro(_t('--formato deve ser auto, on ou off'), 2)
                 bloco["formato_json"] = valor_f
             if getattr(args, "via", None) is not None:
                 valor_v = str(args.via).strip().lower()
@@ -443,31 +452,33 @@ def cmd_classificador(args) -> int:
                 elif valor_v in _analise_modelo().VIAS:
                     bloco["via"] = _analise_modelo().VIAS[valor_v]
                 else:
-                    return _erro("--via deve ser chat ou decisoes", 2)
+                    return _erro(_t('--via deve ser chat ou decisoes'), 2)
             if getattr(args, "confianca_min", None) is not None:
                 try:
                     piso = float(args.confianca_min)
                 except (TypeError, ValueError):
-                    return _erro("--confianca-min deve ser um numero entre 0 e 1", 2)
+                    return _erro(_t('--confianca-min deve ser um numero entre 0 e 1'), 2)
                 if not (0.0 <= piso <= 1.0):
-                    return _erro("--confianca-min deve estar entre 0 e 1", 2)
+                    return _erro(_t('--confianca-min deve estar entre 0 e 1'), 2)
                 bloco["confianca_min"] = piso
             if not (bloco.get("provider") and bloco.get("modelo")):
-                return _erro("ligar exige --provider e --modelo", 2)
+                return _erro(_t('ligar exige --provider e --modelo'), 2)
         try:
             _gravar_cas(cfg, rev_lido)
         except ValueError as exc:
-            return _erro(f"config recusada: {exc}")
-        print(f"{alvo}: classificador {'ligado' if args.cmd == 'on' else 'desligado'}"
-              + (f" ({bloco.get('provider')}/{bloco.get('modelo')}"
-                 f", esforco={bloco.get('esforco') or 'nao declarado'})"
-                 if args.cmd == "on" else ""))
+            return _erro(_t('config recusada: {v0}', v0=exc))
+        if args.cmd == "on":
+            print(_t("{v0}: classificador {v1} ({v2}/{v3}, esforco={v4})",
+                     v0=alvo, v1=_t("ligado"), v2=bloco.get("provider"),
+                     v3=bloco.get("modelo"),
+                     v4=bloco.get("esforco") or _t("nao declarado")))
+        else:
+            print(_t("{v0}: classificador {v1}", v0=alvo, v1=_t("desligado")))
         if args.cmd == "off" and args.perfil is None:
-            print("o perfil que quiser desligar um global ligado declara "
-                  "{'activo': false} no seu bloco.")
+            print(_t("o perfil que quiser desligar um global ligado declara {'activo': false} no seu bloco."))
         return 0
 
-    return _erro(f"comando desconhecido: {args.cmd}", 2)
+    return _erro(_t('comando desconhecido: {v0}', v0=args.cmd), 2)
 
 
 def cmd_perfis(args) -> int:
@@ -475,15 +486,15 @@ def cmd_perfis(args) -> int:
     perfis = cfg.get("perfis") or {}
     print("geridos:")
     for nome, p in sorted(perfis.items()):
-        estado = "ligado" if p.get("activo", True) else "desligado"
-        print(f"  {nome}: {estado}, {len(p.get('catalogo') or [])} rotas")
+        estado = _t('ligado') if p.get("activo", True) else _t('desligado')
+        print(_t('  {v0}: {v1}, {v2} rotas', v0=nome, v1=estado, v2=len(p.get('catalogo') or [])))
     try:
         raiz = Path(g.directorio()).parent.parent / "profiles"
         conhecidos = sorted(d.name for d in raiz.iterdir() if d.is_dir()) if raiz.is_dir() else []
     except Exception:
         conhecidos = []
     if conhecidos:
-        print("existentes que nao estao na config (nao geridos):")
+        print(_t('existentes que nao estao na config (nao geridos):'))
         for nome in conhecidos:
             if nome not in perfis:
                 print(f"  {nome}")
@@ -495,11 +506,11 @@ def cmd_perfil_add(args) -> int:
     rev_lido = g.rev(cfg)
     perfis = cfg.setdefault("perfis", {})
     if args.nome in perfis:
-        return _erro(f"perfil '{args.nome}' ja existe", 2)
+        return _erro(_t("perfil '{v0}' ja existe", v0=args.nome), 2)
     if args.copiar_de:
         base = perfis.get(args.copiar_de)
         if not isinstance(base, dict):
-            return _erro(f"perfil de origem '{args.copiar_de}' nao existe", 3)
+            return _erro(_t("perfil de origem '{v0}' nao existe", v0=args.copiar_de), 3)
         novo = json.loads(json.dumps(base))
     else:
         novo = {"activo": True, "catalogo": []}
@@ -507,9 +518,12 @@ def cmd_perfil_add(args) -> int:
     try:
         _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
-        return _erro(f"config recusada: {exc}")
-    print(f"perfil '{args.nome}' acrescentado"
-          + (f" (copia de '{args.copiar_de}')" if args.copiar_de else " (sem rotas)"))
+        return _erro(_t('config recusada: {v0}', v0=exc))
+    if args.copiar_de:
+        print(_t("perfil '{v0}' acrescentado (copia de '{v1}')",
+                 v0=args.nome, v1=args.copiar_de))
+    else:
+        print(_t("perfil '{v0}' acrescentado (sem rotas)", v0=args.nome))
     return 0
 
 
@@ -525,7 +539,7 @@ def cmd_estrategia(args) -> int:
     rev_lido = g.rev(cfg)
     perfis = cfg.get("perfis") or {}
     if args.perfil and args.perfil not in perfis:
-        return _erro(f"perfil '{args.perfil}' nao existe", 3)
+        return _erro(_t("perfil '{v0}' nao existe", v0=args.perfil), 3)
 
     if not (args.modo or args.por or args.herdar):
         if args.json:
@@ -536,14 +550,13 @@ def cmd_estrategia(args) -> int:
             }, ensure_ascii=False, indent=2))
             return 0
         eg = g.estrategia_global(cfg)
-        print(f"global: {eg['modo']} / {eg['por']} ({eg['origem']})")
-        linhas = [["perfil", "estrategia", "rotacao", "origem"]]
+        print(_t('global: {v0} / {v1} ({v2})', v0=eg['modo'], v1=eg['por'], v2=_t(eg['origem'])))
+        linhas = [[_t('perfil'), _t('estrategia'), _t('rotacao'), _t('origem')]]
         for nome in sorted(perfis):
             e = g.estrategia_efectiva(cfg, nome)
-            linhas.append([nome, e["modo"], e["por"], e["origem"]])
+            linhas.append([nome, e["modo"], e["por"], _t(e["origem"])])
         print(_tabela(linhas))
-        print(f"valores possiveis: modo={'|'.join(g.ESTRATEGIAS)} "
-              f"por={'|'.join(g.POR)}")
+        print(_t('valores possiveis: modo={v0} por={v1}', v0='|'.join(g.ESTRATEGIAS), v1='|'.join(g.POR)))
         return 0
 
     if args.herdar:
@@ -572,16 +585,15 @@ def cmd_estrategia(args) -> int:
     except ValueError as exc:
         # O `ValueError` traz a razao com os valores aceites: mostra-la e o que
         # ensina a lista fechada, um "invalido" seco nao.
-        return _erro(f"config recusada: {exc}")
+        return _erro(_t('config recusada: {v0}', v0=exc))
 
     lido = g.estrategia_efectiva(_cfg()[0], args.perfil) if args.perfil \
         else dict(g.estrategia_global(_cfg()[0]))
     if args.herdar:
-        print(f"{args.perfil or 'global'}: voltou a herdar -> "
-              f"{lido['modo']} / {lido['por']}")
+        print(_t('{v0}: voltou a herdar -> {v1} / {v2}', v0=args.perfil or 'global', v1=lido['modo'], v2=lido['por']))
     else:
         print(f"{args.perfil or 'global'}: {lido['modo']} / {lido['por']}"
-              f" ({lido.get('origem', 'global')})")
+              f" ({_t(lido.get('origem', 'global'))})")
     return 0
 
 
@@ -590,13 +602,13 @@ def cmd_perfil_rm(args) -> int:
     rev_lido = g.rev(cfg)
     perfis = cfg.get("perfis") or {}
     if args.nome not in perfis:
-        return _erro(f"perfil '{args.nome}' nao existe", 3)
+        return _erro(_t("perfil '{v0}' nao existe", v0=args.nome), 3)
     del perfis[args.nome]
     try:
         _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
-        return _erro(f"config recusada: {exc}")
-    print(f"perfil '{args.nome}' removido (deixa de ser gerido)")
+        return _erro(_t('config recusada: {v0}', v0=exc))
+    print(_t("perfil '{v0}' removido (deixa de ser gerido)", v0=args.nome))
     return 0
 
 
@@ -605,7 +617,7 @@ def cmd_rota_list(args) -> int:
     perfis = cfg.get("perfis") or {}
     alvos = [args.perfil] if args.perfil else sorted(perfis)
     if args.perfil and args.perfil not in perfis:
-        return _erro(f"perfil '{args.perfil}' nao existe", 3)
+        return _erro(_t("perfil '{v0}' nao existe", v0=args.perfil), 3)
     if args.json:
         print(json.dumps({n: perfis[n].get("catalogo") or [] for n in alvos},
                          ensure_ascii=False, indent=2))
@@ -613,10 +625,8 @@ def cmd_rota_list(args) -> int:
     for nome in alvos:
         p = perfis[nome]
         est = g.estrategia_efectiva(cfg, nome)
-        print(f"[{nome}] estrategia={est['modo']} rotacao_por={est['por']} "
-              f"origem={est['origem']} "
-              f"activo={'sim' if p.get('activo', True) else 'NAO'}")
-        linhas = [["id", "provider", "modelo", "acesso", "complexidade", "esforco"]]
+        print(_t('[{v0}] estrategia={v1} rotacao_por={v2} origem={v3} activo={v4}', v0=nome, v1=est['modo'], v2=est['por'], v3=_t(est['origem']), v4=_t('sim') if p.get('activo', True) else _t('NAO')))
+        linhas = [["id", _t('provider'), _t('modelo'), "acesso", "complexidade", "esforco"]]
         for r in p.get("catalogo") or []:
             linhas.append([r.get("id", ""), r.get("provider", ""), r.get("modelo", ""),
                            r.get("acesso", "?"),
@@ -643,7 +653,7 @@ def cmd_rota_add(args) -> int:
     perfis = cfg.get("perfis") or {}
     p = perfis.get(args.perfil)
     if not isinstance(p, dict):
-        return _erro(f"perfil '{args.perfil}' nao existe (vmm perfil add {args.perfil})", 3)
+        return _erro(_t("perfil '{v0}' nao existe (vmm perfil add {v1})", v0=args.perfil, v1=args.perfil), 3)
     try:
         niveis = _niveis(args.complexidade)
     except ValueError as exc:
@@ -667,7 +677,7 @@ def cmd_rota_add(args) -> int:
     try:
         _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
-        return _erro(f"config recusada: {exc}")
+        return _erro(_t('config recusada: {v0}', v0=exc))
     extras = [f"acesso={entrada['acesso']}"]
     if entrada.get("esforco"):
         extras.append(f"esforco={entrada['esforco']}")
@@ -675,8 +685,7 @@ def cmd_rota_add(args) -> int:
         extras.append(f"custo={entrada['custo']}")
     if entrada.get("ordem") is not None:
         extras.append(f"ordem={entrada['ordem']}")
-    print(f"rota '{entrada['id']}' acrescentada a {args.perfil} para {','.join(niveis)}"
-          f" ({', '.join(extras)})")
+    print(_t("rota '{v0}' acrescentada a {v1} para {v2} ({v3})", v0=entrada['id'], v1=args.perfil, v2=','.join(niveis), v3=', '.join(extras)))
     return 0
 
 
@@ -686,13 +695,13 @@ def cmd_rota_esforco(args) -> int:
     rev_lido = g.rev(cfg)
     p = (cfg.get("perfis") or {}).get(args.perfil)
     if not isinstance(p, dict):
-        return _erro(f"perfil '{args.perfil}' nao existe", 3)
+        return _erro(_t("perfil '{v0}' nao existe", v0=args.perfil), 3)
     alvo = next((r for r in (p.get("catalogo") or []) if r.get("id") == args.id), None)
     if alvo is None:
-        return _erro(f"rota '{args.id}' nao existe em {args.perfil}", 3)
+        return _erro(_t("rota '{v0}' nao existe em {v1}", v0=args.id, v1=args.perfil), 3)
     if str(args.valor).strip() in ("-", "nenhum", "limpar"):
         alvo.pop("esforco", None)
-        novo = "nao declarado"
+        novo = _t("nao declarado")
     else:
         esforco, erro_e = g.normalizar_esforco(args.valor)
         if erro_e:
@@ -702,8 +711,8 @@ def cmd_rota_esforco(args) -> int:
     try:
         _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
-        return _erro(f"config recusada: {exc}")
-    print(f"rota '{args.id}' de {args.perfil}: esforco={novo}")
+        return _erro(_t('config recusada: {v0}', v0=exc))
+    print(_t("rota '{v0}' de {v1}: esforco={v2}", v0=args.id, v1=args.perfil, v2=novo))
     return 0
 
 
@@ -712,17 +721,17 @@ def cmd_rota_rm(args) -> int:
     rev_lido = g.rev(cfg)
     p = (cfg.get("perfis") or {}).get(args.perfil)
     if not isinstance(p, dict):
-        return _erro(f"perfil '{args.perfil}' nao existe", 3)
+        return _erro(_t("perfil '{v0}' nao existe", v0=args.perfil), 3)
     catalogo = p.get("catalogo") or []
     restantes = [r for r in catalogo if r.get("id") != args.id]
     if len(restantes) == len(catalogo):
-        return _erro(f"rota '{args.id}' nao existe em {args.perfil}", 3)
+        return _erro(_t("rota '{v0}' nao existe em {v1}", v0=args.id, v1=args.perfil), 3)
     p["catalogo"] = restantes
     try:
         _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
-        return _erro(f"config recusada: {exc}")
-    print(f"rota '{args.id}' removida de {args.perfil}")
+        return _erro(_t('config recusada: {v0}', v0=exc))
+    print(_t("rota '{v0}' removida de {v1}", v0=args.id, v1=args.perfil))
     return 0
 
 
@@ -735,17 +744,17 @@ def cmd_superficie_list(args) -> int:
         p = g.perfil_config(cfg, nome)
         if p is None:
             if args.perfil:
-                return _erro(f"perfil '{nome}' nao e gerido por este config", 3)
+                return _erro(_t("perfil '{v0}' nao e gerido por este config", v0=nome), 3)
             continue
         regras = (p.get("analise") or {}).get("superficies") or {}
         prop = ((cfg.get("perfis", {}).get(nome) or {}).get("analise") or {}).get("superficies") or {}
         if not regras:
-            print(f"{nome}: sem regras de superficie")
+            print(_t('{v0}: sem regras de superficie', v0=nome))
             saida = True
             continue
         print(f"{nome}:")
         for sup, regra in sorted(regras.items()):
-            origem = "perfil" if sup in prop else "global"
+            origem = _t("perfil") if sup in prop else _t("global")
             if regra.get("activo") is False:
                 alvo = "(anulada)"
             elif regra.get("entrada"):
@@ -761,9 +770,9 @@ def cmd_superficie_list(args) -> int:
                       for e in (p.get("catalogo") or [])
                       if isinstance(e.get("superficies"), dict) and e["superficies"]]
         if declarados:
-            print(f"  {'modelos':14s} (superficie -> permitido)")
+            print(_t('  {v0:14s} (superficie -> permitido)', v0='modelos'))
             for mid, mapa in declarados:
-                regras_m = " ".join(f"{s}={'sim' if v else 'nao'}"
+                regras_m = " ".join(f"{s}={_t('sim') if v else _t('nao')}"
                                     for s, v in sorted(mapa.items()))
                 print(f"    {str(mid)[:24]:24s} {regras_m}")
         saida = True
@@ -784,15 +793,15 @@ def cmd_superficie_modelo(args) -> int:
     elif valor in mapa_permitido:
         novo = mapa_permitido[valor]
     else:
-        return _erro(f"valor invalido '{args.valor}' (use on|off|herdar)", 2)
+        return _erro(_t("valor invalido '{v0}' (use on|off|herdar)", v0=args.valor), 2)
     sup = str(args.superficie or "").strip().lower()
     if not sup:
-        return _erro("superficie vazia", 2)
+        return _erro(_t("superficie vazia"), 2)
     cfg, _ = _cfg()
     rev = g.rev(cfg)
     p = g.perfil_config(cfg, args.perfil)
     if p is None:
-        return _erro(f"perfil '{args.perfil}' nao e gerido por este config", 3)
+        return _erro(_t("perfil '{v0}' nao e gerido por este config", v0=args.perfil), 3)
     candidatos = g.catalogo_utilizavel(p)
     alvo = next((e for e in candidatos if str(e.get("id")) == args.id), None)
     if alvo is None:
@@ -801,7 +810,7 @@ def cmd_superficie_modelo(args) -> int:
                      if f"{e['provider']}/{e['modelo']}" == args.id), None)
     if alvo is None:
         ids = ", ".join(str(e.get("id")) for e in candidatos) or "(catalogo vazio)"
-        return _erro(f"modelo '{args.id}' nao existe em {args.perfil}: {ids}", 3)
+        return _erro(_t("modelo '{v0}' nao existe em {v1}: {v2}", v0=args.id, v1=args.perfil, v2=ids), 3)
     # Escreve-se na entrada DECLARADA no perfil, nao na copia fundida que
     # `perfil_config` devolve: mutar a copia e uma escrita que se perde em
     # silencio (o comando dizia "recusado" e o ficheiro ficava igual).
@@ -811,8 +820,7 @@ def cmd_superficie_modelo(args) -> int:
             entrada = e
             break
     if entrada is None:
-        return _erro(f"modelo '{args.id}' vem do catalogo global, nao de "
-                     f"{args.perfil}: declare-o no perfil antes de o limitar", 3)
+        return _erro(_t("modelo '{v0}' vem do catalogo global, nao de {v1}: declare-o no perfil antes de o limitar", v0=args.id, v1=args.perfil), 3)
     mapa = entrada.get("superficies")
     mapa = dict(mapa) if isinstance(mapa, dict) else {}
     if novo is None:
@@ -821,7 +829,7 @@ def cmd_superficie_modelo(args) -> int:
             entrada.pop("superficies", None)
         else:
             entrada["superficies"] = mapa
-        estado = "herda do perfil"
+        estado = _t("herda do perfil")
     else:
         mapa[sup] = novo
         entrada["superficies"] = mapa
@@ -836,10 +844,10 @@ def cmd_superficie_modelo(args) -> int:
         {"catalogo": ((depois.get("perfis", {}).get(args.perfil) or {})
                       .get("catalogo") or [])}, str(alvo.get("id")))
     if novo is None and ficou is not None:
-        return _erro("a escrita nao ficou no disco (mapa ainda presente)", 1)
+        return _erro(_t('a escrita nao ficou no disco (mapa ainda presente)'), 1)
     if novo is not None and (ficou or {}).get(sup) is not novo:
-        return _erro("a escrita nao ficou no disco (valor diferente)", 1)
-    print(f"{args.perfil}: {alvo.get('id')} superficie '{sup}' -> {estado}")
+        return _erro(_t('a escrita nao ficou no disco (valor diferente)'), 1)
+    print(_t("{v0}: {v1} superficie '{v2}' -> {v3}", v0=args.perfil, v1=alvo.get('id'), v2=sup, v3=estado))
     return 0
 
 
@@ -851,7 +859,7 @@ def _alvo_superficie(valor: str, perfil: str) -> tuple[dict | None, str]:
     if texto.lower().startswith("nivel:"):
         nivel = texto.split(":", 1)[1].strip().lower()
         if nivel not in g.NIVEIS:
-            return None, f"nivel invalido: {nivel}"
+            return None, _t("nivel invalido: {v0}", v0=nivel)
         return {"nivel": nivel}, ""
     if texto.lower().startswith("entrada:"):
         return {"entrada": texto.split(":", 1)[1].strip()}, ""
@@ -869,25 +877,25 @@ def cmd_superficie_add(args) -> int:
     rev_lido = g.rev(cfg)
     p = (cfg.get("perfis") or {}).get(args.perfil)
     if not isinstance(p, dict):
-        return _erro(f"perfil '{args.perfil}' nao existe", 3)
+        return _erro(_t("perfil '{v0}' nao existe", v0=args.perfil), 3)
     regra, erro_a = _alvo_superficie(args.alvo, args.perfil)
     if erro_a:
         return _erro(erro_a, 2)
     sup = str(args.superficie or "").strip().lower()
     if not sup:
-        return _erro("superficie vazia", 2)
+        return _erro(_t("superficie vazia"), 2)
     analise = p.setdefault("analise", {})
     if not isinstance(analise, dict):
-        return _erro(f"perfis.{args.perfil}.analise nao e um objecto", 3)
+        return _erro(_t('perfis.{v0}.analise nao e um objecto', v0=args.perfil), 3)
     superficies = analise.setdefault("superficies", {})
     if not isinstance(superficies, dict):
-        return _erro(f"perfis.{args.perfil}.analise.superficies nao e um objecto", 3)
+        return _erro(_t('perfis.{v0}.analise.superficies nao e um objecto', v0=args.perfil), 3)
     superficies[sup] = regra
     try:
         _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
-        return _erro(f"config recusada: {exc}")
-    print(f"{args.perfil}: superficie '{sup}' -> {regra}")
+        return _erro(_t('config recusada: {v0}', v0=exc))
+    print(_t("{v0}: superficie '{v1}' -> {v2}", v0=args.perfil, v1=sup, v2=regra))
     return 0
 
 
@@ -896,19 +904,19 @@ def cmd_superficie_rm(args) -> int:
     rev_lido = g.rev(cfg)
     p = (cfg.get("perfis") or {}).get(args.perfil)
     if not isinstance(p, dict):
-        return _erro(f"perfil '{args.perfil}' nao existe", 3)
+        return _erro(_t("perfil '{v0}' nao existe", v0=args.perfil), 3)
     sup = str(args.superficie or "").strip().lower()
     superficies = ((p.get("analise") or {}).get("superficies") or {})
     if sup not in superficies:
-        return _erro(f"{args.perfil}: superficie '{sup}' nao tem regra propria", 3)
+        return _erro(_t("{v0}: superficie '{v1}' nao tem regra propria", v0=args.perfil, v1=sup), 3)
     superficies.pop(sup)
     if not superficies:
         (p.get("analise") or {}).pop("superficies", None)
     try:
         _gravar_cas(cfg, rev_lido)
     except ValueError as exc:
-        return _erro(f"config recusada: {exc}")
-    print(f"{args.perfil}: regra da superficie '{sup}' removida")
+        return _erro(_t('config recusada: {v0}', v0=exc))
+    print(_t("{v0}: regra da superficie '{v1}' removida", v0=args.perfil, v1=sup))
     return 0
 
 
@@ -931,36 +939,33 @@ def cmd_retencao(args) -> int:
     """
     cfg, erros = _cfg()
     if erros:
-        return _erro("config com erros: " + "; ".join(erros))
+        return _erro(_t("config com erros: {v0}", v0="; ".join(erros)))
     rt = _retencao()
     valores = _retencao_efectiva(cfg)
     dias = args.dias if args.dias is not None else valores["dias_completo"]
     if dias < 0:
-        return _erro("--dias tem de ser >= 0", 2)
+        return _erro(_t('--dias tem de ser >= 0'), 2)
     caminho = g.caminho_ledger()
     estado = rt.relatorio(caminho)
     if "bytes" in estado:
-        print(f"ledger {caminho}")
-        print(f"  {estado['bytes'] / 1048576:.2f} MB, {estado['linhas']} linhas "
-              f"({estado['linhas_detalhe']} de detalhe, {estado['resumos']} resumos)")
+        print(_t('ledger {v0}', v0=caminho))
+        print(_t('  {v0:.2f} MB, {v1} linhas ({v2} de detalhe, {v3} resumos)', v0=estado['bytes'] / 1048576, v1=estado['linhas'], v2=estado['linhas_detalhe'], v3=estado['resumos']))
     else:
-        print(f"ledger {caminho} (inexistente)")
+        print(_t('ledger {v0} (inexistente)', v0=caminho))
         return 0
     if not args.aplicar:
-        print(f"  politica: detalhe dos ultimos {dias} dias (correr --aplicar para compactar)")
+        print(_t('  politica: detalhe dos ultimos {v0} dias (correr --aplicar para compactar)', v0=dias))
         return 0
     resultado = rt.compactar(caminho, dias=dias)
     if not resultado.get("aplicado"):
-        print(f"  nada a compactar (corte {resultado.get('corte')})")
+        print(_t('  nada a compactar (corte {v0})', v0=resultado.get('corte')))
         return 0
     antes = resultado.get("bytes_antes", 0)
     depois = resultado.get("bytes_depois", 0)
-    print(f"  dobradas {resultado['dobradas']} linhas de {resultado['dias_dobrados']} dias "
-          f"em {resultado['resumos']} resumos")
-    print(f"  {antes / 1048576:.2f} MB -> {depois / 1048576:.2f} MB "
-          f"({100 * depois / max(antes, 1):.1f}%)")
+    print(_t('  dobradas {v0} linhas de {v1} dias em {v2} resumos', v0=resultado['dobradas'], v1=resultado['dias_dobrados'], v2=resultado['resumos']))
+    print(_t('  {v0:.2f} MB -> {v1:.2f} MB ({v2:.1f}%)', v0=antes / 1048576, v1=depois / 1048576, v2=100 * depois / max(antes, 1)))
     if resultado.get("ilegiveis"):
-        print(f"  {resultado['ilegiveis']} linhas ilegiveis preservadas")
+        print(_t('  {v0} linhas ilegiveis preservadas', v0=resultado['ilegiveis']))
     return 0
 
 
@@ -977,7 +982,7 @@ def cmd_veredicto(args) -> int:
     if args.estado is None:
         if args.agregado:
             if not args.tarefa:
-                return _erro("--agregado exige --tarefa", 2)
+                return _erro(_t('--agregado exige --tarefa'), 2)
             print(json.dumps(vd.estado_da_tarefa(caminho, args.tarefa),
                              indent=2, ensure_ascii=False))
             return 0
@@ -992,7 +997,7 @@ def cmd_veredicto(args) -> int:
             print(json.dumps(todos, indent=2, ensure_ascii=False))
             return 0
         if not todos:
-            print("sem veredictos registados")
+            print(_t('sem veredictos registados'))
             return 0
         linhas = [["ts", "tarefa", "estado", "fonte", "evidencia"]]
         for e in todos:
@@ -1026,9 +1031,8 @@ def cmd_veredicto(args) -> int:
             turno=args.turno,
         )
     except ValueError as exc:
-        return _erro(f"veredicto recusado: {exc}", 2)
-    print(f"veredicto registado: {evento['tarefa']} = {evento['estado']} "
-          f"(fonte {evento['fonte']})")
+        return _erro(_t('veredicto recusado: {v0}', v0=exc), 2)
+    print(_t('veredicto registado: {v0} = {v1} (fonte {v2})', v0=evento['tarefa'], v1=evento['estado'], v2=evento['fonte']))
     return 0
 
 
@@ -1036,33 +1040,29 @@ def cmd_backups(args) -> int:
     """Estado dos backups do config; com `--aplicar`, poda a rotina."""
     cfg, erros = _cfg()
     if erros:
-        return _erro("config com erros: " + "; ".join(erros))
+        return _erro(_t("config com erros: {v0}", v0="; ".join(erros)))
     rt = _retencao()
     valores = _retencao_efectiva(cfg)
     manter = args.manter if args.manter is not None else valores["backups_manter"]
     semanais = args.semanais if args.semanais is not None else valores["backups_semanais"]
     if manter < 1:
-        return _erro("--manter tem de ser >= 1", 2)
+        return _erro(_t('--manter tem de ser >= 1'), 2)
     if semanais < 0:
-        return _erro("--semanais tem de ser >= 0", 2)
+        return _erro(_t('--semanais tem de ser >= 0'), 2)
     pasta = g.directorio()
     estado = rt.relatorio(g.caminho_ledger(), pasta)
-    print(f"backups em {pasta}")
-    print(f"  {estado.get('backups_datados', 0)} datados, "
-          f"{estado.get('backups_manuais', 0)} a mao, "
-          f"{estado.get('backups_bytes', 0) / 1048576:.2f} MB")
+    print(_t('backups em {v0}', v0=pasta))
+    print(_t('  {v0} datados, {v1} a mao, {v2:.2f} MB', v0=estado.get('backups_datados', 0), v1=estado.get('backups_manuais', 0), v2=estado.get('backups_bytes', 0) / 1048576))
     if not args.aplicar:
-        print(f"  politica: ficam {manter} + {semanais}/semana (correr --aplicar para podar)")
+        print(_t('  politica: ficam {v0} + {v1}/semana (correr --aplicar para podar)', v0=manter, v1=semanais))
         return 0
     resultado = rt.podar_backups(pasta, manter=manter, semanais=semanais)
     if not resultado.get("aplicado"):
         print("  nada a podar")
         return 0
-    print(f"  removidos {resultado['removidos']} de {resultado['datados_antes']} datados "
-          f"({resultado['bytes_libertados'] / 1048576:.2f} MB livres), "
-          f"ficaram {resultado['datados_depois']}")
+    print(_t('  removidos {v0} de {v1} datados ({v2:.2f} MB livres), ficaram {v3}', v0=resultado['removidos'], v1=resultado['datados_antes'], v2=resultado['bytes_libertados'] / 1048576, v3=resultado['datados_depois']))
     if resultado.get("semanais_guardados"):
-        print(f"  semanais preservados: {', '.join(resultado['semanais_guardados'])}")
+        print(_t('  semanais preservados: {v0}', v0=', '.join(resultado['semanais_guardados'])))
     return 0
 
 
@@ -1070,7 +1070,7 @@ def cmd_simular(args) -> int:
     cfg, _ = _cfg()
     p = g.perfil_config(cfg, args.perfil)
     if p is None:
-        return _erro(f"perfil '{args.perfil}' nao e gerido por este config", 3)
+        return _erro(_t("perfil '{v0}' nao e gerido por este config", v0=args.perfil), 3)
     analise = p.get("analise") or {}
     a = _analise()
     decisao = a.decidir([{"role": "user", "content": args.texto}],
@@ -1079,17 +1079,16 @@ def cmd_simular(args) -> int:
                         maximo=int(analise.get("varredura_max_mensagens", 60) or 60),
                         pesos=analise.get("pesos"))
     nivel = decisao["nivel"] or "(reset)"
-    print(f"perfil: {args.perfil}")
-    print(f"nivel: {nivel} (origem={decisao['origem']}, score={decisao.get('score')}, "
-          f"sinais={','.join(decisao.get('sinais') or [])})")
+    print(_t('perfil: {v0}', v0=args.perfil))
+    print(_t('nivel: {v0} (origem={v1}, score={v2}, sinais={v3})', v0=nivel, v1=decisao['origem'], v2=decisao.get('score'), v3=','.join(decisao.get('sinais') or [])))
     tarefa = a.detectar_tarefa([{"role": "user", "content": args.texto}], p.get("tarefas") or {})
     associadas = [r for r in g.catalogo_utilizavel(p) if tarefa in r.get("tarefas", [])]
     if tarefa:
-        print(f"tarefa: {tarefa} (origem={'tarefa' if associadas else 'analise; sem associacao'})")
+        print(_t('tarefa: {v0} (origem={v1})', v0=tarefa, v1='tarefa' if associadas else _t('analise; sem associacao')))
     if nivel in g.NIVEIS or associadas:
         lista = associadas or g.candidatos(g.catalogo_utilizavel(p), nivel)
         if not lista:
-            print(f"rota: nenhuma — o catalogo de {args.perfil} nao cobre '{nivel}'")
+            print(_t("rota: nenhuma — o catalogo de {v0} nao cobre '{v1}'", v0=args.perfil, v1=nivel))
             return 1
         # o rodizio real depende da sessao; a ordem mostrada e a que o plugin usa
         print("candidatas (ordem efetiva: ordem, custo, id):")
@@ -1114,7 +1113,7 @@ def _seams_mod():
         caminho = _AQUI / "seams.py"
         spec = _ilu.spec_from_file_location("vmm_seams", caminho)
         if spec is None or spec.loader is None:
-            raise RuntimeError("seams.py nao encontrado junto de cli.py")
+            raise RuntimeError(_t("seams.py nao encontrado junto de cli.py"))
         mod = _ilu.module_from_spec(spec)
         spec.loader.exec_module(mod)
         sys.modules.setdefault("vmm_seams", mod)
@@ -1130,13 +1129,13 @@ def cmd_verificar(args) -> int:
     perfis = cfg.get("perfis") or {}
     alvos = [args.perfil] if args.perfil else sorted(perfis)
     if args.perfil and args.perfil not in perfis:
-        return _erro(f"perfil '{args.perfil}' nao existe", 3)
+        return _erro(_t("perfil '{v0}' nao existe", v0=args.perfil), 3)
     try:
         _seams = _seams_mod()
         if not _seams.seam_disponivel():
-            return _erro(f"resolve_runtime_provider indisponivel: {_seams.seam_erro()}", 1)
+            return _erro(_t('resolve_runtime_provider indisponivel: {v0}', v0=_seams.seam_erro()), 1)
     except Exception as exc:
-        return _erro(f"resolve_runtime_provider indisponivel: {exc}", 1)
+        return _erro(_t('resolve_runtime_provider indisponivel: {v0}', v0=exc), 1)
     # Contexto do perfil alvo: home + escopo de segredos. Sem isto, o CLI
     # resolveria sempre no escopo do processo de arranque e perfis com .env
     # proprio (pessoal/trabalho) pareceriam sem credenciais.
@@ -1159,8 +1158,7 @@ def cmd_verificar(args) -> int:
 
         contexto = (_entrar, _sair)
     except Exception as exc:
-        print(f"aviso: contexto por perfil indisponivel ({exc}); "
-              f"a resolver no contexto do processo", file=sys.stderr)
+        print(_t('aviso: contexto por perfil indisponivel ({v0}); a resolver no contexto do processo', v0=exc), file=sys.stderr)
     falhas = 0
     for nome in alvos:
         if nome == "*":
@@ -1172,7 +1170,7 @@ def cmd_verificar(args) -> int:
             try:
                 tokens = contexto[0](casa)
             except Exception as exc:
-                print(f"  aviso: nao foi possivel montar o contexto do perfil: {exc}",
+                print(_t('  aviso: nao foi possivel montar o contexto do perfil: {v0}', v0=exc),
                       file=sys.stderr)
         try:
             for r in perfis[nome].get("catalogo") or []:
@@ -1182,12 +1180,10 @@ def cmd_verificar(args) -> int:
                     marca = "ok" if len(chave) > 15 else f"chave curta ({len(chave)} B)"
                     if not chave or len(chave) <= 15:
                         falhas += 1
-                    print(f"  {r['id']}: {marca}; acesso={r.get('acesso', '?')}; "
-                          f"base_url={rt.get('base_url')}; "
-                          f"fonte={rt.get('source')}; chave={len(chave)} B")
+                    print(_t('  {v0}: {v1}; acesso={v2}; base_url={v3}; fonte={v4}; chave={v5} B', v0=r['id'], v1=marca, v2=r.get('acesso', '?'), v3=rt.get('base_url'), v4=rt.get('source'), v5=len(chave)))
                 except Exception as exc:
                     falhas += 1
-                    print(f"  {r['id']}: FALHA {type(exc).__name__}: {exc}")
+                    print(_t('  {v0}: FALHA {v1}: {v2}', v0=r['id'], v1=type(exc).__name__, v2=exc))
         finally:
             if tokens is not None:
                 try:
@@ -1200,7 +1196,7 @@ def cmd_verificar(args) -> int:
 def cmd_log(args) -> int:
     caminho = g.caminho_ledger()
     if not caminho.exists():
-        return _erro(f"sem ledger em {caminho}", 3)
+        return _erro(_t('sem ledger em {v0}', v0=caminho), 3)
     linhas = caminho.read_text(encoding="utf-8", errors="replace").splitlines()
     filtradas: list[str] = []
     for linha in linhas:
@@ -1240,27 +1236,25 @@ def cmd_auditoria(args) -> int:
     if args.json:
         print(json.dumps(info, ensure_ascii=False, indent=2))
     else:
-        print(f"config:  {info['config']}")
-        print(f"registo: {info['registo']}"
-              f" ({'existe' if info['existe'] else 'AUSENTE'})")
-        print(f"linhas:  {info['linhas']}"
-              + (f" ({info['ilegiveis']} ilegiveis)" if info["ilegiveis"] else ""))
-        print(f"vivo:    {info['vivo_sha'] or '-'}")
-        print(f"ultimo:  {info['ultimo_depois_sha'] or '-'}")
+        print(_t('config:  {v0}', v0=info['config']))
+        print(_t('registo: {v0} ({v1})', v0=info['registo'], v1='existe' if info['existe'] else _t('AUSENTE')))
+        if info["ilegiveis"]:
+            print(_t("linhas:  {v0} ({v1} ilegiveis)",
+                     v0=info["linhas"], v1=info["ilegiveis"]))
+        else:
+            print(_t("linhas:  {v0}", v0=info["linhas"]))
+        print(_t('vivo:    {v0}', v0=info['vivo_sha'] or '-'))
+        print(_t('ultimo:  {v0}', v0=info['ultimo_depois_sha'] or '-'))
         if info["quebras_reconciliadas"]:
-            print(f"reconciliadas: linhas {info['quebras_reconciliadas']} "
-                  "(quebra declarada com testemunha igual)")
+            print(_t('reconciliadas: linhas {v0} (quebra declarada com testemunha igual)', v0=info['quebras_reconciliadas']))
         if info["fora_da_cadeia"]:
-            print("VEREDITO: escrita FORA do caminho unico "
-                  "(o config vivo nao e o que o ultimo escritor deixou)")
+            print(_t('VEREDITO: escrita FORA do caminho unico (o config vivo nao e o que o ultimo escritor deixou)'))
         elif not info["existe"]:
-            print("VEREDITO: sem registo de escritas e sem config — nada a atribuir")
+            print(_t('VEREDITO: sem registo de escritas e sem config — nada a atribuir'))
         elif info["quebras_nao_explicadas"]:
-            print(f"VEREDITO: cadeia quebrada SEM explicacao nas linhas "
-                  f"{info['quebras_nao_explicadas']}")
+            print(_t('VEREDITO: cadeia quebrada SEM explicacao nas linhas {v0}', v0=info['quebras_nao_explicadas']))
         elif info["quebras_reconciliadas"]:
-            print("VEREDITO: OK com quebras declaradas — a config viva veio do "
-                  "caminho unico; a historia tem escritas manuais reconciliadas")
+            print(_t('VEREDITO: OK com quebras declaradas — a config viva veio do caminho unico; a historia tem escritas manuais reconciliadas'))
         else:
             print("VEREDITO: OK — a config viva foi escrita pelo caminho unico")
     return 1 if (info["fora_da_cadeia"] or not info["cadeia_continua"]) else 0
@@ -1278,7 +1272,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_status)
 
     for nome in ("on", "off"):
-        s = sub.add_parser(nome, help=_i18n.t("{nome} o plugin", nome=nome))
+        s = sub.add_parser(
+            nome, help="ligar o plugin" if nome == "on" else "desligar o plugin"
+        )
         s.add_argument("--perfil")
         s.set_defaults(func=cmd_on_off)
 
@@ -1473,6 +1469,10 @@ def _traduzir_ajuda(parser: argparse.ArgumentParser) -> None:
                     escolha.help = _i18n.t(str(ajuda))
             for sub in acao.choices.values():
                 _traduzir_ajuda(sub)
+        elif isinstance(acao, argparse._HelpAction):
+            # A ajuda do -h nasce em ingles dentro do argparse: tem chave propria,
+            # senao ficava em ingles tambem em portugues.
+            acao.help = _i18n.t("mostrar esta ajuda e sair")
         else:
             ajuda = getattr(acao, "help", None)
             if ajuda:
