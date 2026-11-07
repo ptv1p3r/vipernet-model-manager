@@ -22,7 +22,8 @@
 # Pin: commit que junta duas coisas sobre a 3.47.6 do PR #14: as tres capturas
 #   do painel em `assets/` (com a seccao de capturas nos dois README) e a
 #   correccao dos documentos de catalogo que ainda davam lacunas ja fechadas.
-#   Codigo identico ao pin anterior: `63c2e4be..54aef209` sao imagens e prosa.
+#   Codigo identico ao pin anterior: `63c2e4be..54aef209` sao imagens, prosa e
+#   esta entrada — nenhum `.py` no diff.
 #
 # Regra 2 (repo clonavel por https, anonimamente): OK no GitHub.
 #   Provado por clone anonimo, nao pelo auto-relato do espelho:
@@ -45,10 +46,12 @@
 #   dono sai substituido pelo handle publico (`proldan`) nas imagens, e a
 #   substituicao esta declarada nos dois README.
 #
-# NOTA DE CONSTRUCAO: o `sha` abaixo nao pode conter o proprio commit (um
+# NOTA DE CONSTRUCAO: o `sha` do campo nao pode conter o proprio commit (um
 #   ficheiro nao se cita a si mesmo). O commit que acrescenta esta versao do
-#   ficheiro ao `main` e' o seguinte na linhagem e difere so' neste ficheiro; o
-#   pin submetido no PR e' este `sha`, d188dc44.
+#   ficheiro ao `main` vem depois na linhagem e difere so' neste ficheiro —
+#   medido com `git diff --stat 54aef209 <esse commit>`, 1 ficheiro. O pin
+#   submetido no PR e' o `sha` do campo: 54aef209, cuja arvore tem o codigo da
+#   3.47.6, as tres capturas e os documentos de catalogo ja' corrigidos.
 # ---------------------------------------------------------------------------
 
 name: vipernet-model-manager
