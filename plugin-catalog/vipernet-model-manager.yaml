@@ -1,8 +1,11 @@
 # Entrada de catalogo do Vipernet Model Manager.
 #
-# Destino: `plugin-catalog/vipernet-model-manager.yaml` no repositorio
-# `NousResearch/hermes-agent`, por PR com revisao humana. Esta copia vive no
-# repositorio do plugin para que o que se submete seja versionado com o codigo.
+# Esta copia vive no repositorio do plugin para que o que se publica seja
+# versionado com o codigo.
+#
+# DECISAO DO DONO (2026-11-07): o catalogo e' servido pelo GITEA INTERNO. A
+# copia no GitHub publico nao e' mantida nem pinada; o `repo` abaixo aponta ao
+# repositorio Gitea, que e' onde o codigo vive e avanca.
 #
 # Esquema lido de `hermes_cli/plugin_catalog.py` (dataclass PluginCatalogEntry,
 # 19 campos): o loader recusa `repo` sem https://, `sha` que nao seja 40 hex,
@@ -12,13 +15,21 @@
 # descartadas em silencio.
 #
 # ---------------------------------------------------------------------------
-# ESTADO MEDIDO 2026-11-07
+# ESTADO MEDIDO 2026-11-07 22:40 WEST
 # ---------------------------------------------------------------------------
-# Regra 2 (repo publico clonavel por https + plugin carregavel no pin): OK.
-#   O commit abaixo foi trazido por `git clone` do GitHub publico e validado com
-#   o MESMO comando do CI: `hermes plugins validate <dir> --install-deps`
-#   -> `Validation passed`. Entrypoints presentes no pin: `plugin.yaml`,
+# Pin: merge do PR #11 (`dev` -> `main`) no Gitea, que leva a 3.47.6 inteira
+#   (i18n por pedido: `X-VMM` resolve a lingua antes de `VMM_IDIOMA` e da
+#   config). `main` estava em 38c251c5 (3.47.5) antes desse merge.
+#
+# Regra 2 (repo clonavel por https + plugin carregavel no pin): OK no Gitea.
+#   Provado por clone do commit no Gitea, nao pelo espelho: `git cat-file -t`
+#   devolve `commit`, `git merge-base --is-ancestor` contra `origin/main` sai 0,
+#   e `hermes plugins validate . --install-deps` (o comando do CI) diz
+#   `Validation passed`. Entrypoints presentes no pin: `plugin.yaml`,
 #   `__init__.py`, `dashboard/manifest.json`, `README.md`.
+#   NOTA: o repositorio Gitea e' PRIVADO — o clone deste URL autentica-se com o
+#   credential helper do host. Instalar por nome a partir daqui nao e' anonimo;
+#   e' a instalacao do proprio homelab, e e' isso que a entrada descreve.
 #
 # Regra 9 (so superficies publicas): OK, e foi preciso mudar codigo.
 #   O pin anterior (03985e1d, 3.45.1) acusava dois imports privados:
@@ -29,23 +40,18 @@
 #   Hermes core`. Nao foi pedido hook nenhum: a via publica existia.
 #
 # Pagina de documentacao: e' construida a partir do `README.md` DESTE commit.
-#   Por isso o README (EN, com `README.pt-PT.md` ao lado) e a interface do
-#   painel descrevem o mesmo comportamento, e o texto do README no pin foi
-#   corrigido para dizer a verdade sobre o repositorio publico.
-#
-# PENDENTE ANTES DO PR: `screenshots`. O plugin tem painel de dashboard e a
-#   regra pede capturas tiradas DEPOIS da correcao, numa sessao autenticada.
-#   Nao ha aqui URLs inventados: sem capturas reais a galeria fica vazia.
+#   LACUNA DECLARADA: o README no pin ainda diz que a regra 9 dependia de
+#   `resolve_runtime_provider` (resolvido na 3.47.0). O comportamento do codigo
+#   esta certo; o texto daquela seccao esta velho e corrige-se num commit
+#   seguinte, com novo pin.
 # ---------------------------------------------------------------------------
 
 name: vipernet-model-manager
-repo: https://github.com/ptv1p3r/vipernet-model-manager
+repo: https://gitea.home.server/proldan/vipernet-model-manager.git
 
-# Commit EXATO que o revisor le, 40 hex. Sincronizacao automatica do espelho
-# em 2026-11-07 17:58:23Z, versao 3.47.4. Medido a 2026-11-07: existe no
-# GitHub publico, e ANCESTRAL de `main` (fafc03f9, merge do PR #8), traz
-# `Validation passed` e os quatro entrypoints.
-sha: "cfc4ba8508015f9c3adf4c15d5db64c83cf7398b"
+# Commit EXATO do catalogo, 40 hex — resolvido por `git rev-parse`, nunca
+# completado de memoria. Merge do PR #11 em `main` (Gitea), 2026-11-07.
+sha: "d779ee9250dbb335a7955713508cc3755b81ae44"
 
 description: >-
   Picks the provider and model for each turn from the profile's own catalog,
@@ -58,7 +64,7 @@ maintainer: proldan
 tier: community
 category: models
 requires_hermes: ">=0.22.0"
-version: "3.47.4"
+version: "3.47.6"
 title: Vipernet Model Manager
 readme: true
 
