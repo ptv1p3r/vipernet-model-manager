@@ -218,6 +218,38 @@ def verificar_rotulos_i18n(mod, cli, perfis) -> None:
           not falta, "; ".join(falta[:12]))
 
 
+def cabecalhos_de_tabela() -> list:
+    """Literais que servem de cabecalho de tabela no `index.js`.
+
+    So conta o terceiro argumento de texto de `h("th", ...)`: o primeiro e o
+    tipo, o segundo e o objeto de props. O `h()` traduz este filho por lookup
+    exacto em `PT_EN`, portanto um cabecalho novo escrito em portugues fica em
+    portugues no painel ingles.
+    """
+    texto = (RAIZ / "dashboard" / "dist" / "index.js").read_text(encoding="utf-8")
+    return re.findall(
+        r'h\("th",\s*(?:\{[^{}]*\}|null)\s*,\s*"((?:[^"\\]|\\.)*)"', texto
+    )
+
+
+def verificar_cabecalhos_tabela() -> None:
+    """Guarda de classe: todo o cabecalho de tabela tem chave no dicionario.
+
+    Os cabecalhos sao escritos no `index.js` — nao vem do backend — e por isso
+    escapavam a `verificar_rotulos_i18n`, que so enumera respostas da API. A
+    tabela do registo mostrava «quando», «nivel», «origem» e «provider» em
+    portugues com o painel em ingles. Enumerar os `th` reais, em vez de repetir
+    aqui os oito nomes, e o que faz esta guarda apanhar o proximo cabecalho.
+    """
+    chaves = chaves_pt_en()
+    cab = cabecalhos_de_tabela()
+    check("i18n: ha cabecalhos de tabela para verificar (guarda nao vazia)",
+          len(cab) >= 8, str(len(cab)))
+    falta = sorted({c for c in cab if c not in chaves})
+    check("i18n: todo o cabecalho de tabela tem chave no dicionario",
+          not falta, "; ".join(falta[:12]))
+
+
 def main() -> int:
     d = preparar_dir()
     os.environ["VMM_DIR"] = str(d)
@@ -276,6 +308,7 @@ def main() -> int:
 
     # --- i18n do painel: rotulos que o backend emite ------------------------
     verificar_rotulos_i18n(mod, cli, ["default", "trabalho"])
+    verificar_cabecalhos_tabela()
 
     # --- /log --------------------------------------------------------------
     r = cli.get("/log?limite=10")

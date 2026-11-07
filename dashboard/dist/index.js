@@ -477,6 +477,18 @@
     "ok": "ok",
     "falha": "failure",
     "desactualizado": "out of date",
+    // Cabecalhos da tabela do registo (usage log). Sao literais do `index.js`,
+    // nao vem do backend, por isso escapavam a guarda dos rotulos. O `h()`
+    // traduz por lookup exacto: sem chave, o painel ingles mostrava «quando»,
+    // «nivel», «origem» e «provider» em portugues.
+    "quando": "when",
+    "nivel": "level",
+    "origem": "origin",
+    "provider": "provider",
+    // Cabecalhos da tabela do catalogo (por perfil), mesma classe.
+    "complexidade": "complexity",
+    "tarefas": "tasks",
+    "acesso": "access",
     "/braço": "/arm",
     // Presets do catalogo: `modelo.PRESETS` sao nomes de conjuntos de campos,
     // mostrados como rotulo no `select`. "padrao" tambem e a origem do
