@@ -300,6 +300,39 @@ def verificar_rotulos_de_campo() -> None:
           not falta, "; ".join(falta[:12]))
 
 
+def verificar_lingua_no_pedido(cli) -> None:
+    """Guarda de classe: a lingua do seletor tem de viajar ate ao backend.
+
+    O seletor grava a config, mas entre a escolha e a gravacao havia uma janela
+    em que o ecra mostrava uma lingua e o `api.py` respondia noutra — e um
+    segundo consumidor do painel nao tinha como pedir uma lingua sem escrever
+    no config partilhado. A correcao e o `pedir()` mandar os cabecalhos em todos
+    os pedidos. A guarda tem duas pernas: a estatica (o `pedir` envia os dois
+    nomes e e o unico ponto de pedido) e a viva (o backend honra-os mesmo com a
+    config a dizer o contrario).
+    """
+    texto = (RAIZ / "dashboard" / "dist" / "index.js").read_text(encoding="utf-8")
+    inicio = texto.find("function pedir(")
+    check("i18n: existe o ponto unico de pedido (`pedir`)", inicio >= 0)
+    corpo = texto[inicio:inicio + 3000] if inicio >= 0 else ""
+    check("i18n: `pedir` envia o cabecalho X-VMM", '"X-VMM"' in corpo)
+    check("i18n: `pedir` envia o cabecalho VMM_IDIOMA", '"VMM_IDIOMA"' in corpo)
+    check("i18n: a lingua vem de `idiomaActual()`, nao de uma constante",
+          "idiomaActual()" in corpo)
+    fora = texto.replace(corpo, "") if corpo else texto
+    check("i18n: nenhum pedido escapa ao `pedir` (sem fetch a mao)",
+          "fetch(" not in fora, "ha uma chamada fetch() directa no painel")
+
+    pt = cli.post("/validar", json=[], headers={"X-VMM": "pt"})
+    check("i18n: X-VMM=pt devolve a recusa em portugues",
+          pt.status_code == 400 and "corpo nao e um objecto JSON" in pt.text,
+          pt.text[:120])
+    en = cli.post("/validar", json=[], headers={"VMM_IDIOMA": "en"})
+    check("i18n: VMM_IDIOMA=en devolve a recusa em ingles",
+          en.status_code == 400 and "body is not a JSON object" in en.text,
+          en.text[:120])
+
+
 def main() -> int:
     d = preparar_dir()
     os.environ["VMM_DIR"] = str(d)
@@ -360,6 +393,7 @@ def main() -> int:
     verificar_rotulos_i18n(mod, cli, ["default", "trabalho"])
     verificar_cabecalhos_tabela()
     verificar_rotulos_de_campo()
+    verificar_lingua_no_pedido(cli)
 
     # --- /log --------------------------------------------------------------
     r = cli.get("/log?limite=10")

@@ -17,6 +17,7 @@ uma alteracao no painel entra no pedido seguinte.
 """
 from __future__ import annotations
 
+import contextvars
 import os
 import threading
 from pathlib import Path
@@ -42,6 +43,29 @@ _FORCAR: str | None = None
 #: um metodo: a ordem de import deixava esses testes a medir a lingua errada.
 #: Aceita as formas regionais (`pt-PT`, `pt_BR`), como a config.
 ENV_IDIOMA = "VMM_IDIOMA"
+
+#: Lingua do **pedido em curso**, posta pela dependencia do painel a partir dos
+#: cabecalhos `X-VMM` / `VMM_IDIOMA`. Um `ContextVar` e o que torna isto seguro
+#: com pedidos concorrentes em linguas diferentes: o valor vive no contexto da
+#: tarefa (e, medido, atravessa o threadpool do anyio), nao no modulo.
+_PEDIDO: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "vmm_idioma_pedido", default=None
+)
+
+
+def definir_do_pedido(codigo: Any) -> None:
+    """Fixa a lingua para o pedido em curso. `None`/invalido limpa (segue a config)."""
+    if codigo is None:
+        _PEDIDO.set(None)
+        return
+    bruto = str(codigo).strip().lower().replace("_", "-")
+    base = bruto.split("-", 1)[0]
+    _PEDIDO.set(base if base in IDIOMAS else None)
+
+
+def idioma_do_pedido() -> str | None:
+    """Lingua pedida pelos cabecalhos, ou `None` se o pedido nao a declarou."""
+    return _PEDIDO.get()
 
 
 def normalizar(codigo: Any) -> str:
@@ -70,9 +94,17 @@ def _caminho_config() -> Path:
 
 
 def idioma() -> str:
-    """Lingua em vigor: `_FORCAR`, depois `VMM_IDIOMA`, depois a config viva."""
+    """Lingua em vigor: `_FORCAR`, depois o pedido, depois `VMM_IDIOMA`, depois a config.
+
+    O pedido vem antes do ambiente porque e o sinal mais especifico: o ambiente
+    e um valor de processo (testes, CLI), o cabecalho e a escolha daquele
+    utilizador naquele pedido.
+    """
     if _FORCAR is not None:
         return _FORCAR
+    pedido = _PEDIDO.get()
+    if pedido is not None:
+        return pedido
     env = (os.environ.get(ENV_IDIOMA) or "").strip().lower()
     if env:
         base = env.replace("_", "-").split("-")[0]
