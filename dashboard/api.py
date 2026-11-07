@@ -64,10 +64,12 @@ def _meta_plugin() -> dict[str, str]:
 
     ``github`` e o **repositorio do plugin**, lido do campo ``homepage`` do
     ``plugin.yaml`` — uma so casa para o endereco, senao o painel e o manifesto
-    dizem coisas diferentes. O catalogo exige um repositorio publico, clonavel
-    por https em GitHub ou GitLab [1]; o Gitea interno continua a ser o espelho
-    de trabalho, nao o endereco de submissao. ``autor_github`` fica separado: e
-    o perfil do autor, nao o repositorio que se pinа.
+    dizem coisas diferentes. A chave chama-se ``github`` por compatibilidade com
+    o loader, mas o valor e o repositorio real deste plugin: o Gitea interno
+    (nao ha publicacao em GitHub). A submissao ao catalogo continua bloqueada
+    por outra razao — a regra 2 do catalogo pede um repositorio publico,
+    clonavel por https, que um Gitea em RFC1918 nao satisfaz. ``autor_github``
+    fica separado: e o perfil do autor, nao o repositorio que se pina.
     """
     versao = ""
     autor = ""

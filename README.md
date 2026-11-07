@@ -1,47 +1,49 @@
 # vipernet model manager
 
-Escolhe **provider + modelo** em cada turno a partir da complexidade que o turno
-mostra — não a partir de uma etiqueta que o dono escreveu — dentro do catálogo
-que o dono declarou **para o perfil que está a ser servido**.
+**English** · [Português](README.pt-PT.md)
 
-**Repositório público:** https://github.com/ptv1p3r/vipernet-model-manager — a entrada de
-catálogo pronta a submeter vive em `plugin-catalog/vipernet-model-manager.yaml` (falta só o
-pin `sha`, que exige conteúdo publicado no ramo `main` do GitHub).
+Picks **provider + model** on every turn from the complexity the turn
+shows — not from a label the owner wrote — inside the catalogue
+the owner declared **for the profile being served**.
 
-Três frases que resumem o contrato:
+**Repository:** https://gitea.home.server/proldan/vipernet-model-manager — mirrored automatically
+every 15 minutes. The catalogue entry ready to submit lives in
+`plugin-catalog/vipernet-model-manager.yaml` (missing the `sha` pin and a public repository).
 
-1. A **complexidade é medida** (última mensagem + estado do trabalho): tamanho do
-   texto próprio, verbos de engenharia, blocos de código, tracebacks, caminhos,
-   turnos e ferramentas usadas. `complexidade: alta` continua a existir como
-   override explícito, mas o caminho normal é a análise.
-2. O **catálogo é fechado e é do dono**. Fora das entradas declaradas não há
-   rotas. Cada entrada diz que níveis de complexidade serve. Uma entrada cuja
-   credencial não resolve é saltada, com registo.
-3. Cada **perfil** decide se usa o plugin, como usa (estratégia) e com que lista.
-   Um perfil ausente da config não é tocado.
+Three sentences that sum up the contract:
 
-## Analise de complexidade (3.5)
+1. **Complexity is measured** (last message + state of the work): size of the
+   own text, engineering verbs, code blocks, tracebacks, paths,
+   turns and tools used. `complexidade: alta` still exists as an
+   explicit override, but the normal path is the analysis.
+2. The **catalogue is closed and belongs to the owner**. Outside the declared
+   entries there are no routes. Each entry says which complexity levels it
+   serves. An entry whose credential does not resolve is skipped, with a record.
+3. Each **profile** decides whether it uses the plugin, how it uses it
+   (strategy) and with which list. A profile absent from the config is untouched.
 
-Duas vias, e a segunda e opcional:
+## Complexity analysis (3.5)
 
-1. **Heuristica** (sempre disponivel, sem custo): pontua sinais independentes e
-   corta em dois limiares — `leve` (< media), `media` (>= 3) e `alta` (>= 6).
-2. **Modelo classificador** (opt-in): um modelo escolhido pelo dono responde
-   `leve`/`media`/`alta`. Definido globalmente ou por perfil, com interruptor
-   proprio em cada ambito. Sem modelo definido, ou com o interruptor em baixo,
-   vale a heuristica — o comportamento nao muda.
+Two paths, and the second is optional:
 
-Ordem de decisao por turno, do mais forte para o mais fraco:
-**marcador explicito** (`complexidade: alta` na mensagem) **> associacao de
-tarefa > modelo classificador > heuristica**. As tres primeiras fontes so
-decidem o nivel; a rota (provider+modelo) sai sempre do catalogo do perfil.
+1. **Heuristic** (always available, no cost): scores independent signals and
+   cuts at two thresholds — `leve` (< medium), `media` (>= 3) and `alta` (>= 6).
+2. **Classifier model** (opt-in): a model chosen by the owner answers
+   `leve`/`media`/`alta`. Defined globally or per profile, with its own
+   switch in each scope. With no model defined, or with the switch down,
+   the heuristic applies — the behaviour does not change.
 
-O bloco vive em `analise.classificador` (global) e em
-`perfis.<nome>.analise.classificador` (por perfil). O bloco do perfil
-**substitui por inteiro** o global — e o que permite a um perfil desligar
-(`{"activo": false}`) o que a config global liga. Um perfil que nao declare o
-bloco herda-o; e o que se grava nunca e uma copia do global (uma copia fixava o
-perfil ao valor do dia e deixava de acompanhar mudancas do global).
+Decision order per turn, from strongest to weakest:
+**explicit marker** (`complexidade: alta` in the message) **> task
+association > classifier model > heuristic**. The first three sources only
+decide the level; the route (provider+model) always comes from the profile catalogue.
+
+The block lives in `analise.classificador` (global) and in
+`perfis.<nome>.analise.classificador` (per profile). The profile block
+**replaces the global one entirely** — which is what lets a profile disable
+(`{"activo": false}`) what the global config enables. A profile that does not
+declare the block inherits it; and what gets saved is never a copy of the global (a copy
+would pin the profile to that day's value and stop following changes to the global).
 
 ```json
 "classificador": {
@@ -51,225 +53,225 @@ perfil ao valor do dia e deixava de acompanhar mudancas do global).
 }
 ```
 
-**Fail-open por desenho**: erro de rede, `HTTP != 200`, resposta sem um dos tres
-niveis, ou `timeout_s` excedido devolvem `None` — decide a heuristica e o motivo
-fica em `classificador_erro` no ledger. O disjuntor abre de duas maneiras
-diferentes, porque as falhas nao custam o mesmo: **um timeout suspende a
-primeira** (custa o `timeout_s` inteiro em latencia do turno, e a heuristica
-responde em 0 ms; esperar tres vezes para ouvir o que a primeira ja disse e pagar
-3x por nada — medido a 2026-11-03: quatro falhas em 45 s no perfil `pessoal` a
-8 s de timeout), e tres falhas de outro tipo (5xx, resposta ilegivel) suspendem
-como antes. A resposta e descarregada por `max_tokens` (320) e a mesma ultima
-mensagem nao e paga duas vezes dentro de `cache_ttl_s`.
+**Fail-open by design**: a network error, `HTTP != 200`, a response without one of the three
+levels, or an exceeded `timeout_s` return `None` — the heuristic decides and the reason
+stays in `classificador_erro` in the ledger. The circuit breaker opens in two
+different ways, because failures do not cost the same: **one timeout suspends the
+first** (it costs the whole `timeout_s` in turn latency, and the heuristic
+answers in 0 ms; waiting three times to hear what the first already said is paying
+3x for nothing — measured 2026-11-03: four failures in 45 s on the `pessoal` profile at
+8 s timeout), and three failures of another kind (5xx, unreadable response) suspend
+as before. The response is capped by `max_tokens` (320) and the same last
+message is not paid twice within `cache_ttl_s`.
 
-**Uma falha e uma falha, nao uma por pedido do turno**: o nivel fica pinado no
-turno, e o erro tambem. So o evento do primeiro pedido carrega
-`classificador_erro`; os seguintes levam `classificador_erro_herdado` e nao
-contam para a taxa. Sem isto, um turno de 14 pedidos (medido a 2026-11-03, perfil
-`default`) aparecia como 14 falhas no cartao e na contabilidade.
+**One failure is one failure, not one per request in the turn**: the level is pinned in the
+turn, and so is the error. Only the first request's event carries
+`classificador_erro`; the following ones carry `classificador_erro_herdado` and do not
+count towards the rate. Without this, a turn of 14 requests (measured 2026-11-03, `default`
+profile) showed up as 14 failures on the card and in the accounting.
 
-**Orcamento de saida e modelos de raciocinio** (medido 2026-11-02): o
-`deepseek-flash` pensa antes de responder. Com `max_tokens: 12`, os 12 tokens de
-saida foram todos `reasoning_tokens` e o `content` voltou vazio — o classificador
-falhava por orcamento, nao por qualidade. Com 320, a mesma mensagem devolve
-`alta` em 1,3 s (196 tokens de entrada, 59 de saida, ~0,00008 USD). Um modelo de
-raciocinio cortado a meio ainda entrega o nivel: quando o `content` vem vazio,
-le-se o `reasoning_content` e vale o ultimo nivel que o modelo escreveu.
+**Output budget and reasoning models** (measured 2026-11-02): `deepseek-flash`
+thinks before answering. With `max_tokens: 12`, the 12 output tokens were all
+`reasoning_tokens` and `content` came back empty — the classifier
+was failing on budget, not on quality. With 320, the same message returns
+`alta` in 1.3 s (196 input tokens, 59 output, ~0.00008 USD). A reasoning
+model cut short still delivers the level: when `content` comes back empty,
+`reasoning_content` is read and the last level the model wrote stands.
 
-Ligar/desligar, sem editar JSON:
+Enable/disable, without editing JSON:
 
 ```sh
-vmm classificador                            # estado efectivo por perfil
+vmm classificador                            # effective state per profile
 vmm classificador on --provider inception --modelo mercury-3
-vmm classificador off --perfil pessoal       # desliga so neste perfil
+vmm classificador off --perfil pessoal       # disables only in this profile
 vmm classificador on --perfil trabalho --provider openrouter --modelo x/y
 ```
 
-**O provider do classificador tem de existir no perfil servido** (medido
-2026-11-03). O classificador resolve-se com o `config.yaml` do **perfil**, não
-com o do processo: um `inception/mercury-3` que funciona no `default` falha no
-`pessoal` com `AuthError: Unknown provider 'inception'` enquanto o bloco
-`providers.inception` não estiver declarado lá — `hermes -p pessoal config set
-providers.inception.{name,base_url,key_env,api_mode,default_model}`, com
-`key_env: INCEPTION_API_KEY` e `api_mode: chat_completions`. Um erro destes é
-`sem_efeito` com `motivo` e suspensão de 1 h, não falha transitória: não abre o
-disjuntor nem conta para a taxa. A chave vem das fontes de segredos para o
-processo do gateway, não do `.env` do perfil.
+**The classifier provider must exist in the profile being served** (measured
+2026-11-03). The classifier resolves against the **profile's** `config.yaml`, not
+against the process one: an `inception/mercury-3` that works on `default` fails on
+`pessoal` with `AuthError: Unknown provider 'inception'` while the
+`providers.inception` block is not declared there — `hermes -p pessoal config set
+providers.inception.{name,base_url,key_env,api_mode,default_model}`, with
+`key_env: INCEPTION_API_KEY` and `api_mode: chat_completions`. An error like this is
+`sem_efeito` with a `motivo` and a 1 h suspension, not a transient failure: it does not open the
+circuit breaker nor count towards the rate. The key comes from the secrets sources for the
+gateway process, not from the profile's `.env`.
 
-Estado actual: o global é `inception/mercury-3` e os três perfis herdam-no. Um
-perfil que queira outro modelo declara o seu próprio bloco — a partir daí fica
-`próprio do perfil` e deixa de acompanhar o global, que é o preço de não ter uma
-cópia a fingir de herança.
+Current state: the global is `inception/mercury-3` and the three profiles inherit it. A
+profile that wants another model declares its own block — from then on it is
+`próprio do perfil` and stops following the global, which is the price of not having a
+copy pretending to be inheritance.
 
-No painel, a seccao **Analise da complexidade** (dentro do editor) tem uma linha
-por ambito — global e cada perfil — com tres estados por perfil: *herdar do
-global*, *desligado (heuristica)* e *decide um modelo* (com provider e modelo).
-Grava pelo mesmo `/config`, depois de validado.
+In the panel, the **Complexity analysis** section (inside the editor) has one row
+per scope — global and each profile — with three states per profile: *herdar do
+global*, *desligado (heuristica)* and *decide um modelo* (with provider and model).
+It saves through the same `/config`, after validation.
 
-Sinais da heuristica e o que os separa:
+Heuristic signals and what separates them:
 
-- **Verificar nao e analisar.** "testa o plugin", "adiciona um teste" — o verbo e
-  confirmacao, nao trabalho de analise; `_ANALISE` ignora verbos de verificacao.
-- **Manutencao separada de trabalho.** `corrigir`, `adicionar`, `atualizar` e
-  `revisar` valem 3 (`manutencao`), nao 5 (`trabalho`) — um typo no README nao
-  compra um modelo caro. Mas se o alvo for **sistema vivo** (automacao, servico,
-  instalacao, container), volta a valer `trabalho`: e producao, nao manutencao fina.
-- **Planeamento e relatorio tem categoria propria.** `planeamento` (5): plano,
-  janela, rollback, proposta de migracao. `relatorio` (3): resumo/relatorio
-  recorrente, que produz mas e barato.
-- **Diagnostico baixou de 6 para 4** (`auditoria`): "porque o inversor nao liga"
-  e trabalho de analise, mas nao do peso de uma decisao de arquitetura (6).
+- **Verifying is not analysing.** "testa o plugin", "adiciona um teste" — the verb is
+  confirmation, not analysis work; `_ANALISE` ignores verification verbs.
+- **Maintenance separate from work.** `corrigir`, `adicionar`, `atualizar` and
+  `revisar` score 3 (`manutencao`), not 5 (`trabalho`) — a typo in the README does not
+  buy an expensive model. But if the target is a **live system** (automation, service,
+  installation, container), it scores `trabalho` again: it is production, not fine maintenance.
+- **Planning and reporting have their own category.** `planeamento` (5): plan,
+  window, rollback, migration proposal. `relatorio` (3): recurring summary/report,
+  which produces but is cheap.
+- **Diagnosis dropped from 6 to 4** (`auditoria`): "porque o inversor nao liga"
+  is analysis work, but not the weight of an architecture decision (6).
 
-Medicao que fixou os limiares (2026-11-02, dois holdouts, 42 casos):
+Measurement that fixed the thresholds (2026-11-02, two holdouts, 42 cases):
 
-| variante | holdout1 (24) | holdout2 (18) | total |
+| variant | holdout1 (24) | holdout2 (18) | total |
 |---|---|---|---|
-| `media=3` (em vigor) | 24/24 | 17/18 | **41/42 (98%)** |
+| `media=3` (in force) | 24/24 | 17/18 | **41/42 (98%)** |
 | `media=4` | 20/24 | 14/18 | 34/42 (81%) |
-| `media=3` + regra dos 2 sinais | 21/24 | 14/18 | 35/42 (83%) |
+| `media=3` + 2-signal rule | 21/24 | 14/18 | 35/42 (83%) |
 
-A regra dos dois sinais (`media_sinais: 2`) fica implementada e **inactiva**: so
-actua quando a chave existe nos limiares. `test_holdout.py` versiona o holdout2
-com baseline 17/18 — o unico erro conhecido ("NPM ou Traefik, justifica") e
-discutivel no rotulo e **nao se calibra contra ele**.
+The two-signal rule (`media_sinais: 2`) stays implemented and **inactive**: it only
+acts when the key exists in the thresholds. `test_holdout.py` versions holdout2
+with a 17/18 baseline — the only known error ("NPM ou Traefik, justifica") is
+debatable in its label and **is not used for calibration**.
 
-## v4.3 — o que separa agora
+## v4.3 — what separates things now
 
-Correccoes de conceito, cada uma nascida de um caso real falhado:
+Concept corrections, each born from a real failed case:
 
-- **`justificacao` (3)**: "justifica" pede razao, nao desenha. Antes valia 6 e
-  mandava "NPM ou Traefik? justifica" para o modelo caro.
-- **`explicacao_conceito` (2)**: "explica como funciona X" e raciocinio de
-  dificuldade media.
-- **`avaria_de_servico` (+3)**: sintoma sobre um processo que devia estar a
-  correr (`_SERVICO_AVARIADO`). Uma lampada que nao acende nao e isto.
-- **Objecto vivo restrito**: sairam `ha`, `bateria`, `inversor`, `dashboard` e
-  `api`. `ha\b` casava com o verbo portugues "ha" (texto normalizado sem
-  acentos) e promovia um typo a trabalho de producao.
-- **Verbos genericos** (`prepar`, `gera`, `faz`, `produz`): herdam o peso do
-  objecto; "gera o relatorio mensal" e relatorio (3), nao engenharia (5).
-- **`mudar` em pergunta nao e ordem**: so `muda`/`mude` contam como manutencao.
-- **Vocabulario de infra**: `lxc`, `proxmox`, `portainer`, `backup`, `retencao`,
+- **`justificacao` (3)**: "justifica" asks for a reason, it does not design. It used to score 6 and
+  sent "NPM ou Traefik? justifica" to the expensive model.
+- **`explicacao_conceito` (2)**: "explica como funciona X" is medium-difficulty
+  reasoning.
+- **`avaria_de_servico` (+3)**: a symptom on a process that should be
+  running (`_SERVICO_AVARIADO`). A lamp that does not turn on is not this.
+- **Restricted live object**: `ha`, `bateria`, `inversor`, `dashboard` and
+  `api` were removed. `ha\b` matched the Portuguese verb "ha" (normalised text without
+  accents) and promoted a typo to production work.
+- **Generic verbs** (`prepar`, `gera`, `faz`, `produz`): they inherit the weight of the
+  object; "gera o relatorio mensal" is reporting (3), not engineering (5).
+- **`mudar` in a question is not an order**: only `muda`/`mude` count as maintenance.
+- **Infra vocabulary**: `lxc`, `proxmox`, `portainer`, `backup`, `retencao`,
   `snapshot`, `vlan`, `skills`, `n8n`, `sqlite`, `postgres`, `firmware`,
   `ota`, `consumo`, `standby`, `energia`, `seguranca`, `exposicao`, `homelab`.
 
-### Protocolo de medicao (importante)
+### Measurement protocol (important)
 
-Os holdouts `test_holdout{,2,3,4}.py` somam 79 casos. Cada vez que se afina o
-vocabulario contra um deles, esse conjunto **deixa de ser amostra independente**.
-A ordem que se cumpriu: medir cego, corrigir conceitos, medir num conjunto novo.
+The `test_holdout{,2,3,4}.py` holdouts add up to 79 cases. Every time the
+vocabulary is tuned against one of them, that set **stops being an independent sample**.
+The order that was followed: measure blind, fix concepts, measure on a new set.
 
-| conjunto | casos | antes da v4.3 | depois |
+| set | cases | before v4.3 | after |
 |---|---|---|---|
-| holdout2 | 22 | 22/22 (treino) | 22/22 |
-| holdout3 (cego na altura) | 20 | 12/20 (60%) | 20/20 |
-| holdout4 (cego na altura) | 19 | **11/19 (57%)** | 19/19 |
+| holdout2 | 22 | 22/22 (training) | 22/22 |
+| holdout3 (blind at the time) | 20 | 12/20 (60%) | 20/20 |
+| holdout4 (blind at the time) | 19 | **11/19 (57%)** | 19/19 |
 
-O numero honesto e o **57% cego**, nao os 100%. As 8 falhas eram todas de
-vocabulario — nenhuma de limiar — e e por isso que o gargalo do classificador
-nao e o `media`, e sim o alcance lexical. Uma frase nova com palavras que nao
-estao nas regexes cai em `leve`. O caminho para sair disto nao e mais regex:
-e um classificador que generalize (modelo local pequeno ou um modelo gratuito
-de contexto grande a responder `leve|media|alta`).
+The honest number is **57% blind**, not the 100%. The 8 failures were all
+vocabulary — none of them a threshold — and that is why the classifier's bottleneck
+is not `media`, but lexical reach. A new sentence with words that are not
+in the regexes falls into `leve`. The way out of this is not more regex:
+it is a classifier that generalises (a small local model or a free
+large-context model answering `leve|media|alta`).
 
 
-## Painel no dashboard (3.3)
+## Dashboard panel (3.3)
 
-O plugin traz um painel próprio no dashboard do Hermes, na tab **Model Manager**
-(`/model-manager`). Fica em `dashboard/`:
+The plugin ships its own panel in the Hermes dashboard, on the **Model Manager**
+tab (`/model-manager`). It lives in `dashboard/`:
 
-| ficheiro | papel |
+| file | role |
 |---|---|
-| `manifest.json` | declara a tab (`position: end`), o `entry`, o `css` e o `api` |
-| `api.py` | backend montado em `/api/plugins/vipernet-model-manager/` |
-| `dist/index.js` | IIFE que usa `window.__HERMES_PLUGIN_SDK__` e `__HERMES_PLUGINS__.register` |
-| `dist/style.css` | geometria do painel (cores e tipografia vêm do tema do host) |
+| `manifest.json` | declares the tab (`position: end`), the `entry`, the `css` and the `api` |
+| `api.py` | backend mounted at `/api/plugins/vipernet-model-manager/` |
+| `dist/index.js` | IIFE using `window.__HERMES_PLUGIN_SDK__` and `__HERMES_PLUGINS__.register` |
+| `dist/style.css` | panel geometry (colours and typography come from the host theme) |
 
-O painel mostra, por perfil: o interruptor, a estratégia, o **indicador da análise
-de complexidade**, as associações de tarefa, o catálogo com a complexidade e o
-esforço de cada modelo, e o último modelo servido; em baixo, o registo das últimas
-respostas (quando, perfil, modelo, provider, nível, origem, superfície, sessão).
+Per profile, the panel shows: the switch, the strategy, the **complexity analysis
+indicator**, the task associations, the catalogue with each model's complexity and
+effort, and the last model served; below, the log of the latest
+responses (when, profile, model, provider, level, origin, surface, session).
 
-Escreve o interruptor (global ou por perfil) e a configuração inteira (editor JSON,
-`POST /config`, com `POST /validar` antes), sempre por `gestor.gravar` — validação,
-backup e `os.replace`, com releitura independente antes de responder OK. O log é
-leitura.
+It writes the switch (global or per profile) and the whole configuration (JSON editor,
+`POST /config`, with `POST /validar` first), always through `gestor.gravar` — validation,
+backup and `os.replace`, with an independent re-read before answering OK. The log is
+read-only.
 
-O host descobre painéis por `<plugins root>/<nome>/dashboard/manifest.json`; a cache
-de descoberta do processo do dashboard **não** se invalida sozinha quando aparece um
-painel novo — depois de instalar, reiniciar o contentor do dashboard (ou forçar
-`/api/dashboard/plugins/rescan`). Os ficheiros de `dist/` são servidos do disco a
-cada pedido: mudam com um refresh do browser, sem reiniciar nada (medido: sha256 do
-asset servido igual ao do ficheiro local). O `api.py` é outra história: entra quando
-o backend do painel carrega o módulo — no arranque do contentor e na recarga do
-plugin (`reload_gateway_plugins`, por perfil num gateway multiplexado). Não se
-distingue qual dos dois valeu por `curl`: `/api/plugins/<nome>/*` responde `401` do
-gate de sessão a pedidos de fora, com ou sem basic-auth, pelo que a verificação do
-backend se faz pelo caminho autenticado (o painel no browser) ou em processo, com o
-mesmo ficheiro. A config do agente é lida a quente (TTL 5 s).
+The host discovers panels via `<plugins root>/<nome>/dashboard/manifest.json`; the discovery
+cache of the dashboard process does **not** invalidate itself when a new
+panel appears — after installing, restart the dashboard container (or force
+`/api/dashboard/plugins/rescan`). The `dist/` files are served from disk on
+every request: they change with a browser refresh, with nothing restarted (measured: sha256 of the
+served asset equal to the local file). `api.py` is another story: it enters when
+the panel backend loads the module — at container start and on plugin
+reload (`reload_gateway_plugins`, per profile in a multiplexed gateway). `curl` does not
+tell which of the two took effect: `/api/plugins/<nome>/*` answers `401` from the
+session gate to outside requests, with or without basic-auth, so backend
+verification goes through the authenticated path (the panel in the browser) or in-process, with the
+same file. The agent config is read hot (TTL 5 s).
 
-### Identidade no cabeçalho (3.13.8)
+### Identity in the header (3.13.8)
 
-O cabeçalho mostra `v<versão> · <autor> · github.com/<conta>`, com o repositório
-como ligação. A versão **não** é uma cópia escrita no JS: `GET /estado` devolve
-`plugin` com `versao` lida do `plugin.yaml` — o mesmo ficheiro que o loader e o
-catálogo leem —, `autor` e `github`. Se o `version` do `manifest.json` divergir do
-`plugin.yaml`, o cabeçalho mostra os dois números a vermelho em vez de escolher um
-em silêncio: foi essa divergência (painel 3.11.2 com o disco em 3.11.3) que já fez
-duvidar de que código estava a correr.
+The header shows `v<version> · <author> · github.com/<account>`, with the repository
+as a link. The version is **not** a copy written in the JS: `GET /estado` returns
+`plugin` with `versao` read from `plugin.yaml` — the same file the loader and the
+catalogue read —, `autor` and `github`. If the `version` in `manifest.json` diverges from
+`plugin.yaml`, the header shows both numbers in red instead of silently choosing one:
+that divergence (panel 3.11.2 with the disk at 3.11.3) is what already made people
+doubt which code was running.
 
-`github` é o repositório público do autor, e não o Gitea interno: o catálogo exige
-um repositório público clonável por https em GitHub ou GitLab [1], pelo que o
-endereço que o painel mostra é o que serve uma submissão.
+`github` is the author's public repository, not the internal Gitea: the catalogue requires
+a public repository clonable over https on GitHub or GitLab [1], so the
+address the panel shows is the one that serves a submission.
 
-### Indicador da análise por cartão (3.7)
+### Per-card analysis indicator (3.7)
 
-Cada cartão de perfil responde a uma pergunta só: **a complexidade deste turno está
-a ser decidida por um modelo — e qual — ou pela heurística?** A barra à esquerda e o
-chip dizem o modo; o texto diz o resto:
+Each profile card answers a single question: **is this turn's complexity
+being decided by a model — and which one — or by the heuristic?** The bar on the left and the
+chip say the mode; the text says the rest:
 
-| o que se vê | significado |
+| what you see | meaning |
 |---|---|
-| `modelo · inception/mercury-3` + `esforço baixo · herdado do global` | o perfil não declara bloco e usa o global |
-| `modelo · inception/mercury-3` + `próprio do perfil` | o perfil declara o seu próprio classificador |
-| `heurística` + `classificador desligado — decide a heurística` | existe bloco, mas `activo: false` |
-| `heurística` + `classificador sem efeito (…) — decide a heurística` | bloco declarado que não passa a validação |
-| `heurística` + `sem modelo definido` | ninguém declarou nada, em nenhum âmbito |
-| `últimos N turnos: 22 modelo · 3 heurística` | evidência do ledger, não da config |
-| `⚠ o modelo falhou no último turno — caiu na heurística: …` | o classificador está ligado mas falhou |
+| `modelo · inception/mercury-3` + `esforço baixo · herdado do global` | the profile declares no block and uses the global |
+| `modelo · inception/mercury-3` + `próprio do perfil` | the profile declares its own classifier |
+| `heurística` + `classificador desligado — decide a heurística` | a block exists, but `activo: false` |
+| `heurística` + `classificador sem efeito (…) — decide a heurística` | a declared block that fails validation |
+| `heurística` + `sem modelo definido` | nobody declared anything, in any scope |
+| `últimos N turnos: 22 modelo · 3 heurística` | evidence from the ledger, not from the config |
+| `⚠ o modelo falhou no último turno — caiu na heurística: …` | the classifier is on but failed |
 
-As duas últimas linhas são o que distingue **declarado** de **a decidir**: um
-classificador ligado que erra cai na heurística em silêncio, e a config continuaria a
-dizer "ligado". A contagem vem dos eventos `resposta` do perfil (últimos 25) e o
-motivo do erro do último evento com `classificador_erro`.
+The last two rows are what separates **declared** from **deciding**: a
+classifier that is on and errs falls back to the heuristic silently, and the config would still
+say "on". The count comes from the profile's `resposta` events (last 25) and the
+error reason from the last event carrying `classificador_erro`.
 
-Uma só casa para a resposta: `gestor.classificador_efectivo(cfg, perfil)` — usada
-pelo cartão (`/estado`) e pelo `vmm classificador ver`. Resolve a herança e a
-validação; o painel não reimplementa nenhuma das duas.
+A single home for the answer: `gestor.classificador_efectivo(cfg, perfil)` — used
+by the card (`/estado`) and by `vmm classificador ver`. It resolves inheritance and
+validation; the panel reimplements neither.
 
 
-Auto-teste do painel (não toca na config viva):
+Panel self-test (does not touch the live config):
 
 ```sh
 VMM_DIR=$(mktemp -d) /opt/hermes/.venv/bin/python dashboard/selftest.py
 ```
 
-## Instalação
+## Installation
 
 ```sh
 ln -sfn /opt/data/plugins/vipernet-model-manager/cli.py /opt/data/bin/vmm
-hermes plugins enable vipernet-model-manager            # no perfil que o deve usar
+hermes plugins enable vipernet-model-manager            # in the profile that should use it
 hermes -p pessoal  plugins enable vipernet-model-manager
 hermes -p trabalho plugins enable vipernet-model-manager
 ```
 
-`hermes plugins enable` recarrega o gateway sozinho. A config é lida a quente
-(cache de 5 s), portanto editar o catálogo **não** exige reiniciar nada.
+`hermes plugins enable` reloads the gateway on its own. The config is read hot
+(5 s cache), so editing the catalogue **does not** require restarting anything.
 
 ## Config
 
-Ficheiro vivo: `/opt/data/plugin-data/vipernet-model-manager/config.json`
-(override por `VMM_DIR`, útil para ensaios). Esquema:
+Live file: `/opt/data/plugin-data/vipernet-model-manager/config.json`
+(override via `VMM_DIR`, useful for trials). Schema:
 
 ```json
 {
@@ -298,400 +300,400 @@ Ficheiro vivo: `/opt/data/plugin-data/vipernet-model-manager/config.json`
 }
 ```
 
-- `activo` (topo) — interruptor global; `registar` — escrever o ledger.
-- `perfis.<nome>.activo` — interruptor daquele perfil.
-- `estrategia` — bloco `{modo, por}`, **lista fechada**, global no topo e
-  herdada por cada perfil: `modo` é `rodizio` (alterna dentro do nível) ou
-  `prioridade` (primeira entrada elegível da lista); `por` é `turno` ou
-  `sessao` e só governa o `rodizio`. Um perfil declara **só o que quer mudar**
-  (o delta) e o resto vem do global; sem bloco nenhum, herda. Ver
-  «Estratégia: lista fechada com herança».
-- `complexidade` por entrada: `"leve"`, `["leve","media"]`, `["alta"]`… Níveis:
+- `activo` (top level) — global switch; `registar` — write the ledger.
+- `perfis.<nome>.activo` — that profile's switch.
+- `estrategia` — `{modo, por}` block, **closed list**, global at the top and
+  inherited by each profile: `modo` is `rodizio` (round-robin within the level) or
+  `prioridade` (first eligible entry in the list); `por` is `turno` or
+  `sessao` and only governs `rodizio`. A profile declares **only what it wants to change**
+  (the delta) and the rest comes from the global; with no block at all, it inherits. See
+  «Strategy: closed list with inheritance».
+- `complexidade` per entry: `"leve"`, `["leve","media"]`, `["alta"]`… Levels:
   `leve`, `media`, `alta`.
-- `acesso` por entrada: `api` ou `subscricao`. **Explicito ou inferido do
-  provider** (openai-codex → `subscricao`, os restantes → `api`); é rótulo +
-  validação + registo, nunca reescreve `provider`/`modelo`. Incompatibilidades
-  (`subscricao` com provider que não openai-codex, ou `api` com openai-codex)
-  são recusadas.
-- `analise` do perfil sobrepõe-se ao global chave a chave (limiares, janela,
+- `acesso` per entry: `api` or `subscricao`. **Explicit or inferred from the
+  provider** (openai-codex → `subscricao`, the rest → `api`); it is label +
+  validation + record, and never rewrites `provider`/`modelo`. Incompatibilities
+  (`subscricao` with a provider other than openai-codex, or `api` with openai-codex)
+  are refused.
+- the profile's `analise` overrides the global key by key (thresholds, window,
   `descer_apos`).
-- Perfil `"*"` serve de omissão para perfis não listados; um perfil exacto ganha
-  sobre o `*`.
-- Sem perfil na config e sem `*`: **não gerido** — o turno segue intacto.
+- Profile `"*"` serves as the default for unlisted profiles; an exact profile wins
+  over `*`.
+- No profile in the config and no `*`: **not managed** — the turn goes through untouched.
 
-### Política do nível `alta` (decisão do dono, 2026-11-03)
+### `alta` level policy (owner's decision, 2026-11-03)
 
-O nível `alta` resolve a **`deepseek/deepseek-flash` nos três perfis**, e é a
-única rota de `alta` declarada no catálogo. A consequência tem de ser lida antes
-de mexer: **não existe no catálogo um modelo acima do flash**, logo `alta` não
-significa «modelo melhor» — significa «o modelo pago, sem descer aos free». O
-ganho do classificador é de **custo, não de qualidade**: em `leve`/`media` a rota
-pode rodar para um modelo free; em `alta` não desce.
+The `alta` level resolves to **`deepseek/deepseek-flash` on all three profiles**, and it is the
+only `alta` route declared in the catalogue. The consequence has to be read before
+touching anything: **there is no model above flash in the catalogue**, so `alta` does not
+mean «better model» — it means «the paid model, without dropping to the free ones». The
+classifier's gain is in **cost, not quality**: at `leve`/`media` the route
+may rotate to a free model; at `alta` it does not descend.
 
-Quem editar o catálogo, duas regras:
+Anyone editing the catalogue, two rules:
 
-- **Não acrescentar `alta` a outra entrada sem decisão explícita do dono.** Se um
-  modelo free declarar `alta`, o rodízio passa a poder servir `alta` com um free e
-  o nível deixa de garantir o flash. Foi o que aconteceu antes de 2026-11-03: 224
-  eventos de `alta` servidos por `thinkingmachines/inkling:free` no ledger, todos
-  com `motor` ausente (histórico anterior ao marcador), e zero depois.
-- **`deepseek-v4-pro` está proibido** (decisão do dono, 2026-11-03) — fora do
-  catálogo, fora dos catálogos por omissão do `gestor.py` e fora do juiz de
-  `eval/aprender.py` sem `--juiz-permitir-v4-pro` (guard que devolve rc 2).
+- **Do not add `alta` to another entry without an explicit owner decision.** If a
+  free model declares `alta`, round-robin can then serve `alta` with a free model and
+  the level stops guaranteeing flash. That is what happened before 2026-11-03: 224
+  `alta` events served by `thinkingmachines/inkling:free` in the ledger, all
+  with `motor` missing (history from before the marker), and zero afterwards.
+- **`deepseek-v4-pro` is forbidden** (owner's decision, 2026-11-03) — out of the
+  catalogue, out of the default catalogues in `gestor.py`, and out of the `eval/aprender.py`
+  judge without `--juiz-permitir-v4-pro` (a guard that returns rc 2).
 
-Se `deepseek` falhar, `alta` não tem segunda rota: a degradação desce um nível e
-o turno segue num modelo de `media`, com `degradado_de` no ledger. É o
-comportamento desejado — mas é uma dependência de um só provider, e deve ser
-lembrada quando se decidir o catálogo.
+If `deepseek` fails, `alta` has no second route: the degradation drops one level and
+the turn proceeds on a `media` model, with `degradado_de` in the ledger. That is the
+desired behaviour — but it is a single-provider dependency, and it should be
+remembered when deciding the catalogue.
 
-### O `state` do transporte de decisões e o piso de confiança (3.14.2)
+### The decision transport `state` and the confidence floor (3.14.2)
 
-Medido a 2026-11-03 sobre os 250 casos do gold, com o `~typesafe/jev-latest`.
-A conclusão muda a política: **o que estava a estragar o Jev não era a rubrica,
-era o `state` — e o piso de confiança não compra qualidade nenhuma.**
+Measured 2026-11-03 over the 250 gold cases, with `~typesafe/jev-latest`.
+The conclusion changes the policy: **what was spoiling Jev was not the rubric,
+it was the `state` — and the confidence floor buys no quality at all.**
 
-O que o plugin enviava era o transcrito do `texto()`: sete mensagens anteriores
-de outros assuntos (até 400 chars cada) mais o pedido, 4 000 caracteres no total.
-Numa sessão real as anteriores são pedidos de outros temas, e o modelo passa a
-julgar o conjunto. Medido, na mesma rubrica:
+What the plugin sent was the `texto()` transcript: seven previous messages
+on other subjects (up to 400 chars each) plus the request, 4 000 characters in total.
+In a real session the previous ones are requests on other topics, and the model ends up
+judging the whole set. Measured, on the same rubric:
 
-| `state` | kappa | kappa `alta` | precisão `alta` | confiança p50 |
+| `state` | kappa | kappa `alta` | `alta` precision | confidence p50 |
 |---|---|---|---|---|
-| transcrito de produção (7 anteriores) | 0,4007 | 0,3604 | 0,339 | 0,47 |
-| transcrito + bloco de medidas | 0,4935 | 0,5479 | 0,525 | 0,57 |
-| **medidas + duas anteriores rotuladas (publicado)** | **0,5094** | **0,6349** | **0,667** | **0,655** |
-| medidas + pedido isolado | 0,4666 | 0,6591 | 0,677 | 0,72 |
+| production transcript (7 previous) | 0.4007 | 0.3604 | 0.339 | 0.47 |
+| transcript + measurements block | 0.4935 | 0.5479 | 0.525 | 0.57 |
+| **measurements + two labelled previous (published)** | **0.5094** | **0.6349** | **0.667** | **0.655** |
+| measurements + request in isolation | 0.4666 | 0.6591 | 0.677 | 0.72 |
 
-O `state` publicado passa a ser `[MEDIDAS DO PEDIDO]` (caracteres, linhas, tokens
-estimados, artefactos colados — factos verificáveis, sem os interpretar) +
-`[CONTEXTO ANTERIOR, NÃO É O PEDIDO A CLASSIFICAR]` com no máximo **duas**
-anteriores cortadas a 300 chars + `[PEDIDO A CLASSIFICAR]`. Fica em ~490 chars
-em vez de 4 000: mais barato, mais rápido e mais certo. A chave é
-`analise.classificador.estado` (`medidas` por omissão, `simples` para voltar ao
-transcrito sem reverter código).
+The published `state` becomes `[MEDIDAS DO PEDIDO]` (characters, lines, estimated
+tokens, pasted artefacts — verifiable facts, without interpreting them) +
+`[CONTEXTO ANTERIOR, NÃO É O PEDIDO A CLASSIFICAR]` with at most **two**
+previous ones cut to 300 chars + `[PEDIDO A CLASSIFICAR]`. It lands at ~490 chars
+instead of 4 000: cheaper, faster and more accurate. The key is
+`analise.classificador.estado` (`medidas` by default, `simples` to go back to the
+transcript without reverting code).
 
-As medidas são neutras de propósito. Não dizem «âmbito aberto: sim» nem «parece
-complexo» — os dois vícios medidos nos juízes foram exactamente ler âmbito aberto
-e comprimento como nível.
+The measurements are neutral on purpose. They do not say «open scope: yes» nor «seems
+complex» — the two vices measured in the judges were exactly reading open scope
+and length as level.
 
-**O piso.** Em produção, com o transcrito, **127 de 129 leituras abstiveram**
-(`confianca_baixa`), confiança p50 **0,18**, e o modelo nunca leu `media` — só
-alternava entre `leve` e `alta`. Com o `state` novo a confiança sobe (p50 0,655) e
-o piso passa a ser uma escolha, não uma necessidade. E a escolha medida é
-surpreendente — a cascata «modelo acima do piso, heurística abaixo»:
+**The floor.** In production, with the transcript, **127 of 129 readings abstained**
+(`low_confidence`), confidence p50 **0.18**, and the model never read `medium` — only
+alternated between `low` and `high`. With the new `state` confidence rises (p50 0.655) and
+the floor becomes a choice, not a necessity. And the measured choice is
+surprising — the cascade «model above floor, heuristic below»:
 
-| piso | turnos decididos pelo modelo | acerto | kappa `alta` | altas falsas |
+| floor | turns decided by model | accuracy | kappa `high` | false highs |
 |---|---|---|---|---|
-| **0,00** | 250/250 | **0,700** | 0,6349 | **10** |
-| 0,40 | 184/250 | 0,692 | 0,6098 | 23 |
-| 0,70 | 115/250 | 0,632 | 0,5072 | 34 |
-| 0,90 | 48/250 | 0,588 | 0,4079 | 45 |
+| **0.00** | 250/250 | **0.700** | 0.6349 | **10** |
+| 0.40 | 184/250 | 0.692 | 0.6098 | 23 |
+| 0.70 | 115/250 | 0.632 | 0.5072 | 34 |
+| 0.90 | 48/250 | 0.588 | 0.4079 | 45 |
 
-(heurística sozinha, no mesmo corpus: **0,564** de acerto.)
+(heuristic alone, on the same corpus: **0.564** accuracy.)
 
-Subir o piso **piora** o acerto e aumenta as altas falsas, porque abster devolve
-o turno à heurística, que sobrestima `alta` (precisão ~0,45). O piso foi
-desenhado para poupar quando o modelo está inseguro; medido, o modelo inseguro
-continua a ser melhor juiz do que o fallback. Por isso o `confianca_min` do
-transporte de decisões fica em **0,0**: a abstenção passa a servir só o que devia
-servir — falha de transporte, resposta fora dos níveis, rota suspensa — e não a
-mera incerteza. Quem quiser poupar chamadas pode usar 0,40 (perde 0,008 de
-acerto e corta 26% das decisões).
+Raising the floor **worsens** accuracy and increases false highs, because abstaining returns
+the turn to the heuristic, which overestimates `high` (precision ~0.45). The floor was
+designed to save when the model is unsure; measured, the unsure model
+continues to be a better judge than the fallback. That is why the `confianca_min` of the
+transport of decisions sits at **0.0**: abstention now serves only what it should
+serve — transport failure, response outside levels, suspended route — and not
+mere uncertainty. Whoever wants to save calls can use 0.40 (loses 0.008 of
+accuracy and cuts 26% of decisions).
 
-### Qualquer modelo como classificador (3.15.0)
+### Any model as classifier (3.15.0)
 
-Até 3.14.2 o classificador assumia um provider com `/chat/completions`, corpo
-`{model, messages, temperature, max_tokens}`, credencial na rota e um modelo que
-aceita `response_format`. Isso excluía três famílias reais: os modelos de
-decisões (`~typesafe/...`), os de raciocínio (o1/o3/gpt-5 recusam `temperature`
-com 400) e os que mudam o nome do orçamento de saída. A 3.15.0 fecha as sete
-lacunas com configuração, sem código por provider — a config do perfil continua a
-ser a única casa.
+Until 3.14.2 the classifier assumed a provider with `/chat/completions`, body
+`{model, messages, temperature, max_tokens}`, credential on the route and a model that
+accepts `response_format`. That excluded three real families: decision models
+(`~typesafe/...`), reasoning models (o1/o3/gpt-5 reject `temperature`
+with 400) and those that change the output budget name. 3.15.0 closes the seven
+gaps with configuration, no code per provider — the profile config remains the
+only home.
 
-| chave | omissão | para que serve |
+| key | default | purpose |
 |---|---|---|
-| `via` | `auto` | `chat`, `decisoes` ou `auto`. `auto` sonda o chat e muda sozinho |
-| `preset` | `""` | `""` infere pelo id; `padrao`, `sistema-um`, `raciocinio`; `nenhum` desliga |
-| `estado` | `medidas` | `medidas` (bloco de factos) ou `simples` (transcrito, rollback) |
-| `temperatura` | `0.0` | `null`/`omitir`/`-` = **não enviar** o campo |
-| `top_p` | `1` | omitido quando a temperatura é omitida |
-| `max_tokens_campo` | `max_tokens` | `max_completion_tokens` nos modelos recentes da OpenAI |
-| `caminho` | `""` | substitui o caminho do chat preservando esquema/host da rota |
-| `caminho_decisoes` | `""` | idem, para o endpoint de decisões |
-| `parametros_extra` | `{}` | campos extra no corpo; **não** pode trocar `model` nem `messages` |
-| `headers_extra` | `{}` | cabeçalhos extra, aplicados depois dos defaults |
+| `via` | `auto` | `chat`, `decisoes` or `auto`. `auto` probes chat and switches on its own |
+| `preset` | `""` | `""` infers from id; `padrao`, `sistema-um`, `raciocinio`; `nenhum` disables |
+| `estado` | `medidas` | `medidas` (fact block) or `simples` (transcript, rollback) |
+| `temperatura` | `0.0` | `null`/`omit`/`-` = **do not send** the field |
+| `top_p` | `1` | omitted when temperature is omitted |
+| `max_tokens_campo` | `max_tokens` | `max_completion_tokens` on recent OpenAI models |
+| `caminho` | `""` | replaces the chat path preserving scheme/host of the route |
+| `caminho_decisoes` | `""` | same, for the decisions endpoint |
+| `parametros_extra` | `{}` | extra fields in body; **cannot** swap `model` nor `messages` |
+| `headers_extra` | `{}` | extra headers, applied after defaults |
 
-**O preset é uma pista, não uma prisão.** Entra por baixo do que o perfil declara
-(`{**PRESETS[preset], **bruto}`), logo o valor escrito pelo dono ganha sempre. O
-`preset: ""` infere pelo id do modelo — `~typesafe/` é System One, `o1`/`o3`/`gpt-5`
-são raciocínio — e `nenhum` desliga a inferência para quem quiser o comportamento
-cru.
+**The preset is a hint, not a cage.** It enters under what the profile declares
+(`{**PRESETS[preset], **raw}`), so the value written by the owner always wins. The
+`preset: ""` infers from the model id — `~typesafe/` is System One, `o1`/`o3`/`gpt-5`
+are reasoning — and `nenhum` disables inference for those who want the raw
+behaviour.
 
-**`via: auto` é o default porque apontar a um modelo não devia exigir saber o tipo
-dele.** Tenta o chat; se o provider responder que é um *decisions model*, memoriza
-a descoberta por alvo (perfil+provider+modelo) **em memória** — não na config, para
-não confundir o que o dono declarou com o que o plugin aprendeu — e repete o pedido
-no endpoint certo. A sonda custa uma chamada recusada, uma vez por processo.
+**`via: auto` is the default because pointing at a model should not require knowing its
+type.** It tries chat; if the provider responds that it is a *decisions model*, it memorises
+the discovery per target (profile+provider+model) **in memory** — not in config, to
+avoid confusing what the owner declared with what the plugin learnt — and repeats the
+request on the correct endpoint. The probe costs one refused call, once per process.
 
-**Duas redes de segurança, porque os providers não são coerentes.** Um 400 que
-mencione `temperature`/`top_p` retira o campo e repete **uma vez**, sobre uma cópia
-local da definição (não suja a definição do chamador). E um 400 que mencione
-`decisions model`/`/api/alpha/decisions` é levantado de imediato — antes da
-degradação de `response_format`, que de outro modo consumia a resposta e escondia a
-causa.
+**Two safety nets, because providers are not coherent.** A 400 that
+mentions `temperature`/`top_p` drops the field and retries **once**, on a local copy of the
+definition (does not dirty the caller's definition). And a 400 that mentions
+`decisions model`/`/api/alpha/decisions` is raised immediately — before the
+degradation of `response_format`, which otherwise would consume the response and hide the
+cause.
 
-Provas vivas contra o OpenRouter (2026-11-03, `~typesafe/jev-latest`):
+Live proofs against OpenRouter (2026-11-03, `~typesafe/jev-latest`):
 
-| prova | configuração | resultado |
+| test | configuration | result |
 |---|---|---|
-| preset inferido | só `modelo`, mais nada | 1 pedido a `/api/alpha/decisions`, `alta`, 0,96, 292 ms |
-| sonda `auto` | `preset: nenhum`, `via: auto` | `chat` → 400 → `/api/alpha/decisions`, `alta`, 0,96, 390 ms |
-| LLM de chat | `gemini-2.5-flash`, `via: auto` | 1 pedido a `/chat/completions`, fica no chat |
+| inferred preset | only `modelo`, nothing else | 1 request to `/api/alpha/decisions`, `high`, 0.96, 292 ms |
+| `auto` probe | `preset: nenhum`, `via: auto` | `chat` → 400 → `/api/alpha/decisions`, `high`, 0.96, 390 ms |
+| chat LLM | `gemini-2.5-flash`, `via: auto` | 1 request to `/chat/completions`, stays on chat |
 
-**O painel deixou de enumerar chaves.** O `baseDoBloco` reconstrói o bloco a partir
-do que lá está e remove só os campos vazios — com `temperatura` de fora, porque
-`null` ali significa «não enviar». A lista fixa de chaves tinha apagado
-`timeout_s`/`max_tokens`/`janela_mensagens`, depois `via`/`estado`/`confianca_min`,
-e apagaria agora `preset`/`temperatura`/`parametros_extra`: mudar o provider no
-painel não pode ser uma armadilha.
+**The panel stopped enumerating keys.** The `baseDoBloco` rebuilds the block from
+what is there and removes only empty fields — with `temperatura` out, because
+`null` there means «do not send». The fixed key list had erased
+`timeout_s`/`max_tokens`/`janela_mensagens`, then `via`/`estado`/`confianca_min`,
+and would now erase `preset`/`temperatura`/`parametros_extra`: changing the provider in the
+panel cannot be a trap.
 
-### Juiz do ciclo de aprendizagem
+### Learning cycle judge
 
-O juiz que rotula o corpus de treino é **`inception/mercury-3`** (decisão do dono,
-2026-11-03): alinha com o classificador e tira o deepseek de todas as funções do
-ciclo. `--juiz-provider deepseek` continua disponível como alternativa, e o
-`deepseek-v4-pro` continua bloqueado pelo guard de rc 2. O juiz **não** decide o
-nível de nenhum turno — só rotula o corpus — e não é o mesmo que o modelo da
-resposta.
+The judge that labels the training corpus is **`inception/mercury-3`** (owner's decision,
+2026-11-03): aligns with the classifier and removes deepseek from all cycle
+functions. `--juiz-provider deepseek` remains available as alternative, and the
+`deepseek-v4-pro` remains blocked by the rc 2 guard. The judge **does not** decide the
+level of any turn — only labels the corpus — and is not the same as the model of the
+response.
 
-Duas coisas medidas, que quem mexer aqui tem de saber:
+Two measured things that whoever touches this must know:
 
-- **O `mercury-3` limita pedidos por minuto.** Medi a 2026-11-03: 130 casos um a
-  um com 4 threads deram `HTTP 429 too many requests per minute`, e a corrida
-  seguinte devolveu **0/130** — o limite é por minuto e o arranque em rajada
-  esgota-o. Vinte pedidos espaçados de 3 s passam todos. Por isso o juiz rotula
-  **em lotes de 10** (`_etiquetar_lote`, `--juiz-lote`, por omissão 10 quando o
-  provider é `inception`): 13 pedidos, 130/130 respondidos em todas as corridas,
-  ~100 s. Um 429 espera e repete o **mesmo** lote; tratá-lo como falha definitiva
-  apagava o corpus e o portão fechava por falta de casos comuns, não por
-  discordância.
-- **O `mercury-3` ainda não tem autoridade de juiz.** Kappa contra os 130 rótulos
-  do gold, em 5 corridas: fronteira `alta` **0,443 / 0,490 / 0,479** (esforço
-  baixo) e **0,506 / 0,450** (médio); fronteira `baixa` 0,587 / 0,517 / 0,452 e
-  0,517 / 0,617. O portão exige **0,60** por fronteira operacional. Fica abaixo
-  em todas as corridas, e a precisão da classe `alta` (0,38–0,43) mostra o erro:
-  chama `alta` a pedidos que o gold rotula `media`. O `deepseek-flash` media
-  0,599–0,631 em `alta` e 0,483–0,545 em `baixa`, com estabilidade 0,877 contra
-  0,754–0,808 do mercury. **Nenhum dos dois passa o portão**: o bloqueio real é o
-  gold (40 rótulos humanos, 2 de `alta`), não a escolha do juiz.
+- **The `mercury-3` limits requests per minute.** Measured 2026-11-03: 130 cases one by
+  one with 4 threads gave `HTTP 429 too many requests per minute`, and the next
+  run returned **0/130** — the limit is per minute and the burst start
+  exhausts it. Twenty requests spaced 3 s all pass. That is why the judge labels
+  **in batches of 10** (`_etiquetar_lote`, `--juiz-lote`, default 10 when the
+  provider is `inception`): 13 requests, 130/130 answered in all runs,
+  ~100 s. A 429 waits and retries the **same** batch; treating it as final failure
+  erased the corpus and the gate closed for lack of common cases, not
+  disagreement.
+- **The `mercury-3` still lacks judge authority.** Kappa against the 130 labels
+  of the gold, in 5 runs: `high` boundary **0.443 / 0.490 / 0.479** (low
+  effort) and **0.506 / 0.450** (medium); `low` boundary 0.587 / 0.517 / 0.452 and
+  0.517 / 0.617. The gate requires **0.60** per operational boundary. Stays below
+  in all runs, and `high` class precision (0.38–0.43) shows the error:
+  calls `high` requests the gold labels `medium`. The `deepseek-flash` averages
+  0.599–0.631 on `high` and 0.483–0.545 on `low`, with stability 0.877 vs
+  0.754–0.808 for mercury. **Neither passes the gate**: the real blocker is the
+  gold (40 human labels, 2 of `high`), not the judge choice.
 
-#### Acordo de lotes: tentado, medido, rejeitado (3.13.9)
+#### Batch agreement: attempted, measured, rejected (3.13.9)
 
-A hipótese era que o erro do juiz fosse **ruído** — casos isolados que uma
-votação cancelaria. O mecanismo está implementado e testado (`--juiz-votos N`,
-`--juiz-acordo-min`, `--so-calibrar`), mas a medição de 2026-11-03 diz que a
-hipótese é falsa.
+The hypothesis was that the judge's error was **noise** — isolated cases that a
+vote would cancel. The mechanism is implemented and tested (`--juiz-votos N`,
+`--juiz-acordo-min`, `--so-calibrar`), but the 2026-11-03 measurement says the
+hypothesis is false.
 
-Três passagens sobre os mesmos 130 casos do gold, baralhadas entre passagens para
-a composição do lote não repetir o mesmo erro, agregadas por maioria 2-de-3:
+Three passes over the same 130 gold cases, shuffled between passes so the batch
+composition does not repeat the same error, aggregated by 2-of-3 majority:
 
-| | passagem 1 | passagem 2 | passagem 3 | maioria 2-de-3 |
+| | pass 1 | pass 2 | pass 3 | 2-of-3 majority |
 |---|---|---|---|---|
-| kappa global | 0,4659 | 0,5068 | 0,4659 | **0,4697** |
-| `alta` | 0,4878 | 0,5340 | 0,5144 | **0,5040** |
-| `baixa` | 0,4728 | 0,5409 | 0,4388 | **0,4693** |
-| precisão `alta` | 0,421 | 0,447 | 0,436 | **0,425** |
+| global kappa | 0.4659 | 0.5068 | 0.4659 | **0.4697** |
+| `high` | 0.4878 | 0.5340 | 0.5144 | **0.5040** |
+| `low` | 0.4728 | 0.5409 | 0.4388 | **0.4693** |
+| `high` precision | 0.421 | 0.447 | 0.436 | **0.425** |
 
-A maioria ficou **abaixo da média das passagens** (0,504 contra 0,512 em `alta`)
-e a precisão de `alta` não se moveu (0,421–0,447 nas passagens, 0,425 na
-maioria). E os dois números que explicam tudo:
+The majority ended **below the mean of the passes** (0.504 vs 0.512 on `high`)
+and `high` precision did not move (0.421–0.447 on passes, 0.425 on
+majority). And the two numbers that explain everything:
 
-- **Cobertura 98,5%** — só 2 dos 130 casos ficaram sem maioria. O juiz não hesita;
-  ele discorda do gold com convicção.
-- **Acordo interno 82% na fronteira `alta`** contra **precisão 0,425** contra o
-  gold. Consistência interna alta com validade externa baixa é a assinatura de
-  **viés sistemático**, não de ruído: os ~23 casos que ele promove a `alta` sem
-  o serem são os mesmos nas três passagens.
+- **Coverage 98.5%** — only 2 of 130 cases lacked a majority. The judge does not hesitate;
+  it disagrees with the gold with conviction.
+- **Internal agreement 82% on the `high` boundary** against **precision 0.425** against the
+  gold. High internal consistency with low external validity is the signature of
+  **systematic bias**, not noise: the ~23 cases it promotes to `high` without being
+  so are the same in the three passes.
 
-Conclusão operacional: votar num único juiz **não** dá autoridade a esse juiz, e
-por isso `--juiz-votos` fica em **1** por omissão — o ciclo semanal não paga três
-vezes por uma medição que não melhorou. O portão passou a exigir **cobertura
-mínima** (`--cobertura-minima`, 0,85) exactamente para isto: sem esse chão, subir
-o kappa descartando os casos disputados comprava autoridade a troca de não
-decidir, e os casos disputados são os difíceis.
+Operational conclusion: voting on a single judge **does not** give authority to that judge, and
+that is why `--juiz-votos` stays at **1** by default — the weekly cycle does not pay three
+times for a measurement that did not improve. The gate started requiring **minimum
+coverage** (`--cobertura-minima`, 0.85) exactly for this: without that floor, raising
+kappa by discarding disputed cases bought authority at the cost of not
+deciding, and the disputed cases are the hard ones.
 
-O caminho que a medição aponta não é repetir o mesmo sinal: é **combinar sinais
-independentes** (juiz + score heurístico a concordarem em `alta`, avaliado por
-validação cruzada) ou **dar massa ao gold em `alta`** — 17 casos não distinguem
-0,43 de 0,60 com margem. Repetir o juiz três vezes não faz nem uma coisa nem
-outra.
+The path the measurement points to is not repeating the same signal: it is **combining
+independent signals** (judge + heuristic score agreeing on `high`, evaluated by
+cross-validation) or **adding mass to the gold on `high`** — 17 cases do not distinguish
+0.43 from 0.60 with margin. Repeating the judge three times does neither.
 
-### Subscrição vs API
 
-A mesma família de modelos tem duas rotas de acesso distintas, e o plugin não
-as converte uma na outra:
+### Subscription vs API
 
-- **Subscrição ChatGPT/Codex** → `provider: openai-codex`, `modelo: gpt-6.1-sol`,
-  `acesso: subscricao`. O transporte é o canal de subscrição (Codex), não uma
-  chave de API; sem esse canal autenticado a rota não resolve e é saltada.
+The same model family has two distinct access routes, and the plugin does not
+convert one into the other:
+
+- **ChatGPT/Codex Subscription** → `provider: openai-codex`, `modelo: gpt-6.1-sol`,
+  `acesso: subscricao`. The transport is the subscription channel (Codex), not an
+  API key; without that authenticated channel the route does not resolve and is skipped.
 - **OpenRouter** → `provider: openrouter`, `modelo: openai/gpt-6.1-sol`,
-  `acesso: api`. Usa a chave de API do OpenRouter.
+  `acesso: api`. Uses the OpenRouter API key.
 
-Adicionar a rota de subscrição sem autenticar o canal não a ativa: a entrada
-existe, mas `resolver_rota` falha e a middleware salta-a (registo em
+Adding the subscription route without authenticating the channel does not activate it: the
+entry exists, but `resolver_rota` fails and the middleware skips it (logged in
 `sem_rota`).
 
-## Esforço de raciocínio por rota (3.6)
+## Reasoning effort by route (3.6)
 
-Cada entrada do catálogo pode declarar `esforco`: `baixo`, `medio` ou `alto`
-(a escada do Hermes — `low`/`medium`/`high` — também é aceite, porque o JSON é
-editado por três vias e recusar o inglês seria uma armadilha, não uma
-validação). O campo é **opcional e não tem valor por omissão**: ausente quer
-dizer «não declaro nada», não «médio», para que uma rota que não precisa não
-arraste o esforço de outra.
+Each catalogue entry can declare `esforco`: `baixo`, `medio` or `alto`
+(the Hermes ladder — `low`/`medium`/`high` — is also accepted, because the JSON is
+edited by three paths and rejecting English would be a trap, not a
+validation). The field is **optional and has no default value**: absent means
+«I declare nothing», not «medium», so a route that does not need it does not
+drag another's effort.
 
 ```json
 {"id": "flash", "provider": "deepseek", "modelo": "deepseek-flash",
  "complexidade": ["leve", "media"], "acesso": "api", "esforco": "baixo"}
 ```
 
-Como é aplicado — e porque não é uma linha só:
+How it is applied — and why it is not a single line:
 
-- **No agente**, em `agent.reasoning_config` (`{"enabled": true, "effort": …}`),
-  que é o que governa os turnos seguintes. Chamado **depois** de
-  `switch_model`, porque a troca volta a resolver o valor do `config.yaml` e
-  apagaria o que fosse posto antes. O valor de origem fica guardado e é
-  **reposto** quando a rota seguinte não declara esforço — o agente é o mesmo
-  objecto de turno para turno, e sem essa reposição uma rota contaminava todas
-  as seguintes.
-- **No payload do próprio turno**: o `api_kwargs` é construído **antes** da
-  middleware, logo mudar o agente só valeria para o turno seguinte. A escrita
-  usa o perfil do provider de destino — o mesmo objecto que o Hermes usa para
-  construir o pedido —, pelo que a forma é a do fio certo:
-  `thinking` + `reasoning_effort` no deepseek, `reasoning` no OpenRouter, e
-  **nada** num modelo sem raciocínio (medido: `deepseek-v3` devolve `({}, {})`).
-  Os campos de raciocínio do provider anterior são removidos do payload; sem
-  isso, um turno que viesse do OpenRouter levava um `reasoning` que o deepseek
-  recusa.
-- **No classificador** o esforço entra plano no corpo (é HTTP directo, sem SDK,
-  logo `extra_body` não existe ali). Com esforço declarado, o `max_tokens` do
-  classificador tem um **piso de 1200**: o raciocínio sai do mesmo orçamento e
-  os 320 tokens por omissão podem ser todos gastos a pensar — medido, a primeira
-  classificação com `esforco: baixo` falhou com
-  `resposta sem nivel reconhecivel (length 320tok)` e caiu para a heurística.
+- **In the agent**, in `agent.reasoning_config` (`{"enabled": true, "effort": …}`),
+  which governs the following turns. Called **after** `switch_model`, because the swap
+  re-resolves the `config.yaml` value and would erase whatever was put before. The source
+  value is kept and **restored** when the next route does not declare effort — the agent is the same
+  object from turn to turn, and without that restoration one route contaminated all
+  the following ones.
+- **In the turn's own payload**: the `api_kwargs` is built **before** the
+  middleware, so changing the agent would only be valid for the next turn. The write
+  uses the destination provider's profile object — the same object Hermes uses to
+  build the request —, so the shape is the right wire's:
+  `thinking` + `reasoning_effort` on deepseek, `reasoning` on OpenRouter, and
+  **nothing** on a model without reasoning (measured: `deepseek-v3` returns `({}, {})`).
+  The previous provider's reasoning fields are removed from the payload; without
+  this, a turn coming from OpenRouter carried a `reasoning` that deepseek
+  rejects.
+- **In the classifier** the effort goes flat in the body (it is direct HTTP, no SDK,
+  so `extra_body` does not exist there). With declared effort, the classifier's
+  `max_tokens` has a **floor of 1200**: reasoning comes from the same budget and
+  the 320 tokens by default can all be spent thinking — measured, the first
+  classification with `esforco: baixo` failed with
+  `response without recognisable level (length 320tok)` and fell to the heuristic.
 
-Testado por `selftest.py` (21 verificações novas): vocabulário, validação no
-catálogo, forma por provider, limpeza do payload, reposição do valor de origem
-e o corpo do classificador.
+Tested by `selftest.py` (21 new checks): vocabulary, validation in the
+catalogue, shape per provider, payload cleanup, source value restoration
+and the classifier body.
 
-## Resposta em JSON e classificação em lote (3.9)
 
-O classificador pede a resposta como **objecto JSON** (`{"nivel": "media"}`) em
-vez de uma palavra solta, e a configuração tem três valores para `formato_json`:
+## JSON response and batch classification (3.9)
 
-| valor | comportamento |
+The classifier asks for the response as a **JSON object** (`{"nivel": "media"}`) instead
+of a loose word, and the configuration has three values for `formato_json`:
+
+| value | behaviour |
 |---|---|
-| `auto` (por omissão) | pede `response_format: {"type": "json_object"}`; se o provider recusar com **400/404/415/422**, repete **o mesmo pedido sem o campo** e segue |
-| `on` | pede sempre; um provider que recuse dá erro, sem segunda tentativa sem formato |
-| `off` | nunca pede; só texto (o parse tolerante continua a valer) |
+| `auto` (by default) | requests `response_format: {"type": "json_object"}`; if the provider refuses with **400/404/415/422**, repeats **the same request without the field** and continues |
+| `on` | always requests; a provider that refuses errors, no second attempt without format |
+| `off` | never requests; only text (tolerant parse still works) |
 
-Porque é que `auto` degrada em vez de ter uma lista de providers: uma lista
-envelhece a cada modelo novo, e o custo de errar é uma chamada. Os códigos foram
-escolhidos — **401/402/429/5xx não se resolvem a retirar um campo**, e esses
-falham à primeira.
+Why `auto` degrades instead of having a provider list: a list
+ages with every new model, and the cost of getting it wrong is one call. The codes were
+chosen — **401/402/429/5xx do not resolve by dropping a field**, and those
+fail on the first try.
 
-Medido no `inception/mercury-3` a 2026-11-02, 10 mensagens por variante:
+Measured on `inception/mercury-3` at 2026-11-02, 10 messages per variant:
 
-| variante | latência mediana | tokens saída | json limpo | divergências (`length`) | acertos |
+| variant | median latency | output tokens | clean json | divergences (`length`) | correct |
 |---|---|---|---|---|---|
-| **json + esforço baixo** | **665 ms** | **68** | **10/10** | **0** | **9/10** |
-| json + esforço médio | 1029 ms | 373 | 9/10 | 1 (aos 4314 ms) | 7/10 |
-| texto + esforço médio | 553 ms | 76 | — | 0 | 9/10 |
-| texto + esforço baixo | 548 ms | 60 | — | 1 | 9/10 |
+| **json + low effort** | **665 ms** | **68** | **10/10** | **0** | **9/10** |
+| json + medium effort | 1029 ms | 373 | 9/10 | 1 (at 4314 ms) | 7/10 |
+| text + medium effort | 553 ms | 76 | — | 0 | 9/10 |
+| text + low effort | 548 ms | 60 | — | 1 | 9/10 |
 
-Duas conclusões que contrariam o conselho genérico «comece sempre em *medium*»:
-neste modelo, **médio é pior** para esta tarefa (cinco vezes os tokens, o dobro
-da latência, dois acertos a menos) — é classificação de três classes, não
-raciocínio difícil; e o **JSON estabiliza a resposta** (zero divergências contra
-uma). O `esforco` do classificador fica, por isso, em `baixo` na configuração
-viva, e mudar é um comando.
+Two conclusions that contradict the generic advice «always start at *medium*»:
+on this model, **medium is worse** for this task (five times the tokens, double
+the latency, two fewer correct) — it is three-class classification, not
+hard reasoning; and **JSON stabilises the response** (zero divergences against
+one). The classifier's `esforco` therefore stays at `baixo` in the live config,
+and changing it is a command.
 
-`forma()` regista no ledger como a resposta veio — `json` (objecto com nível),
-`texto` (palavra solta, sujeita a falso positivo por citação do prompt) ou
-`raciocinio` (conteúdo vazio, só pensamento). Sem esta distinção, um acerto por
-palavra solta parecia igual a um JSON limpo.
+`forma()` records in the ledger how the response came — `json` (object with level),
+`text` (loose word, subject to false positive by prompt quote) or
+`raciocinio` (empty content, only thinking). Without this distinction, a correct
+by loose word looked equal to a clean JSON.
 
-### Lote
+### Batch
 
-`classificar_lote()` manda N pedidos num só, com uma lista numerada e uma
-resposta `{"niveis": [{"i": 1, "nivel": …}]}`. Serve para medir um corpus
-inteiro e para lotes grandes; o turno normal continua a classificar um pedido,
-com cache.
+`classificar_lote()` sends N requests in one, with a numbered list and a
+response `{"niveis": [{"i": 1, "nivel": …}]}`. Serves to measure a full
+corpus and for large batches; the normal turn continues to classify one request,
+with cache.
 
 ```
 vmm classificador lote "ola" "explica o cache do nginx" "desenha a arquitetura do AAD"
 ```
 
-Medido a 2026-11-02 com 8 pedidos reais: **551 ms**, 447→130 tokens, 8/8
-acertos, formato json aceite. Com 10 pedidos: 2,5 s contra 6,6 s um a um (2,7×
-mais rápido) mas ~1,6× os tokens — o lote paga-se em latência, não em dinheiro.
-O orçamento acompanha o lote (`max(1200, 120 × N)`); um lote que volte sem
-níveis é repetido uma vez sem formato e sem esforço.
+Measured at 2026-11-02 with 8 real requests: **551 ms**, 447→130 tokens, 8/8
+correct, json format accepted. With 10 requests: 2.5 s vs 6.6 s one by one (2.7×
+faster) but ~1.6× the tokens — the batch pays in latency, not money. The budget
+follows the batch (`max(1200, 120 × N)`); a batch that returns without
+levels is retried once without format and without effort.
 
-O `_ler_lote` aceita as três formas que um modelo devolve na prática —
-`{"niveis":[{"i":N,"nivel":…}]}`, `{"niveis":["leve",…]}` e `{"1":"leve"}` — e
-**alinha sempre ao tamanho da entrada**, com `None` no que faltar: quem chama
-não tem de adivinhar quantos vieram.
+The `_ler_lote` accepts the three forms a model returns in practice —
+`{"niveis":[{"i":N,"nivel":…}]}`, `{"niveis":["leve",…]}` and `{"1":"leve"}` — and
+**always aligns to the input size**, with `None` in what is missing: the caller
+does not have to guess how many came.
 
-Uma armadilha que já custou uma sessão: o prompt **tem de conter a palavra
-`json`**, porque o DeepSeek recusa `response_format: json_object` com
-`400 Invalid request: Prompt must contain the word 'json'` — medido. Está
-travado por teste.
+A trap that already cost a session: the prompt **must contain the word
+`json`**, because DeepSeek refuses `response_format: json_object` with
+`400 Invalid request: Prompt must contain the word 'json'` — measured. It is
+locked by test.
 
-## Triagem do pedido: janela, modalidade, JSON e latência (3.11)
+## Request triage: window, modality, JSON and latency (3.11)
 
-A análise de complexidade diz **quanto raciocínio** o turno pede. Não diz se o
-modelo escolhido *consegue* servir o turno. Um `leve` com 200 páginas anexadas
-continua a ser `leve` na pontuação e não cabe em nenhuma janela de 32k; um
-pedido com uma fotografia não se resolve num modelo só de texto.
+Complexity analysis says **how much reasoning** the turn asks for. It does not say whether the
+chosen model *can* serve the turn. A `leve` with 200 attached pages
+remains `leve` in score and does not fit in any 32k window; a
+request with a photograph is not solved by a text-only model.
 
-A triagem é um filtro de **impossibilidade**, aplicado antes de se tentar a
-credencial: cada rota pode declarar o que consegue, e o que ela declarou não
-conseguir nunca é tentado. Uma rota que não declara nada é permissiva — declarar
-é o que dá a garantia, não declarar não proíbe. A única proibição explícita é
+Triage is an **impossibility filter**, applied before trying the
+credential: each route can declare what it can do, and what it declared it cannot
+do is never tried. A route that declares nothing is permissive — declaring
+is what gives the guarantee, not declaring does not forbid. The only explicit prohibition is
 `json_nativo: false`.
 
-| campo da rota | tipo | efeito |
+| route field | type | effect |
 |---|---|---|
-| `contexto_max` | inteiro > 0 | recusa quando a estimativa de entrada excede a janela |
-| `modalidades` | lista de `texto`, `imagem`, `audio`, `ficheiro` | recusa quando o pedido traz uma modalidade que não está na lista |
-| `json_nativo` | booleano | `false` recusa pedidos com `response_format` json |
-| `latencia_p95_ms` | inteiro > 0 | recusa quando excede `latencia_max_ms` do perfil |
+| `contexto_max` | integer > 0 | rejects when input estimate exceeds the window |
+| `modalidades` | list of `texto`, `imagem`, `audio`, `ficheiro` | rejects when the request brings a modality not in the list |
+| `json_nativo` | boolean | `false` rejects requests with `response_format` json |
+| `latencia_p95_ms` | integer > 0 | rejects when it exceeds the profile's `latencia_max_ms` |
 
-O que o pedido exige é medido em `analise.necessidades()`:
+What the request requires is measured in `analise.necessidades()`:
 
-- **tokens de entrada** — estimativa de 4 caracteres por token sobre todas as
-  mensagens; serve para decidir se cabe, não para faturar;
-- **modalidades** — detetadas nas partes de `content` (`image_url` → imagem,
-  `input_audio` → áudio, `file`/`document` → ficheiro);
-- **JSON** — só quando o pedido traz `response_format` de tipo `json_object` ou
-  `json_schema`. Falar de JSON não é exigir JSON, e o teste fixa esse negativo.
+- **input tokens** — 4-characters-per-token estimate over all
+  messages; serves to decide if it fits, not to bill;
+- **modalities** — detected in `content` parts (`image_url` → image,
+  `input_audio` → audio, `file`/`document` → file);
+- **JSON** — only when the request brings `response_format` of type `json_object` or
+  `json_schema`. Talking about JSON is not requiring JSON, and the test fixes that negative.
 
-Três consequências, todas com teste:
+Three consequences, all with test:
 
-1. **Texto grande sobe o nível.** Passando `contexto_grande_tokens` (24 000 por
-   omissão), um `leve` é promovido a `media` e o ledger regista
-   `triagem: contexto Ntok`. Não é "mais complexo" — é maior do que cabe.
-2. **Descer de nível não resolve capacidade.** Se a rota do nível não cabe,
-   `degradar_nivel` desce e volta a filtrar; se nada no nível couber, e só
-   então, `escolher_por_janela` procura em todo o catálogo a rota viável com
-   maior `contexto_max` e o ledger regista `escolhido_por_janela`. Um nível
-   *vazio* (sem rota, ou sem credencial) **não** dispara este recurso: aí a
-   resposta certa é não trocar, e o `selftest` trava isso.
-3. **A recusa fica registada.** A rota preterida aparece no evento `troca` como
-   `preteridas: ["id:inviavel:<razão>"]` — `contexto 128003>32000`,
-   `sem modalidade: imagem`, `sem json nativo`, `latencia 3000>1500` — em vez
-   de desaparecer; no evento `sem_rota` a mesma lista chama-se `falhadas`.
+1. **Large text raises the level.** Passing `contexto_grande_tokens` (24 000 by
+   default), a `leve` is promoted to `media` and the ledger records
+   `triagem: contexto Ntok`. It is not «more complex» — it is larger than what fits.
+2. **Dropping a level does not solve capacity.** If the level's route does not fit,
+   `degradar_nivel` drops and re-filters; if nothing in the level fits, and only
+   then, `escolher_por_janela` searches the whole catalogue for the viable route with
+   the largest `contexto_max` and the ledger records `escolhido_por_janela`. A
+   *empty* level (no route, or no credential) **does not** trigger this feature: there the
+   correct response is not to swap, and the `selftest` locks that.
+3. **The rejection is recorded.** The passed-over route appears in the `troca` event as
+   `preteridas: ["id:inviavel:<reason>"]` — `contexto 128003>32000`,
+   `sem modalidade: imagem`, `sem json nativo`, `latencia 3000>1500` — instead
+   of disappearing; in the `sem_rota` event the same list is called `falhadas`.
 
 ```json
 {"id": "janela-grande", "provider": "openrouter", "modelo": "openai/gpt-6.1-sol",
@@ -699,38 +701,38 @@ Três consequências, todas com teste:
  "modalidades": ["texto", "imagem"], "json_nativo": true, "latencia_p95_ms": 2500}
 ```
 
-**Ordem determinística entre candidatos do mesmo nível (3.22, precedência corrigida em 3.23).**
-Quando o nível tem várias rotas, elas são ordenadas antes de qualquer escolha pela
-chave `ordem` → `custo` → `id`. A `ordem` declarada **manda sobre o custo**: sem
-essa precedência um pago nunca podia ser escolhido à frente de um gratuito, por
-muito que o dono o escrevesse na config — e `ordem` seria decorativa. Uma rota
-que declara `ordem` ordena antes da que não declara. Dentro do mesmo patamar,
-uma rota sem `custo` declarado **não vale zero**: ordena depois das que declaram
-custo, porque tratar o desconhecido como grátis faria o não-medido ganhar a
-todos os pagos. O `id` fecha o empate por ordem lexicográfica, único e estável:
-a sequência em que as entradas aparecem no JSON **nunca** conta. O custo é o
-preço por milhão de tokens (`0` é grátis, número igual ou maior que zero);
-`ordem` é um inteiro, começando em 1, para declarar a preferência. A rotação
-continua a ser `md5(perfil|sessao|nivel) % n` sobre a lista já ordenada: `por:
-sessao` mantém a sessão presa ao mesmo modelo dentro do nível. Em
-`modo: prioridade` a escolha é o primeiro da lista ordenada — é o modo em que a
-`ordem` determina a rota servida, e não apenas a sequência de onde a rotação
-parte; em `rodizio` a ordem define o conjunto e a sequência, e o índice do hash
-escolhe dentro dele.
+**Deterministic order between candidates of the same level (3.22, precedence fixed in 3.23).**
+When the level has multiple routes, they are ordered before any choice by the
+key `ordem` → `custo` → `id`. The declared `ordem` **overrides cost**: without
+that precedence a paid route could never be chosen ahead of a free one, no matter
+how much the owner wrote it in the config — and `ordem` would be decorative. A route
+that declares `ordem` orders before one that does not. Within the same tier,
+a route without declared `custo` **does not count as zero**: it orders after those that
+declare cost, because treating the unknown as free would make the unmeasured win
+over all paid ones. The `id` breaks the tie by lexicographic order, unique and stable:
+the sequence in which entries appear in the JSON **never** counts. Cost is the
+price per million tokens (`0` is free, number greater or equal to zero);
+`ordem` is an integer, starting at 1, to declare preference. Rotation
+remains `md5(perfil|sessao|nivel) % n` over the already-ordered list: `por:
+sessao` keeps the session stuck to the same model within the level. In
+`modo: prioridade` the choice is the first of the ordered list — it is the mode in which
+`ordem` determines the served route, and not only the sequence from which rotation
+starts; in `rodizio` the order defines the set and the sequence, and the hash index
+chooses within it.
 
-**O que não está feito, e não se afirma:** medir TTFT (só existe
-`latencia_p95_ms` declarada, não medida), o custo não é lido de nenhuma API (é
-declarado à mão e não se atualiza sozinho), a rotação ainda é módulo — uma
-entrada acrescentada ou removida reindexa as sessões e troca-as de modelo no
-primeiro turno — e reaproveitar decisões para perguntas *semelhantes* (o cache
-do classificador é por texto normalizado e `cache_ttl_s`; semelhança difusa
-arriscava reutilizar a classificação errada).
+**What is not done, and is not claimed:** measuring TTFT (only declared
+`latencia_p95_ms` exists, not measured), cost is not read from any API (it is
+declared by hand and does not update itself), rotation is still modulo — an
+entry added or removed reindexes sessions and swaps their model on the
+first turn — and reusing decisions for *similar* questions (the classifier cache is by normalised text
+and `cache_ttl_s`; fuzzy similarity risked reusing the wrong classification).
 
-## Tarefas por perfil (3.2)
 
-No mesmo JSON, `perfis.<perfil>.tarefas` define como reconhecer cada tarefa;
-`catalogo[].tarefas` associa um ou mais tipos de tarefa ao modelo. Exemplo
-parcial (acrescentar ao perfil e à entrada já existentes, não substituir o catálogo):
+## Tasks by profile (3.2)
+
+In the same JSON, `perfis.<perfil>.tarefas` defines how to recognise each task;
+`catalogo[].tarefas` associates one or more task types to the model. Partial example
+(add to the existing profile and entry, do not replace the catalogue):
 
 ```json
 {
@@ -747,680 +749,714 @@ parcial (acrescentar ao perfil e à entrada já existentes, não substituir o ca
 }
 ```
 
-A associação de tarefa ganha à complexidade, aos marcadores e à histerese.
-Sem associação, fica a análise anterior. Se nenhuma rota associada resolver
-credenciais, tenta a análise por complexidade e regista
-`origem=analise_fallback_tarefa`, com `falhadas_tarefa`.
-Havendo vários modelos associados usa a estratégia do perfil. Havendo tipos de
-tarefa sobrepostos ganha `prioridade` maior; em empate, a frase mais comprida
-(e depois o identificador, para desempate determinístico).
+Task association beats complexity, markers, and hysteresis.
+Without association, the previous analysis applies. If no associated route
+resolves credentials, it falls back to complexity analysis and logs
+`origin=task_fallback_analysis`, with `failed_task`.
+When multiple models are associated, the profile strategy applies. When task
+types overlap, higher `priority` wins; on a tie, the longer phrase
+(then the identifier, for deterministic tie-breaking).
 
-A detecção é heurística por frases literais (sem distinguir acentos/maiúsculas),
-não um classificador semântico. Só avalia o último pedido do utilizador, sem
-memória injectada, mensagens do assistente ou resultados de ferramentas.
-Assim uma tarefa nova volta imediatamente à análise, sem herdar a histerese
-da associação anterior. Limitação: «continua» sozinho não herda a tarefa;
-menções citadas ou negadas à tarefa podem ainda casar com um termo.
+Detection is heuristic by literal phrases (case/accent-insensitive),
+not a semantic classifier. It only evaluates the user's last request, without
+injected memory, assistant messages, or tool results.
+Thus a new task immediately returns to analysis, without inheriting the
+hysteresis of the previous association. Limitation: "continue" alone does not
+inherit the task; cited or negated mentions of the task may still match a term.
 
-`vmm simular trabalho "Faz uma análise de arquitetura"` mostra a tarefa e as
-rotas associadas sem chamar providers. O ledger inclui `tarefa` e `origem`;
-nenhum texto da conversa é guardado. Regressão: `python3 test_tarefas.py`.
-Os identificadores de modelo do exemplo são os da config existente: estes
-testes offline não provam disponibilidade nem resposta real do provider.
+`vmm simulate task "Do an architecture analysis"` shows the task and
+associated routes without calling providers. The ledger includes `task` and
+`origin`; no conversation text is stored. Regression: `python3 test_tarefas.py`.
+The example model identifiers are from the existing config: these
+offline tests do not prove availability or real provider response.
 
-## Superfícies de sessão (3.16.0)
+## Session surfaces (3.16.0)
 
-A superfície é o **contexto** que o core já entrega ao middleware
+The surface is the **context** the core already passes to the middleware
 (`platform`): `cron`, `api_server`, `cli`, `whatsapp`, `telegram`, `discord`,
-`subagent`, `tui`, `desktop`, `oneshot`. Não se adivinha por palavras — e é por
-isso que é o critério mais fiável dos três.
+`subagent`, `tui`, `desktop`, `oneshot`. It is not guessed from words — which
+is why it is the most reliable of the three criteria.
 
-Medição que justifica não usar `tarefa` para isto: a palavra "cron" aparece em
-**33 371 de 435 155 mensagens (7,7%)** do histórico, logo uma regra por `termos`
-dispararia em "cronologia" e "crontab". E **59% (273 de 464)** das execuções
-`cron` caíam em `alta` sem ninguém a olhar.
+Measurement justifying not using `task` for this: the word "cron" appears in
+**33,371 of 435,155 messages (7.7%)** of history, so a `terms` rule
+would fire on "cronology" and "crontab". And **59% (273 of 464)**
+`cron` executions fell into `high` with no one watching.
 
-**Prioridade:** marcador explícito na mensagem (`complexidade: alta`) >
-superfície > associação de tarefa > análise de complexidade. A superfície é
-determinística; a tarefa é adivinhada; a análise é estimada.
+**Priority:** explicit marker in message (`complexity: high`) >
+surface > task association > complexity analysis. The surface is
+deterministic; the task is guessed; the analysis is estimated.
 
 ```json
 {
-  "analise": {
-    "superficies": {
-      "cron":       { "entrada": "deepseek-flash" },
-      "api_server": { "nivel": "media" },
-      "cli":        { "provider": "deepseek", "modelo": "deepseek-flash" }
+  "analysis": {
+    "surfaces": {
+      "cron":       { "entry": "deepseek-flash" },
+      "api_server": { "level": "medium" },
+      "cli":        { "provider": "deepseek", "model": "deepseek-flash" }
     }
   }
 }
 ```
 
-Só **três** formas de regra são aceites na gravação:
+Only **three** rule forms are accepted on save:
 
-| Forma | Efeito |
+| Form | Effect |
 |---|---|
-| `{"entrada": "<id do catálogo>"}` | preferida: `acesso`, `esforco` e limites vêm do catálogo — um só sítio de verdade |
-| `{"provider": "...", "modelo": "..."}` | atalho; exige que o par exista no catálogo do perfil |
-| `{"nivel": "leve\|media\|alta"}` | fixa o nível e deixa o catálogo escolher a entrada |
+| `{"entry": "<catalogue id>"}` | preferred: `access`, `effort` and limits come from the catalogue — one single source of truth |
+| `{"provider": "...", "model": "..."}` | shortcut; requires the pair to exist in the profile catalogue |
+| `{"level": "low|medium|high"}` | fixes the level and lets the catalogue pick the entry |
 
-Qualquer outra forma é **recusada no save**, com o nome da superfície e do id.
-Uma regra que aponte para uma entrada que o perfil não tem também é recusada:
-resolveria para nada e o turno cairia na análise em silêncio.
+Any other form is **rejected on save**, with the surface name and id.
+A rule pointing to an entry the profile lacks is also rejected:
+it would resolve to nothing and the turn would silently fall back to analysis.
 
-`superficies` vive em `analise` (global, herdado por todos os perfis) ou em
-`perfis.<perfil>.analise.superficies` (sobrepõe). Um perfil anula uma regra
-herdada com `{"activo": false}` sem a apagar do global. Só se grava a cópia do
-perfil quando difere do global.
+`surfaces` lives in `analysis` (global, inherited by all profiles) or in
+`profiles.<profile>.analysis.surfaces` (overrides). A profile cancels an
+inherited rule with `{"active": false}` without deleting it from global.
+Only the profile copy is saved when it differs from global.
 
-Uma regra com `entrada` fixada é uma **ordem**, não uma preferência: só cede a
-capacidade (`excecao: capacidade`) ou a uma rota que falhou há menos de 120 s
-(`excecao: rota`). Ambos ficam no ledger como `excecao_motivo:
-superficie:<nome>:<motivo>` — sem isso parecia que a regra nunca disparava.
+A rule with a fixed `entry` is an **order**, not a preference: it only yields
+to capacity (`exception: capacity`) or to a route that failed less than 120 s
+ago (`exception: route`). Both appear in the ledger as `exception_reason:
+surface:<name>:<reason>` — without this it looked like the rule never fired.
 
 ```sh
-vmm superficie list                 # todos os perfis, com a origem de cada regra
-vmm superficie list default
-vmm superficie add default cron entrada:deepseek-flash
-vmm superficie add pessoal cli nivel:leve
-vmm superficie rm default cron
+vmm surface list                 # all profiles, with the origin of each rule
+vmm surface list default
+vmm surface add default cron entry:deepseek-flash
+vmm surface add personal cli level:low
+vmm surface rm default cron
 ```
 
-`vmm superficie add` aceita `entrada:<id>`, `nivel:<leve|media|alta>` ou
-`provider/modelo`. O painel mostra as regras no cartão do perfil com a marca
-`· global` quando são herdadas.
+`vmm surface add` accepts `entry:<id>`, `level:<low|medium|high>` or
+`provider/model`. The panel shows the rules on the profile card with the
+`· global` mark when they are inherited.
 
-**Registo:** cada evento de troca leva `superficie`, `superficie_fonte`
-(`kwarg` ou `agente`) e — quando a regra dispara — `origem: "superficie"`.
-O campo `plataforma_kw` guarda o que o core entregou, para distinguir «não há
-regra» de «o kwarg não chegou». Diagnóstico opt-in com `VMM_DEBUG_SUP=1`
-escreve `debug-sup.jsonl` no directório do plugin.
+**Log:** each switch event carries `surface`, `surface_source`
+(`kwarg` or `agent`) and — when the rule fires — `origin: "surface"`.
+The `platform_kw` field stores what the core delivered, to distinguish "no
+rule" from "the kwarg did not arrive". Opt-in diagnostic with `VMM_DEBUG_SUP=1`
+writes `debug-sup.jsonl` in the plugin directory.
 
-Regressão: `python3 test_superficies.py` (32 verificações: validador, gravação,
-herança superfície a superfície, prioridade e capacidade).
+Regression: `python3 test_superficies.py` (32 checks: validator, save,
+surface-by-surface inheritance, priority, and capacity).
 
-## Superfícies de sessão no painel (3.18.0)
+## Session surfaces in the panel (3.18.0)
 
-Uma superfície é o contexto em que a sessão corre — `cron`, `api_server`, `cli`, `whatsapp`,
-`subagent`, `oneshot`… — e chega ao plugin pelo `platform` que o core passa ao middleware. Não se
-adivinha pelo texto: **`cron` aparece em 7,7% das mensagens** (33 371 de 435 155) porque as pessoas
-falam de cronologia e de crontab, e uma regra por palavra-chave dispararia nessas conversas. Por
-isso `cron` é superfície, não tarefa.
+A surface is the context in which the session runs — `cron`, `api_server`, `cli`, `whatsapp`,
+`subagent`, `oneshot`… — and reaches the plugin via the `platform` the core passes to the middleware. It is not
+guessed from text: **`cron` appears in 7.7% of messages** (33,371 of 435,155) because people
+talk about cronology and crontab, and a keyword rule would fire in those conversations. That is why
+`cron` is a surface, not a task.
 
-A regra de superfície decide **antes** da tarefa e **antes** da análise: se o contexto já diz que
-este turno é do `cron`, não há nada a classificar. A ordem completa é
+The surface rule decides **before** the task and **before** the analysis: if the context already says
+this turn belongs to `cron`, there is nothing to classify. The full order is
 
 ```
-marcador explícito → superfície → tarefa → complexidade → heurística
+explicit marker → surface → task → complexity → heuristic
 ```
 
-### No painel
+### In the panel
 
-Cada cartão de perfil tem um bloco **Superfícies de sessão**:
+Each profile card has a **Session surfaces** block:
 
-* uma linha por superfície já configurada — o nome à esquerda, a rota à direita num `select` nativo;
-* as opções do `select` vêm do `/estado` (`opcoes.superficies`, `opcoes.niveis` e o catálogo do
-  perfil), nunca de uma cópia em JavaScript;
-* `— sem regra (herdar) —` apaga a regra do perfil e volta a herdar o global;
-* `nunca: nao tratar esta superficie` grava `{activo: false}`, que anula a herdada **só** naquele
-  perfil;
-* uma linha `· global` marca as regras que vêm do global, para não se procurar no perfil uma regra
-  que lá não está;
-* o campo de texto no fim acrescenta uma superfície nova (sugestões em `datalist`) e liga-a logo à
-  primeira rota do catálogo, que se muda na linha.
+* one line per configured surface — name on the left, route on the right in a native `select`;
+* the `select` options come from `/state` (`options.surfaces`, `options.levels` and the profile
+  catalogue), never from a JavaScript copy;
+* `— no rule (inherit) —` deletes the profile rule and falls back to inheriting global;
+* `never: do not handle this surface` writes `{active: false}`, which cancels the inherited one
+  **only** in that profile;
+* a `· global` line marks rules that come from global, so you do not look in the profile for a
+  rule that is not there;
+* the text field at the end adds a new surface (suggestions in `datalist`) and links it immediately
+  to the first catalogue route, which is changed on the line.
 
-### A rota (`alvo`)
+### The route (`target`)
 
-| forma | exemplo | quando |
+| form | example | when |
 | --- | --- | --- |
-| `entrada:<id>` | `entrada:flash-alta` | preferida — `acesso` e `esforco` vêm da entrada do catálogo |
-| `nivel:<nivel>` | `nivel:alta` | quando o mesmo nível serve várias superfícies |
-| `provider/modelo` | `openrouter/openai/gpt-6.1-sol` | rota fora do catálogo do perfil |
-| `nunca` | — | `{activo: false}`: anular a herdada |
-| vazio | — | apagar a regra do perfil |
+| `entry:<id>` | `entry:flash-high` | preferred — `access` and `effort` come from the catalogue entry |
+| `level:<level>` | `level:high` | when the same level serves multiple surfaces |
+| `provider/model` | `openrouter/openai/gpt-6.1-sol` | route outside the profile catalogue |
+| `never` | — | `{active: false}`: cancel the inherited one |
+| empty | — | delete the profile rule |
 
-### Herança, superfície a superfície
+### Inheritance, surface by surface
 
-O global vale para todos e o perfil só declara o que difere. A herança é **por superfície**, não por
-bloco: um perfil que declara `cron` continua a ver a regra global de `cli`. Substituir o bloco
-inteiro apagaria regras globais sem ninguém as ter apagado — é o tipo de perda silenciosa que este
-plugin já pagou caro noutras chaves.
+Global applies to all and the profile only declares what differs. Inheritance is **per surface**, not
+per block: a profile that declares `cron` still sees the global rule for `cli`. Replacing the whole
+block would delete global rules without anyone deleting them — the kind of silent loss this
+plugin has paid dearly for in other keys.
 
-### Gralhas
+### Typos
 
-A lista de superfícies conhecidas **não** é fechada: um provider novo traz contextos novos e a regra
-continua válida. Mas uma gralha evidente (`crom` por `cron`) é recusada com a superfície certa na
-mensagem — uma regra que nunca dispara porque o nome está mal escrito é o pior resultado possível,
-porque o utilizador fica convencido de ter configurado o `cron`.
+The list of known surfaces is **not** closed: a new provider brings new contexts and the rule
+remains valid. But an obvious typo (`crom` for `cron`) is rejected with the correct surface in
+the message — a rule that never fires because the name is misspelled is the worst possible
+outcome, because the user is convinced they configured `cron`.
 
 ### API
 
 ```bash
-curl -u "$USER:$PASS" -X POST http://<host>:8643/api/plugins/model-manager/superficies \
+curl -u "$USER:$PASS" -X POST http://<host>:8643/api/plugins/model-manager/surfaces \
   -H 'Content-Type: application/json' \
-  -d '{"ambito":"perfil","perfil":"default","superficie":"cron",
-       "alvo":"entrada:flash-alta","rev":"<rev do /estado>"}'
+  -d '{"scope":"profile","profile":"default","surface":"cron",
+       "target":"entry:flash-high","rev":"<rev from /state>"}'
 ```
 
-Responde `{ok, ambito, perfil, superficie, regra, rev}` — e `regra` é lida do disco depois de
-gravar, não é o que se pediu. `rev` desactualizado dá **409** (o painel recarrega o estado).
+Responds `{ok, scope, profile, surface, rule, rev}` — and `rule` is read from disk after
+saving, not what was requested. Stale `rev` gives **409** (the panel reloads state).
 
-## Estratégia: lista fechada com herança (3.17.0)
+## Strategy: closed list with inheritance (3.17.0)
 
-A estratégia diz **como** se escolhe, dentro do nível, quando há mais do que uma
-rota elegível. Ficou com os mesmos dois valores que já existiam, agora num bloco
-`{modo, por}` configurável no painel:
+The strategy says **how** to choose, within the level, when more than one
+eligible route exists. It kept the same two values that already existed, now in a
+configurable `{mode, by}` block in the panel:
 
-| chave | valores | efeito |
+| key | values | effect |
 |---|---|---|
-| `modo` | `rodizio` | alterna entre as candidatas do nível |
-| | `prioridade` | usa sempre a primeira elegível da lista |
-| `por` | `turno` | a roda avança a cada turno (a lista dobra de utilidade, mas invalida a cache do provider) |
-| | `sessao` | a roda mantém-se dentro da sessão |
+| `mode` | `round-robin` | alternates among the level's candidates |
+| | `priority` | always uses the first eligible from the list |
+| `by` | `turn` | the wheel advances each turn (the list doubles in utility, but invalidates the provider cache) |
+| | `session` | the wheel stays within the session |
 
-**Lista fechada, por decisão.** Um `modo` inválido é **erro de validação** com a
-lista dos aceites — não um silencioso «usa o default». Gravar `rodizioo` e ver o
-plugin decidir `rodizio` sem avisar é pior do que o painel recusar a gravação: o
-utilizador fica convencido de ter mudado o que nunca mudou.
+**Closed list, by decision.** An invalid `mode` is a **validation error** with
+the list of accepted values — not a silent "use default". Saving `round-robinn`
+and seeing the plugin decide `round-robin` without warning is worse than the
+panel rejecting the save: the user is convinced they changed what never changed.
 
-**Global + herança chave a chave**, exactamente como o `analise`:
+**Global + key-by-key inheritance**, exactly like `analysis`:
 
 ```json
 {
-  "estrategia": {"modo": "rodizio", "por": "sessao"},
-  "perfis": {
-    "trabalho": {"estrategia": {"modo": "prioridade"}}
+  "strategy": {"mode": "round-robin", "by": "session"},
+  "profiles": {
+    "work": {"strategy": {"mode": "priority"}}
   }
 }
 ```
 
-O perfil de `trabalho` decide `prioridade` **e continua a herdar** o `por` do
-global. A herança é resolvida na **leitura** (`gestor.estrategia_efectiva`), e a
-regra é: **ausência da chave = herda; presença = declaração**. Uma escolha
-explícita grava-se tal e qual, mesmo quando coincide hoje com o valor do global.
-Sem isso o painel respondia 200 e o bloco era descartado pelo *delta*, o perfil
-continuava a herdar e uma alteração posterior do global arrastava um perfil que
-o dono tinha declarado independente. Para voltar a herdar há um gesto próprio
-(«herdar do global»), que apaga o bloco. A regra do *delta* continua a valer na
-`analise` (limiares, janela, superfícies), onde o que chega das páginas são
-cópias do formulário e não escolhas.
+The `work` profile chooses `priority` **and continues to inherit** `by` from
+global. Inheritance is resolved on **read** (`manager.effective_strategy`), and
+the rule is: **absence of key = inherits; presence = declaration**. An explicit
+choice is saved as-is, even when it matches the global value today.
+Without this the panel returned 200 and the block was discarded by the *delta*,
+the profile kept inheriting, and a later global change dragged a profile the
+owner had declared independent. To inherit again there is a dedicated gesture
+("inherit from global"), which deletes the block. The *delta* rule still applies in
+`analysis` (thresholds, window, surfaces), where what comes from
+pages are form copies, not choices.
 
-**Forma antiga migrada, não descartada.** A config viva foi escrita como
-`"estrategia": "rodizio"` + `"rodizio": {"por": "sessao"}`; `normalizar_estrategia`
-lê as duas formas, e um valor inválido na forma antiga (`por: "hora"`) é recusado
-com o caminho novo (`perfis.X.estrategia.por`). Um `gravar` sem esta conversão
-apagava a estratégia do perfil sem ninguém notar.
+**Legacy form migrated, not discarded.** The live config was written as
+`"strategy": "round-robin"` + `"round_robin": {"by": "session"}`; `normalize_strategy`
+reads both forms, and an invalid value in the legacy form (`by: "hour"`) is rejected
+with the new path (`profiles.X.strategy.by`). A `save` without this conversion
+erased the profile strategy without anyone noticing.
 
-**No painel.** A estratégia edita-se na página de configuração, no bloco
-«Complexidade e estratégia», com uma linha por âmbito (global e cada perfil) e a
-origem declarada ao lado («herdado do global», «próprio», «por omissão»).
-Escolher num perfil grava a declaração desse perfil; «herdar do global» apaga-a —
-é o único gesto que exprime «volta a herdar». As opções dos `select` vêm de
-`GET /estado` → `opcoes.estrategia` (as mesmas listas que validam, incluindo os
-rótulos), não de uma cópia em JS que envelhece.
+**In the panel.** The strategy is edited on the configuration page, in the
+"Complexity and strategy" block, with one line per scope (global and each
+profile) and the declared origin shown ("inherited from global", "own", "default").
+Choosing in a profile saves that profile's declaration; "inherit from global" deletes it —
+it is the only gesture that expresses "go back to inheriting". The
+`select` options come from `GET /state` → `options.strategy` (the same lists
+that validate, including labels), not from a JS copy that ages.
 
-**Gravação cirúrgica.** `POST /estrategia` altera **só** o bloco: um `select` não
-pode ter o poder de reescrever a config inteira, que é como o editor de JSON já
-perdeu alterações de outra sessão. Leva `rev` (o do `/estado`) e responde `409`
-a uma aba antiga, em vez de sobrepor à escolha de outra sessão.
+**Surgical save.** `POST /strategy` changes **only** the block: a `select`
+cannot have the power to rewrite the entire config, which is how the JSON
+editor already lost changes from another session. It carries `rev` (from
+`/state`) and responds `409` to a stale tab, instead of overwriting another
 
-**Escolha por contexto.** A estratégia **não** é o critério para mandar
-superfícies diferentes a modelos diferentes — isso é o bloqueio `superficies`
-(ver «Superfícies de sessão»), que tem prioridade acima da complexidade. A
-estratégia só decide *qual das rotas elegíveis* serve o nível já decidido.
+**Choice by context.** The strategy **is not** the criterion for sending
+different surfaces to different models — that is the `surfaces` block
+(see "Session surfaces"), which has priority above complexity. The
+strategy only decides *which of the eligible routes* serves the already-decided
 
-Regressão: `python3 test_estrategia.py` (21 casos: listas fechadas, herança,
-migração, round-trip e o efeito real em `escolher`) e os 21 casos novos em
-`dashboard/selftest.py` sobre `POST /estrategia`.
+Regression: `python3 test_estrategia.py` (21 cases: closed lists, inheritance,
+migration, round-trip, and real effect in `choose`) and the 21 new cases in
+`dashboard/selftest.py` on `POST /strategy`.
 
-## Editar uma rota do catálogo (3.20.0)
+## Edit a catalogue route (3.20.0)
 
-Cada linha da tabela de um perfil tem um ícone `✎` e cada cartão de perfil um
-botão `＋ modelo`. Abrem uma **página própria**, e com ela aberta o painel
-principal não chega a ser construído — o mesmo `early return` que a página de
-configuração usa. Os dois botões fecham a página: **Gravar e voltar** (valida,
-grava, relê e volta ao painel com «Modelo X gravado») e **Descartar** (volta sem
-escrever). Há ainda **Validar**, que corre o mesmo `validar` do `gravar` sem
-tocar no ficheiro.
+Each line of a profile's table has a `✎` icon and each profile card a
+`＋ model` button. They open a **dedicated page**, and with it open the main
+panel is not even built — the same `early return` the configuration page uses.
+Both buttons close the page: **Save and return** (validates, saves, re-reads,
+and returns to the panel with "Model X saved") and **Discard** (returns without
+writing). There is also **Validate**, which runs the same `validate` as `save`
+without touching the file.
 
-A página tem três blocos: **Identidade** (`id`, `provider`, `modelo`),
-**Roteamento** (complexidade, tarefas, acesso, esforço, estado) e **Limites
-declarados** (`contexto_max`, `latencia_p95_ms`, modalidades, JSON nativo, nota).
+The page has three blocks: **Identity** (`id`, `provider`, `model`),
+**Routing** (complexity, tasks, access, effort, state) and **Declared
+Limits** (`context_max`, `latency_p95_ms`, modalities, native JSON, note).
 
-| opção | forma | fechada em |
+| option | form | closed in |
 |---|---|---|
-| `complexidade` | vários níveis | `gestor.NIVEIS` |
-| `tarefas` | várias tarefas | as tarefas declaradas no perfil |
-| `acesso` | uma | `gestor.ACESSOS` |
-| `esforco` | uma, ou ausente | `gestor.ESFORCOS` + «não declarado» |
-| `desligado` | uma | activo / desligado |
-| `modalidades` | várias | `gestor.MODALIDADES` |
-| `json_nativo` | uma, ou ausente | sim / não / não declarado |
-| `id`, `provider`, `modelo`, `nota` | texto | — |
-| `contexto_max`, `latencia_p95_ms` | número | — |
+| `complexity` | multiple levels | `manager.LEVELS` |
+| `tasks` | multiple tasks | tasks declared in the profile |
+| `access` | one | `manager.ACCESS_TYPES` |
+| `effort` | one, or absent | `manager.EFFORTS` + "not declared" |
+| `disabled` | one | active / disabled |
+| `modalities` | multiple | `manager.MODALITIES` |
+| `native_json` | one, or absent | yes / no / not declared |
+| `id`, `provider`, `model`, `note` | text | — |
+| `context_max`, `latency_p95_ms` | number | — |
 
-As listas vêm de `GET /modelo` → `opcoes`, lidas do próprio `gestor` — a
-autoridade da validação. Não há uma segunda cópia em JS que envelheça: um valor
-novo acrescentado ao `gestor` aparece no painel sem tocar no `index.js`.
+The lists come from `GET /model` → `options`, read from the `manager` itself — the
+validation authority. There is no second JS copy that ages: a new value
+added to the `manager` appears in the panel without touching `index.js`.
 
-**O que não se declara não se escreve.** `esforco`, `desligado`, `modalidades`,
-`json_nativo`, `contexto_max`, `latencia_p95_ms` e `nota` sem valor **saem** da
-entrada em vez de irem com `""`/`0`: declarar é o que dá garantia, e um
-`esforco: ""` seria um valor inválido disfarçado de omissão. Um número inválido
-(`abc`) é enviado como texto, para o `gestor` dizer qual o campo e o valor, em
-vez de o painel o converter em `NaN` silencioso.
+**What is not declared is not written.** `effort`, `disabled`, `modalities`,
+`native_json`, `context_max`, `latency_p95_ms`, and `note` without a value **leave**
+the entry instead of going with `""`/`0`: declaring is what gives guarantee, and an
+`effort: ""` would be an invalid value disguised as omission. An invalid number
+(`abc`) is sent as text, for the `manager` to say which field and value, instead
+of the panel silently converting it to `NaN`.
 
-**Gravação cirúrgica.** `POST /modelo` lê a config, substitui **uma** entrada do
-catálogo (ou acrescenta ao fim) e volta a gravar pelo `gestor`. O browser nunca
-reescreve a config inteira. A posição no catálogo é preservada — a ordem é a da
-estratégia `prioridade`, logo não pode mudar por acidente. Um `id` já usado por
-outra entrada é **400** com o nome repetido; o `id` é a chave por que as
-superfícies e as tarefas lhe chamam. Leva `rev` e responde `409` a uma aba que
-ficou para trás. O que se devolve é o que ficou no ficheiro, lido outra vez — não
-o que se julgou ter escrito.
+**Surgical save.** `POST /model` reads the config, replaces **one** catalogue
+entry (or appends to the end) and writes back via the `manager`. The browser never
+rewrites the entire config. The position in the catalogue is preserved — the order
+is the `priority` strategy's, so it cannot change by accident. An `id` already used
+by another entry is **400** with the duplicate name; the `id` is the key by which
+surfaces and tasks call it. It carries `rev` and responds `409` to a tab that
+fell behind. What is returned is what ended up in the file, read again — not
+what was thought to have been written.
 
-**Renomear** o `id` é possível (o dono pediu todas as opções), mas a página
-avisa: as regras de superfície guardam o nome da rota. `GET /modelo` sem `id`
-devolve a entrada em branco para criar; com `id`, a entrada **inteira** — que é
-mais do que o `/estado` mostra no cartão, e é por isso que a página lê sempre do
-servidor em vez de editar o que já tem em memória.
+**Renaming** the `id` is possible (the owner asked for all options), but the
+page warns: surface rules store the route name. `GET /model` without `id`
+returns a blank entry for creation; with `id`, the **entire** entry — which is
+more than `/state` shows on the card, and that is why the page always reads
+from the server instead of editing what it already has in memory.
 
-Regressão: 26 casos em `dashboard/selftest.py` sobre `/modelo` (validar não
-grava, posição preservada, perfil irmão intacto, `id` repetido, `subscricao` fora
-do `openai-codex`, `rev` antigo → `409`) e 36 em `dashboard/test_logica.js`
-(round-trip forma → entrada, chaves vazias, ordem canónica, listas fechadas,
-botões e ícones).
+Regression: 26 cases in `dashboard/selftest.py` on `/model` (validate does
+not save, position preserved, sibling profile intact, duplicate `id`,
+`subscription` outside `openai-codex`, stale `rev` → `409`) and 36 in
+`dashboard/test_logica.js` (round-trip form → entry, empty keys, canonical
+order, closed lists, buttons, and icons).
+
+## Circuit breaker (3.41.0)
+
+A free model that fails is not retried in a loop. The rule is configurable, globally
+and per profile, with the same key-by-key inheritance as the other blocks:
+
+- `activo` — on or off;
+- `limite_falhas` (default 3) — how many failures inside the window;
+- `janela_minutos` (default 5) — the window;
+- `multiplicador_cooldown` (default 1.5) — the cooldown is `120 s × multiplicador`.
+
+The state is keyed by `(profile, provider, model)`, timed with `time.monotonic()` and
+purged as entries leave the window. It lives in memory on purpose: it is a reaction to
+the last few minutes, not a fact for the ledger. Measured: **3 failures in 5 min → 180 s**
+(120 × 1.5). Once cooled down, the entry is skipped like any other unavailable route,
+with the reason recorded in `uso.err`; the run does not fail.
+
+In the panel: Configuration → Classifier → «Circuit Breaker», global and per profile,
+showing the effective value and where it comes from (`global`, `perfil` or `padrao`).
+API: `GET` / `POST /circuit-breaker?perfil=<name>`.
+
+## Language of the panel (3.41.0)
+
+English is the default; Portuguese (Portugal) is the alternative. The language lives in
+the config (`idioma`, `en` or `pt`), not in the browser, so the panel, the CLI and the
+sessions read the same choice; regional forms (`pt-PT`, `en-US`) are reduced to the base
+and any other code is an explicit error, never a silent fallback.
+
+The selector sits in Configuration, next to the buttons; `POST /idioma` writes that one
+key — no `rev`, because the mutator touches a single key — and `/estado` returns `idioma`
+so the first render is already in the right language. The dictionary keeps Portuguese as
+the key: a string that is not translated falls back to Portuguese instead of disappearing,
+and the wrapper translates text and titles but never `className` or `value`.
 
 ## CLI `vmm`
 
 ```
-vmm status [--json]                  estado global e por perfil
-vmm on|off [--perfil NOME]           liga/desliga (sem --perfil: global)
-vmm perfis                           geridos vs. existentes na máquina
-vmm perfil add NOME [--copiar-de X]  acrescenta perfil (cópia opcional)
-vmm perfil rm NOME                   deixa de ser gerido
-vmm estrategia [--perfil NOME] [--modo rodizio|prioridade] [--por turno|sessao] [--herdar] [--json]
-vmm rota list [PERFIL] [--json]
-vmm rota add PERFIL PROVIDER MODELO --complexidade leve,media [--id ID] [--acesso api|subscricao]
-vmm rota rm PERFIL ID
-vmm simular PERFIL "texto"           classifica e mostra as candidatas
-vmm verificar [PERFIL]               resolve credenciais de cada rota (sem as imprimir)
-vmm classificador [ver|on|off] [--perfil NOME] [--provider P] [--modelo M]
-                 [--esforco baixo|medio|alto|-] [--formato auto|on|off]
-vmm classificador lote "texto1" "texto2" ...   N pedidos num só pedido (contexto longo)
-vmm log [-n N] [--perfil NOME] [--provider P] [--sessao S] [--evento E]
-vmm retencao [--dias N] [--aplicar]   ledger: tamanho e compactação do detalhe antigo
-vmm backups [--manter N] [--semanais N] [--aplicar]   backups do config: contagem e poda
-vmm caminho                          caminhos de config e ledger
-vmm recarregar                       recarrega plugins no gateway
+vmm status [--json]                  global and per-profile state
+vmm on|off [--profile NAME]          enable/disable (without --profile: global)
+vmm profiles                         managed vs. existing on the machine
+vmm profile add NAME [--copy-from X] adds profile (optional copy)
+vmm profile rm NAME                  stops being managed
+vmm strategy [--profile NAME] [--mode round-robin|priority] [--by turn|session] [--inherit] [--json]
+vmm route list [PROFILE] [--json]
+vmm route add PROFILE PROVIDER MODEL --complexity low,medium [--id ID] [--access api|subscription]
+vmm route rm PROFILE ID
+vmm simulate PROFILE "text"          classifies and shows candidates
+vmm verify [PROFILE]                 resolves credentials for each route (without printing them)
+vmm classifier [view|on|off] [--profile NAME] [--provider P] [--model M]
+                 [--effort low|medium|high|-] [--format auto|on|off]
+vmm classifier batch "text1" "text2" ...   N requests in one call (long context)
+vmm log [-n N] [--profile NAME] [--provider P] [--session S] [--event E]
+vmm retention [--days N] [--apply]   ledger: size and compaction of old detail
+vmm backups [--keep N] [--weekly N] [--apply]   config backups: count and pruning
+vmm path                             config and ledger paths
+vmm reload                           reloads plugins in the gateway
 ```
 
-`rota add` sem `--acesso` infere a rota de acesso do provider; com
-`--acesso` explicito valida a compatibilidade (e recusa `api` com
-openai-codex ou `subscricao` com outro provider). `vmm verificar [PERFIL]`
-resolve cada rota **no contexto do perfil alvo** (home + escopo de segredos
-próprios), por isso um perfil com `.env` próprio não aparece sem credenciais
-só por o CLI correr fora do gateway; imprime apenas tamanhos e fontes, nunca
-chaves.
+`route add` without `--access` infers the access route from the provider; with
+explicit `--access` it validates compatibility (and rejects `api` with
+openai-codex or `subscription` with another provider). `vmm verify [PROFILE]`
+resolves each route **in the target profile's context** (home + own secrets
+scope), so a profile with its own `.env` does not appear without credentials
+just because the CLI runs outside the gateway; it prints only sizes and sources,
+never keys.
 
-Códigos de saída: `0` ok · `1` há problema · `2` uso inválido · `3` não
-encontrado.
+Exit codes: `0` ok · `1` problem · `2` invalid usage · `3` not
+found.
 
-## Retenção: o ledger e os backups param de crescer
+## Retention: the ledger and backups stop growing
 
-O ledger cresce a cada chamada ao provider (~5,8 MB/dia medidos a 2026-11-04) e
-o `gravar` do config deixa um `config.json.bak-<carimbo>` por escrita — 132
-acumulados em dois dias e meio. Duas políticas independentes, ambas **aditivas**:
-nada desaparece sem deixar os agregados.
+The ledger grows on every provider call (~5.8 MB/day measured 2026-11-04) and
+the config `save` leaves a `config.json.bak-<stamp>` per write — 132
+accumulated in two and a half days. Two independent policies, both **additive**:
+nothing disappears without leaving the aggregates.
 
-**Ledger** (`vmm retencao`). As linhas de dias **completos** com mais de
-`dias_completo` dias são substituídas por um evento `resumo_dia` por dia, com
-contagens por evento, perfil, nível, modelo, origem e superfície, somas de
-tokens e leituras do classificador. Dia **cortado a meio não se dobra**: um
-resumo parcial lê-se como o total do dia e mente sobre o que falta — fica
-inteiro até à compactação seguinte e sai em `dias_parciais`. Linhas ilegíveis
-não se apagam. O resumo vai para o **início** do ficheiro; o painel lê do fim
-para trás e filtra por evento, por isso não o vê — os leitores actuais não
-mudam. Medido numa cópia do ledger real com o dia 2026-11-02 dobrado: 7 301
-linhas exactas, total preservado (23 084 = 23 084), 17,35 MB → 13,23 MB.
+**Ledger** (`vmm retention`). Lines from **full** days older than
+`full_days` are replaced by one `daily_summary` event per day, with
+counts by event, profile, level, model, origin, and surface, sums of
+tokens and classifier readings. Day **cut in half does not fold**: a
+partial summary reads as the day's total and lies about what is missing — it
+stays whole until the next compaction and appears in `partial_days`. Unreadable
+lines are not deleted. The summary goes to the **start** of the file; the panel
+reads from the end backwards and filters by event, so it does not see it —
+current readers do not change. Measured on a copy of the real ledger with day
+2026-11-02 folded: 7,301 exact lines, total preserved (23,084 = 23,084), 17.35 MB → 13.23 MB.
 
-**Backups** (`vmm backups`). Ficam os `backups_manter` mais recentes mais
-`backups_semanais` por semana ISO para lá desse número. Os marcos postos a mão
-(`config.json.bak-antes-dos-free-reais`) não são datados, não contam e nunca são
-tocados. Medido: 132 datados → 11, 121 removidos, 0,53 MB libertados, 3 marcos
-intactos.
+**Backups** (`vmm backups`). The `backups_keep` most recent are kept plus
+`backups_weekly` per ISO week beyond that number. Manual milestones
+(`config.json.bak-before-free-reals`) are not dated, do not count, and are never
+touched. Measured: 132 dated → 11, 121 removed, 0.53 MB freed, 3 milestones
+intact.
 
-Os limites vivem no bloco opcional `retencao` do config — um número, uma casa:
+The limits live in the optional `retention` block of the config — one number,
 
 ```json
-"retencao": { "dias_completo": 7, "backups_manter": 10, "backups_semanais": 1 }
+"retention": { "full_days": 7, "backups_keep": 10, "backups_weekly": 1 }
 ```
 
-Chaves fechadas: `retencao.lixo` é recusada, `dias_completo: -1` e
-`backups_manter: 0` também (um `0` explícito em `dias_completo` é legítimo — não
-compacta nada). Ausente, valem os padrões acima. Sem `--aplicar` nada é escrito:
-o tamanho mede-se primeiro. O job diário `/opt/data/scripts/vmm-retencao.py`
-corre os dois comandos e **cala-se quando não há nada a fazer** — um aviso
-diário a dizer que não fez nada é um aviso que ninguém lê.
+Closed keys: `retention.garbage` is rejected, `full_days: -1` and
+`backups_keep: 0` also (an explicit `0` in `full_days` is legitimate — it
+compacts nothing). Absent, the defaults above apply. Without `--apply` nothing
+is written: size is measured first. The daily job `/opt/data/scripts/vmm-retention.py`
+runs both commands and **stays silent when there is nothing to do** — a daily
+warning saying it did nothing is a warning no one reads.
 
-O append do ledger toma uma trava **partilhada** em `uso.jsonl.lock`; a
-compactação toma-a em modo exclusivo. Sem isso, o `os.replace` de uma
-compactação deitava fora as linhas escritas entre a leitura e a troca.
+The ledger append takes a **shared** lock on `usage.jsonl.lock`; the
+compaction takes it in exclusive mode. Without this, the `os.replace` of a
+compaction would discard lines written between the read and the swap.
 
-## Escolha, por turno
+## Choice, per turn
 
-Um **turno** é uma mensagem do utilizador e tudo o que ela provoca — no laço de
-ferramentas, dezenas de pedidos ao provider. O nível e a rota decidem-se **uma
-vez**, no primeiro pedido, e o resto do turno reutiliza-os.
+A **turn** is one user message and everything it triggers — in the tool
+loop, dozens of provider calls. The level and route are decided **once**, on the
+first call, and the rest of the turn reuses them.
 
-1. resolve o perfil do turno (o gateway multiplexado serve vários no mesmo
-   processo);
-2. aplica os interruptores (global, perfil) — se algum está em baixo, nada muda;
-3. **verifica o pin do turno**: se já há decisão para esta `turn_id`, reutiliza
-   nível, tarefa, origem e rota e salta os passos 4 a 7. Sem decisão (primeiro
-   pedido), segue;
-4. classifica a complexidade e aplica **histerese**: sobe já, desce só depois de
-   `descer_apos` **turnos** abaixo do nível corrente (evita trocar de rota e
-   estragar a cache por causa de uma mensagem curta);
-5. percorre o catálogo do perfil na ordem da estratégia, saltando entradas cujo
-   provider não tem credencial no escopo desse perfil;
-6. troca o agente vivo (`agent.switch_model`): cliente HTTP, chave, `base_url`,
-   `api_mode` e contabilidade mudam juntos — não é só reescrever o campo `model`;
-7. grava o pin do turno (nível, tarefa, origem e a rota escolhida).
+1. resolves the turn's profile (the multiplexed gateway serves several in the
+   same process);
+2. applies the switches (global, profile) — if any is down, nothing changes;
+3. **checks the turn pin**: if there is already a decision for this `turn_id`,
+   reuses level, task, origin, and route and skips steps 4 to 7. No decision
+   (first call), continues;
+4. classifies complexity and applies **hysteresis**: goes up immediately, goes
+   down only after `descend_after` **turns** below the current level (avoids
+   switching routes and ruining the cache because of a short message);
+5. walks the profile catalogue in strategy order, skipping entries whose
+   provider lacks credentials in that profile's scope;
+6. switches the live agent (`agent.switch_model`): HTTP client, key,
+   `base_url`, `api_mode`, and accounting change together — it is not just
+   rewriting the `model` field;
+7. saves the turn pin (level, task, origin, and the chosen route).
 
-Porque é que isto é uma correção e não uma optimização: medido no ledger real a
-2026-11-02, **63 de 167 turnos (37%) trocavam de nível a meio**. Três causas, e
-o pin mata as três: a janela de mensagens cresce a cada pedido e a pontuação
-muda com ela; a histerese contava **pedidos** em vez de turnos; e o classificador
-por modelo corria por pedido, e não é determinístico (concordância 0,86–0,91).
+Why this is a fix and not an optimisation: measured on the real ledger on
+2026-11-02, **63 of 167 turns (37%) swapped level mid-way**. Three causes, and
+the pin kills all three: the message window grows with each request and the
+score changes with it; hysteresis counted **requests** instead of turns; and the
+per-model classifier ran per request, and is not deterministic (agreement 0.86–0.91).
 
-Duas coisas continuam a poder mudar a decisão dentro do turno, de propósito, e
-ficam **declaradas** no ledger com `excecao`:
+Two things can still change the decision inside the turn, on purpose, and are
+**declared** in the ledger with `excecao`:
 
-- `capacidade` — o contexto deixou de caber na rota ou no nível pinado (um
-  pedido de 128k tokens não cabe numa janela de 32k: forçá-lo era mentir);
-- `rota` — a rota pinada morreu (falhou há pouco, credencial em baixo); troca-se
-  **dentro do mesmo nível**.
+- `capacidade` — the context no longer fits in the route or pinned level (a
+  128k-token request does not fit in a 32k window: forcing it would be lying);
+- `rota` — the pinned route died (failed recently, credential down); it swaps
+  **within the same level**.
 
-Sem esse campo, "estável" seria uma mentira confortável: a prova conta as
-mudanças silenciosas e as declaradas em separado.
+Without that field, "stable" would be a comfortable lie: the proof counts
+silent changes and declared ones separately.
 
-Desligar: `analise.fixar_nivel_por_turno: false` devolve o comportamento
-anterior, sem tocar em código. Nota de semântica: com o pin ligado, `descer_apos`
-conta **turnos** (era a intenção desde o início); desligado, volta a contar
-pedidos, como antes.
+Disable: `analise.fixar_nivel_por_turno: false` returns the previous
+behaviour, without touching code. Semantic note: with the pin on, `descer_apos`
+counts **turns** (was the intent from the start); off, it goes back to counting
+requests, as before.
 
-Fail-open em toda a linha: sem decisão, sem rota ou com excepção, o pedido segue
-intacto e a razão vai para `uso.err`.
+Fail-open throughout: without decision, without route, or with exception, the
+request proceeds intact and the reason goes to `uso.err`.
 
 ## Ledger
 
-`uso.jsonl` (append-only, uma linha JSON por evento) e `uso.err`. Eventos:
+`uso.jsonl` (append-only, one JSON line per event) and `uso.err`. Events:
 `troca`, `sem_rota`, `falha_troca`, `reset`, `desligado`,
 `perfil_desligado`, `perfil_nao_gerido`, `sem_catalogo`, `resposta`.
-O `sem_troca` **saiu na 3.31.0**: era uma linha por chamada de API a repetir a
-mesma decisão (ver o rasto, abaixo).
-O `resposta` regista o que **de facto respondeu**: `provider` e `modelo`
-efectivos do agente (não o escolhido no catálogo), `respondido_por`
-(`response_model` que o provider devolveu), `perfil`, `sessao`, `superficie`
-(origem do turno; `desconhecido` se o hook não a entrega), `acesso`,
-`nivel`/`tarefa`/`origem` da decisão, e a correlação `request_id`/`turn_id`/
-`task_id`. Quando a middleware escolheu algo, `escolhido` guarda
-provider+modelo escolhidos — assim a distinção **escolhido vs efectivo** fica
-explícita, sem inventar nenhum dos dois a partir da config.
+The `sem_troca` **was removed in 3.31.0**: it was one line per API call
+repeating the same decision (see the trace, below).
+The `resposta` records what **actually responded**: effective `provider` and
+`model` from the agent (not the one chosen in the catalogue), `respondido_por`
+(`response_model` returned by the provider), `perfil`, `sessao`, `superficie`
+(turn origin; `desconhecido` if the hook does not deliver it), `acesso`,
+`nivel`/`tarefa`/`origem` from the decision, and the correlation `request_id`/`turn_id`/
+`task_id`. When the middleware chose something, `escolhido` stores
+the chosen provider+model — so the distinction **chosen vs effective** is
+explicit, without inventing either from the config.
 
-Cada evento de decisão leva quatro campos que existem para responder a "quantas
-vezes este turno mudou de modelo", sem junção nenhuma:
+Each decision event carries four fields that exist to answer "how many times
+did this turn change model", without any join:
 
-- `turno` — a chave do turno (`turn_id` do core, ou um hash de sessão+texto; o
-  texto nunca entra);
-- `passo` — o `api_call_count` do pedido dentro do turno;
-- `pin` — `novo` (decidiu) ou `reutilizado` (herdou a decisão do primeiro);
-- `excecao` + `excecao_motivo` — só quando a decisão mudou por necessidade
+- `turno` — the turn key (`turn_id` from core, or a hash of session+text; the
+  text never enters);
+- `passo` — the `api_call_count` of the request within the turn;
+- `pin` — `novo` (decided) or `reutilizado` (inherited the first decision);
+- `excecao` + `excecao_motivo` — only when the decision changed by necessity
   (`capacidade`, `rota`);
-- `fonte_turno` — `turn_id` ou `hash`, para se saber quanto vale a prova.
+- `fonte_turno` — `turn_id` or `hash`, to know how much the proof is worth.
 
-### O rasto da decisão vive na `resposta` (3.31.0)
+### The decision trace lives in `resposta` (3.31.0)
 
-Até à 3.30.0 o rasto que explica a decisão (`classificador`, `sinais`,
-`triagem`, `score`, `esforco`, `superficie*`, `entrada`) ia num `sem_troca` por
-**chamada de API** — e um turno tem, em média, 2,8 chamadas. Medido a
-2026-11-04: 11 129 linhas, 9,59 MB dos 17,11 MB do ledger, com o
-`classificador` repetido em 95,4% das linhas do mesmo turno.
+Until 3.30.0 the trace explaining the decision (`classificador`, `sinais`,
+`triagem`, `score`, `esforco`, `superficie*`, `entrada`) went in a `sem_troca` per
+**API call** — and a turn has, on average, 2.8 calls. Measured on
+2026-11-04: 11,129 lines, 9.59 MB of the 17.11 MB ledger, with the
+`classificador` repeated in 95.4% of lines of the same turn.
 
-Agora viaja na linha `resposta`, **uma vez por turno**, e de novo só quando a
-decisão muda: a assinatura é calculada sobre `_TRACE_ESTAVEL` (nível, tarefa,
-origem, score, classificador, superfície, exceção…), que deixa de fora as
-medidas que crescem com a conversa (`sinais`, `triagem`, `ms`) e as que mudam em
-cada chamada (`pin`, `rota_pin`). Sem essa separação o corte era nulo: assinar o
-rasto inteiro faz um turno de 6 chamadas escrever 6 cópias.
+Now it travels in the `resposta` line, **once per turn**, and again only when
+the decision changes: the signature is computed over `_TRACE_ESTAVEL` (level, task,
+origin, score, classifier, surface, exception…), which leaves out the
+measures that grow with the conversation (`sinais`, `triagem`, `ms`) and those that change on
+every call (`pin`, `rota_pin`). Without that separation the cut was null: signing the
+whole trace makes a 6-call turn write 6 copies.
 
-- O `pin`/`rota_pin` continuam a ser escritos em **todas** as `resposta`, logo a
-  aritmética `reutilizados == chamadas - turnos` mede-se sem o `sem_troca`.
-- Um turno que só produza erros nunca escreve `resposta`: o evento de erro leva
-  o mesmo rasto, com a mesma chave, e por isso sai uma só vez.
-- Os eventos `troca*` levam o **resumo** da decisão (`nivel`, `tarefa`,
-  `origem`, `score`, `esforco`, de/para), não uma segunda cópia do rasto pesado.
-- O painel não precisou de mudar: lê o ledger sem filtrar por evento e guarda, por
-  perfil, o rasto mais recente que encontra.
+- The `pin`/`rota_pin` continue to be written in **all** `resposta`, so the
+  arithmetic `reutilizados == chamadas - turnos` measures without `sem_troca`.
+- A turn that only produces errors never writes `resposta`: the error event
+  carries the same trace, with the same key, and so it comes out once.
+- The `troca*` events carry the **summary** of the decision (`nivel`, `tarefa`,
+  `origem`, `score`, `esforco`, from/to), not a second copy of the heavy trace.
+- The panel did not need to change: it reads the ledger without filtering by event and keeps, per
+  profile, the most recent trace it finds.
 
-A verificação aritmética que apanha um pin que não está a pegar:
-`pin: reutilizado` tem de ser igual a `pedidos − turnos`.
+The arithmetic check that catches a pin that is not sticking:
+`pin: reutilizado` must equal `pedidos − turnos`.
 
 
-O ledger **não** leva texto de conversa nem credenciais: só perfil, sessão,
-superfície, nível, score, nomes de sinais, providers, modelos, acesso,
-tempos e tokens. A escrita é uma linha por `write` com `O_APPEND` e o
-ficheiro nasce `0600`, para coexistir com o CLI e o gateway a escrever em
-processos diferentes.
+The ledger **does not** carry conversation text or credentials: only profile, session,
+surface, level, score, signal names, providers, models, access,
+times and tokens. The write is one line per `write` with `O_APPEND` and the
+file is created `0600`, to coexist with the CLI and gateway writing in
+different processes.
 
-### A tarefa vive na sessão, não no turno (3.32.0)
+### The task lives in the session, not in the turn (3.32.0)
 
-Até à 3.31.0 a associação de tarefa durava **um turno**. `analise.detectar_tarefa`
-lê só a última mensagem do utilizador — de propósito, para não classificar
-histórico nem contexto injectado — e o `pin` fixa a decisão por `turn_id`. As duas
-coisas juntas produziam o drift: o turno que traz «faz uma análise de arquitetura»
-acerta na rota cara, o turno seguinte («continua», «agora escreve o parecer») não
-tem nenhum dos termos, a associação desaparece e quem decide é a complexidade. O
-modelo muda a meio da conversa, e o custo com ele.
+Until 3.31.0 the task association lasted **one turn**. `analise.detectar_tarefa`
+reads only the last user message — on purpose, to avoid classifying
+history or injected context — and the `pin` fixes the decision by `turn_id`. The two
+things together produced the drift: the turn that brings "do an architecture analysis"
+hits the expensive route, the next turn ("continue", "now write the opinion") has
+none of the terms, the association disappears and complexity decides. The
+model changes mid-conversation, and the cost with it.
 
-Agora a tarefa é guardada por **`perfil|sessão`**, ao lado do histórico de
-histerese e com a mesma trava:
+Now the task is stored by **`perfil|sessão`**, alongside the hysteresis
+history and with the same lock:
 
     "analise": {"tarefa_persistente": {"activo": true, "expira_turnos": 6, "expira_min": 90}}
 
-- Tarefa detectada no texto **substitui** sempre a anterior e reinicia o prazo.
-- Sem detecção e com tarefa viva, o turno **herda-a** e regista
-  `tarefa_origem: herdada` com `tarefa_idade_turnos` — é o que permite medir se a
-  herança está a colar demais sem ler a conversa.
-- O prazo conta desde a última **detecção**: herdar não o renova. Renovar deixava
-  um «sim» de oito em oito turnos manter um modelo pago vivo sem fim.
-- Termina por tarefa nova, por prazo (`expira_turnos` **ou** `expira_min`), ou por
-  `complexidade: auto` sem tarefa no texto — o único fim manual, registado com
-  `tarefa_limpa: true`. O marcador continua a ganhar a tudo quando o texto traz
-  uma tarefa: nesse caso manda o pedido actual.
-- `activo: false` devolve o comportamento antigo, sem mais nada.
-- O bloco herda do global chave a chave, como a estratégia: um perfil que declare
-  só `expira_turnos` mantém o `activo` do global; repetir o valor do global não é
-  gravado (fixava o perfil ao dia).
-- A chave é da mesma família do pin, mas não é a mesma: o pin dura um turno, a
-  tarefa dura a sessão. Sessão vazia não persiste nada — sem ela a chave colaria
-  todas as conversas e duas sessões partilhavam a rota.
+- Task detected in text **always replaces** the previous one and restarts the
+- Without detection and with a live task, the turn **inherits it** and logs
+  `tarefa_origem: herdada` with `tarefa_idade_turnos` — this is what allows measuring whether
+  inheritance is sticking too much without reading the conversation.
+- The deadline counts from the last **detection**: inheriting does not renew
+  it. Renewing would let an "every eighth turn yes" keep a paid model alive
+- It ends by new task, by deadline (`expira_turnos` **or** `expira_min`), or by
+  `complexidade: auto` with no task in the text — the only manual end, logged with
+  `tarefa_limpa: true`. The marker still wins everything when the text brings a
+  task: in that case the current request rules.
+- `activo: false` returns the old behaviour, nothing else.
+- The block inherits from global key by key, like the strategy: a profile that declares
+  only `expira_turnos` keeps the global `activo`; repeating the global value is not
+  written (it would pin the profile to the day).
+- The key is from the same family as the pin, but is not the same: the pin lasts one turn, the
+  task lasts the session. Empty session does not persist anything — without it the key would glue
+  all conversations and two sessions would share the route.
 
-Prova: `test_tarefa_persistente.py` (12 casos, com os negativos — sessão
-diferente, prazo esgotado, marcador de fim, desligado, validação).
+Proof: `test_tarefa_persistente.py` (12 cases, with negatives — different
+session, expired deadline, end marker, disabled, validation).
 
-### O painel edita a tarefa persistente (3.33.0)
+### The panel edits the persistent task (3.33.0)
 
-O bloco existia só no ficheiro e na API: mudar o prazo obrigava a editar JSON.
-Agora tem os dois sítios que o resto do `analise` já tinha:
+The block existed only in the file and the API: changing the deadline forced
+editing JSON. Now it has the two places the rest of `analise` already had:
 
-- **Página de configuração** — bloco «Tarefa persistente», com a activação e os
-  dois prazos (1–50 turnos, 1–1440 minutos, os limites do motor). Escreve no
+- **Configuration page** — "Persistent task" block, with the activation and the
+  two deadlines (1–50 turns, 1–1440 minutes, the engine limits). Writes to
   `analise` **global**.
-- **Página de perfil** — «definição: herdar do global | declarar neste perfil».
-  A herdar, mostra os valores herdados e não desenha campos; a declarar, mostra
-  os três, com **vazio = herdar essa chave**.
-- **Uma decisão, um sítio**: o global edita-se na configuração, o delta no
-  perfil. Duas cópias do mesmo número no ecrã discordam mais cedo ou mais tarde.
+- **Profile page** — "setting: inherit from global | declare in this profile".
+  When inheriting, it shows the inherited values and draws no fields; when declaring, it shows
+  all three, with **empty = inherit that key**.
+- **One decision, one place**: the global is edited in configuration, the delta in the
+  profile. Two copies of the same number on screen disagree sooner or later.
 
-Os valores em vigor e a origem vêm do servidor (`tarefa_persistente_efectiva`,
-no `dashboard/api.py`), calculados com as mesmas regras do motor: `proprio` (o
-perfil declara), `global` (o global difere do padrão) ou `padrao`. A distinção
-importa porque o `validar` materializa o bloco global com os valores por
-omissão — «existe no ficheiro» não é «foi escolhido», e o painel não devia
-anunciar uma escolha que ninguém fez.
+The effective values and their origin come from the server (`tarefa_persistente_efectiva`,
+in `dashboard/api.py`), calculated with the same rules as the engine: `proprio` (profile
+declares), `global` (global differs from default) or `padrao`. The distinction
+matters because `validar` materialises the global block with default values — "exists in file" is not
+"was chosen", and the panel should not announce a choice nobody made.
 
-Prova: **18** verificações novas na lógica do painel (`node test_logica.js`,
-**266/266**) e **6** no selftest do servidor (**186/186**). As do servidor leem o
-`config.json` do disco, não a resposta: declarar exatamente os valores do global
-não fica escrito, `herdar` apaga o bloco, e um prazo fora dos limites volta como
-400 com o nome da chave.
 
-## Limites conhecidos
+Proof: **18** new checks in the panel logic (`node test_logica.js`,
+**266/266**) and **6** in the server selftest (**186/186**). The server ones read the
+`config.json` from disk, not the response: declaring exactly the global values
+does not get written, `herdar` deletes the block, and a deadline outside limits returns
+400 with the key name.
 
-- Importa funções internas do Hermes (`resolve_runtime_provider`,
-  `get_active_profile_name`, `reload_gateway_plugins`, e os ContextVars de
-  home/escopo de segredos para o `verificar`) — é a única via para resolver a
-  credencial da rota no perfil certo. Pode partir num upgrade do Hermes; o
-  selftest apanha-o (`Validate` avisa, não falha).
-- A **contabilidade de custo** do Hermes continua a ler o modelo da sessão: a
-  fatura interna não segue a troca. A prova vive no ledger.
-- Modelos free do OpenRouter têm limites próprios (alguns recusam chat directo,
-  outros impõem ritmo); a rota é saltada quando falha, mas o catálogo é
-  responsabilidade do dono. `vmm verificar` mostra as credenciais, não a
-  disponibilidade do modelo — para isso há que chamar o modelo.
-- A rota de **subscrição** (openai-codex) só funciona com o canal Codex
-  autenticado; o plugin não o ativa nem converte uma rota `api` nela.
-- Histerese e rodízio vivem em memória do processo: um restart do gateway
-  reinicia a contagem (o catálogo e os interruptores não).
+## Known limits
 
-## Avaliação medida (e não acreditada)
+- Imports internal Hermes functions (`resolve_runtime_provider`,
+  `get_active_profile_name`, `reload_gateway_plugins`, and the ContextVars of
+  home/secret scope for `verificar`) — this is the only way to resolve the
+  route credential in the right profile. Can break on a Hermes upgrade; the
+  selftest catches it (`Validate` warns, does not fail).
+- Hermes **cost accounting** still reads the model from the session: the
+  internal invoice does not follow the swap. The proof lives in the ledger.
+- OpenRouter free models have their own limits (some refuse direct chat,
+  others impose pacing); the route is skipped when it fails, but the catalogue is
+  the owner's responsibility. `vmm verificar` shows credentials, not model
+  availability — for that you have to call the model.
+- The **subscription** route (openai-codex) only works with the authenticated
+  Codex channel; the plugin does not activate it nor convert an `api` route into it.
+- Hysteresis and round-robin live in process memory: a gateway restart
+  resets the count (the catalogue and switches do not).
 
-O plugin decide qual modelo serve cada turno; por isso o classificador é medido
-como qualquer outro componente com consequências: contra um referencial, com
-parâmetros fixos e com números datados. Ver `eval/README.md` para as sete
-regras e `eval/medir.py` para a implementação.
+## Measured evaluation (not believed)
+
+The plugin decides which model serves each turn; therefore the classifier is
+measured like any other component with consequences: against a reference, with
+fixed parameters and with dated numbers. See `eval/README.md` for the seven
+rules and `eval/medir.py` for the implementation.
 
 ```sh
 P=/opt/hermes/.venv/bin/python
-$P eval/medir.py --runners heuristica            # sem rede
-$P eval/medir.py --repeticoes 3                  # + determinismo + variantes
-$P eval/medir.py --gold eval/gold2.jsonl         # conjunto de teste cego
-$P eval/medir.py --revisao                       # CSV para confirmação humana
+$P eval/medir.py --runners heuristica            # no network
+$P eval/medir.py --repeticoes 3                  # + determinism + variants
+$P eval/medir.py --gold eval/gold2.jsonl         # blind test set
+$P eval/medir.py --revisao                       # CSV for human confirmation
 ```
 
-Dois conjuntos, papéis diferentes: `gold.jsonl` (60 casos, usado durante o
-desenvolvimento — é **regressão**) e `gold2.jsonl` (31 casos, escrito depois e
-**nunca usado para afinar** — é o teste cego). O banco recusa `--afinar` com
-qualquer um dos dois.
+Two sets, different roles: `gold.jsonl` (60 cases, used during development —
+is **regression**) and `gold2.jsonl` (31 cases, written later and
+**never used to tune** — is the blind test). The harness refuses `--afinar` with
+either set.
 
-Resultado do teste cego de 2026-11-02 (3 repetições, temperatura 0, top_p 1):
+Blind test result from 2026-11-02 (3 repetitions, temperature 0, top_p 1):
 
 | runner | acerto | macro-F1 | p50 | p95 | sem nível |
 |---|---|---|---|---|---|
-| heurística | 67,7% | 0,686 | 0 ms | 0 ms | 0 |
-| `inception/mercury-3` | 67,7% | 0,586 | 902 ms | 1506 ms | 0 |
+| heurística | 67.7% | 0.686 | 0 ms | 0 ms | 0 |
+| `inception/mercury-3` | 67.7% | 0.586 | 902 ms | 1506 ms | 0 |
 
-O que estes números dizem, sem maquilhagem:
+What these numbers say, without make-up:
 
-- O **100%** que o corpus de treino dava não generaliza. Em dados novos ambos
-  ficam por dois terços.
-- O **modelo não bate a heurística** em acerto e é pior em macro-F1. A sua
-  vantagem é de forma, não de substância: resiste melhor a mudanças de registo.
-- Ambos **sub-chamam `media`** (cobertura 0,36 na heurística e 0,18 no modelo):
-  o nível intermédio é onde os dois se perdem, e é o mais frequente no uso real.
-- A heurística é **fortemente sensível à forma**: o mesmo conteúdo técnico em
-  registos diferentes dá 17% de consistência, contra 67–100% do modelo. Um
-  router que muda de modelo por causa do tom da frase é um router pior.
-- O `mercury-3` é um LM de difusão: com `temperature: 0` **não é
-  determinístico** — concordância 0,86–0,91 em 3 repetições e 7–9 casos
-  instáveis. Para um classificador isso conta e está declarado.
+- The **100%** the training corpus gave does not generalise. On new data both
+  stay at two-thirds.
+- The **model does not beat the heuristic** in accuracy and is worse in
+  macro-F1. Its advantage is form, not substance: it resists register changes better.
+- Both **under-call `media`** (coverage 0.36 in heuristic and 0.18 in model):
+  the intermediate level is where both get lost, and is the most frequent in real usage.
+- The heuristic is **strongly sensitive to form**: the same technical content in
+  different registers gives 17% consistency, against 67–100% for the model. A
+  router that changes model because of the tone of the sentence is a worse router.
+- The `mercury-3` is a diffusion LM: with `temperature: 0` **not
+  deterministic** — agreement 0.86–0.91 in 3 repetitions and 7–9 unstable
+  cases. For a classifier this counts and is declared.
 
-Por isso o **default continua a ser a heurística**: é gratuita, determinística e
-tem o mesmo acerto. O classificador por modelo é opt-in, e a razão para o ligar
-não é acerto — é robustez ao registo. Corrigir a cobertura de `media` é trabalho
-seguinte, e tem de ser feito num conjunto de desenvolvimento e validado num
-**terceiro** conjunto cego, não nestes dois.
+That is why the **default remains the heuristic**: it is free, deterministic and
+has the same accuracy. The per-model classifier is opt-in, and the reason to enable it
+is not accuracy — it is robustness to register. Fixing `media` coverage is follow-up work,
+and must be done on a development set and validated on a
+**third** blind set, not these two.
 
-## Prontidão para o catálogo público
+## Public catalogue readiness
 
-A matriz completa, regra a regra (18 regras, com a evidência de cada uma e os
-dois bloqueios que faltam), está em **`docs/CATALOGO.md`**. Resumo aqui do que
-muda o desenho, não do que é processo:
+The complete matrix, rule by rule (18 rules, with the evidence for each and
+the two blockers still missing), is in **`docs/CATALOGO.md`**. Summary here of what
+changes the design, not what is process:
 
-Regras verificadas à data desta versão, com a evidência onde ela existe:
+Rules verified as of this version, with the evidence where it exists:
 
-- **Só superfícies públicas**, e uma exceção declarada. O plugin usa middleware,
-  `ctx.register_*`, `agent.switch_model`, `agent.reasoning_config` e o SDK do
-  dashboard. Depende de **uma** superfície não pública —
-  `resolve_runtime_provider`, para trocar o modelo do agente vivo — isolada em
-  `seams.py`, com a regra 9 do catálogo citada e a indicação do sítio único a
-  mudar quando existir seam público. As outras duas que existiam saíram:
-  `get_active_profile_name` foi substituída por `HERMES_PROFILE`, e
-  `reload_gateway_plugins` desapareceu com o comando `vmm recarregar`
-  (recarregar plugins é operação do anfitrião). Não há patch a código do Hermes
-  nem a markup do Desktop em runtime. `hermes_constants` e `agent.secret_scope`
-  não contam para esta exceção: ambos estão na lista de módulos públicos do
-  próprio validador.
+- **Only public surfaces**, and one declared exception. The plugin uses middleware,
+  `ctx.register_*`, `agent.switch_model`, `agent.reasoning_config` and the dashboard SDK.
+  It depends on **one** non-public surface —
+  `resolve_runtime_provider`, to swap the live agent model — isolated in
+  `seams.py`, with catalogue rule 9 cited and the indication of the single
+  place to change when a public seam exists. The other two that existed were
+  removed: `get_active_profile_name` was replaced by `HERMES_PROFILE`, and
+  `reload_gateway_plugins` disappeared with the `vmm recarregar` command
+  (reloading plugins is a host operation). No patch to Hermes code nor to
+  Desktop markup at runtime. `hermes_constants` and `agent.secret_scope` do
+  not count for this exception: both are on the validator's own public modules
+  list.
 
-  **Porque a exceção não se resolveu sozinha, medido.** Tentou-se substituir o
-  seam pela via pública (`providers.get_provider_profile` +
-  `agent.secret_scope.get_secret`) e mediu-se caso a caso contra o resolver
-  privado, no perfil default: `deepseek` e `openrouter` reproduzem-se (perfil
-  dá `base_url` e `api_mode`; a chave vem do `env_vars` declarado), mas
-  `deepseek` resolve por `source: manual`, ou seja a chave está na config e não
-  no ambiente; `inception` chega como provider `custom` com `base_url` vazio
-  (a config dos providers custom manda); e `openai-codex` é OAuth, onde a
-  própria regra 11 proíbe que o token chegue ao plugin. Reimplementar essas
-  quatro escadas por fora é duplicar a resolução de credenciais do Hermes —
-  exactamente o que a regra desaconselha — e falharia na subscrição. Fica uma
-  costura declarada, degradável (`seam_disponivel()`), e o caminho correcto
-  para a fechar é o que a documentação do catálogo prescreve: pedir o hook. O
-  texto do pedido está em `docs/issue-seam-switch-model.md`.
-- **Validação local no commit que se publica**:
+  **Why the exception did not resolve itself, measured.** Tried replacing the
+  seam via the public path (`providers.get_provider_profile` +
+  `agent.secret_scope.get_secret`) and measured case by case against the
+  private resolver, on the default profile: `deepseek` and `openrouter` reproduce
+  (profile gives `base_url` and `api_mode`; the key comes from the declared `env_vars`), but
+  `deepseek` resolves via `source: manual`, i.e. the key is in config and not
+  in env; `inception` arrives as provider `custom` with empty `base_url` (custom provider config mandates it); and
+
+  `openai-codex` is OAuth, where rule 11 itself forbids the token reaching the plugin. Reimplementing those four ladders from outside duplicates Hermes credential resolution —
+  exactly what the rule discourages — and would fail on subscription. It remains a declared seam,
+  degradable (`seam_disponivel()`), and the correct path to close it is what the catalogue documentation
+  prescribes: request the hook. The request text is in
+  `docs/issue-seam-switch-model.md`.
+
+- **Local validation on the commit that gets published**:
   `hermes plugins validate /opt/data/plugins/vipernet-model-manager` → rc 0.
-- **`requires_hermes`** declarado em `plugin.yaml` (`>=0.22.0`), nunca mais
-  recente do que a release instalada.
-- **Sem segredos**: o plugin não lê credenciais; usa o resolver do Hermes. A
-  config não guarda chaves. Nada de `subprocess`, `eval`, `exec` nem escrita
-  fora de `/opt/data/plugin-data/vipernet-model-manager/`. As três variáveis de
-  ambiente que o plugin **lê** (`VMM_DESATIVADO`,
-  `VIPERNET_MODEL_MANAGER_OFF`, `VMM_DIR`) não são credenciais — são
-  interruptores e um override de directoria de testes — e estão declaradas em
-  `optional_env` no `plugin.yaml`, para a capacidade declarada casar com o que
-  o código faz. Nota medida, para não se ler o `optional_env` como mais do que
-  é: nesta versão do Hermes (0.22.5) o manifesto aceita o campo, mas o único
-  consumidor (`config._platform_manifest_env_entries`) só o lê para plugins
-  `kind: platform`; num plugin `standalone` a declaração **não** é apresentada
-  ao instalador — vale como declaração explícita para quem revê o código, que
-  é o que a regra 6 pede. A regra 11 fala de segredos: ler
-  `HERMES_PROFILE`/`HERMES_HOME` para saber que perfil se serve não é ler um
-  cofre, e nenhum `.env`, `auth.json`, chaveiro ou cofre é aberto por este
-  plugin.
-- **Efeitos declarados** (o que o plugin faz na rede e no disco, para quem vai
-  ler o código antes de o instalar): faz pedidos HTTPS **aos providers que o
-  dono configurou** — é a razão de existir, e o classificador opcional faz um
-  pedido por turno quando está ligado; escreve `config.json`, `uso.jsonl` e
-  `uso.err` em `plugin-data`; o painel serve rotas HTTP no *plugin host*. Não
-  abre sockets próprios, não recolhe telemetria, não envia nada para fora além
-  dessas chamadas aos providers.
-- **Leitura fora dos dados do plugin, só em ferramenta de avaliação**. O
-  `eval/extrair_amostra.py` lê o `state.db` do Hermes (tabela `messages`, em
-  modo `ro`) para juntar a cada decisão do ledger o prompt que a originou. Não
-  corre no caminho do turno, não é invocado pelo middleware nem pelo painel, e
-  **recusa-se a escrever dentro do repositório** (rc 2): a amostra contém
-  conversa real e fica fora do repo. O que se publica é o código e a rubrica.
-- **Versionamento**: `plugin.yaml` e `dashboard/manifest.json` acompanham o
-  código que publicam; o painel mostra `versao` lida do manifest, não uma
-  constante escrita à mão.
+- **`requires_hermes`** declared in `plugin.yaml` (`>=0.22.0`), never newer
+  than the installed release.
+- **No secrets**: the plugin does not read credentials; it uses the Hermes
+  resolver. Config does not store keys. No `subprocess`, `eval`, `exec` nor writes
+  outside `/opt/data/plugin-data/vipernet-model-manager/`. The three environment variables
+  the plugin **reads** (`VMM_DESATIVADO`,
+  `VIPERNET_MODEL_MANAGER_OFF`, `VMM_DIR`) are not credentials — they are
+  switches and a test directory override — and are declared in `optional_env`
+  in `plugin.yaml`, so the declared capability matches what the code does.
+  Measured note, to avoid reading `optional_env` as more than it is: in this
+  Hermes version (0.22.5) the manifest accepts the field, but the only consumer
+  (`config._platform_manifest_env_entries`) only reads it for `kind: platform` plugins;
+  in a `standalone` plugin the declaration **is not** presented to the installer — it serves as
+  explicit declaration for whoever reviews the code, which is what rule 6 asks. Rule 11 speaks of secrets: reading
 
-Uma ressalva honesta antes de submeter: o catálogo pede repositório em GitHub
-ou GitLab, e este vive num Gitea interno. Publicar lá exige um espelho público
-e uma decisão do dono sobre o que vai com ele (o `config.json` de produção não
-vai; o `config.example.json` vai).
+  `HERMES_PROFILE`/`HERMES_HOME` to know which profile is served is not reading a vault, and no `.env`,
+  `auth.json`, keyring or vault is opened by this plugin.
 
-## Auto-teste
+- **Declared effects** (what the plugin does on the network and on disk, for
+  whoever reads the code before installing): makes HTTPS requests **to the providers the owner configured** —
+  this is its reason to exist, and the optional classifier makes one request per turn when enabled;
+  writes `config.json`, `uso.jsonl` and `uso.err` in `plugin-data`; the panel serves
+  HTTP routes on the *plugin host*. It opens no sockets of its own, collects
+  no telemetry, sends nothing outside beyond those calls to providers.
+
+- **Reading outside plugin data, only in evaluation tool**. The
+  `eval/extrair_amostra.py` reads the Hermes `state.db` (table `messages`, in
+  `ro` mode) to join each ledger decision with the prompt that originated it. It does
+  not run on the turn path, is not invoked by the middleware nor the panel, and
+  **refuses to write inside the repository** (rc 2): the sample contains
+  real conversation and stays outside the repo. What gets published is the code and the rubric.
+- **Versioning**: `plugin.yaml` and `dashboard/manifest.json` track the code
+  they publish; the panel shows `versao` read from the manifest, not a
+  hard-coded constant.
+
+An honest caveat before submitting: the catalogue asks for a GitHub or GitLab
+repository, and this one lives in an internal Gitea. Publishing there requires a public mirror and
+an owner decision on what goes with it (the production `config.json` does not go;
+`config.example.json` does).
+
+## Self-test
 
 ```sh
 P=/opt/hermes/.venv/bin/python
@@ -1430,25 +1466,25 @@ $P /opt/data/plugins/vipernet-model-manager/test_tarefas.py          # 16
 $P /opt/data/plugins/vipernet-model-manager/test_classificador.py    # 55
 $P /opt/data/plugins/vipernet-model-manager/test_triagem.py          # 51
 $P /opt/data/plugins/vipernet-model-manager/test_turno.py            # 23
-$P /opt/data/plugins/vipernet-model-manager/test_estrategia.py        # lista fechada + herança
+$P /opt/data/plugins/vipernet-model-manager/test_estrategia.py        # closed list + inheritance
 $P /opt/data/plugins/vipernet-model-manager/test_superficies.py       # 32
 $P /opt/data/plugins/vipernet-model-manager/test_eval.py             # 32
 $P /opt/data/plugins/vipernet-model-manager/test_holdout.py          # 18
 $P /opt/data/plugins/vipernet-model-manager/eval/test_amostra.py     # 22
 $P /opt/data/plugins/vipernet-model-manager/eval/test_aprender.py    # 86
-$P /opt/data/plugins/vipernet-model-manager/dashboard/selftest.py    # 125 (exige fastapi)
-node /opt/data/plugins/vipernet-model-manager/dashboard/test_logica.js  # 95, inclui render
+$P /opt/data/plugins/vipernet-model-manager/dashboard/selftest.py    # 125 (requires fastapi)
+node /opt/data/plugins/vipernet-model-manager/dashboard/test_logica.js  # 95, includes render
 ```
 
-O `test_logica.js` inclui um **teste de render**: chama `CartaoPerfil` e `Superficies`
-com o `h` falso do SDK, para que um nome fora do escopo rebente em node em vez de
-rebentar no browser do dono — foi o que aconteceu quando o cartão referia
-`perfil.superficies` sem binding.
+The `test_logica.js` includes a **render test**: it calls `CartaoPerfil` and `Superficies`
+with the SDK's fake `h`, so a name out of scope blows up in node instead of
+blowing up in the owner's browser — which happened when the card referred to
+`perfil.superficies` without binding.
 
-## Pôr código novo no ar (sem restart)
+## Putting new code in the air (no restart)
 
-`hermes plugins reload` **não existe**; o caminho é o socket de controlo do gateway, que
-força a redescoberta dos plugins no processo vivo — sem cortar sessões:
+`hermes plugins reload` **does not exist**; the path is the gateway control socket, which
+forces plugin rediscovery in the live process — without cutting sessions:
 
 ```sh
 /opt/hermes/.venv/bin/python -c "
@@ -1458,38 +1494,38 @@ from gateway.control_socket import reload_gateway_plugins
 print(json.dumps(reload_gateway_plugins(Path('/opt/data')))['reloaded'])"
 ```
 
-Prova de que entrou: a linha seguinte do ledger (`/opt/data/plugin-data/vipernet-model-manager/uso.jsonl`)
-traz um `motor` novo **e** um `inst` novo; `motor` é lido do `plugin.yaml` no import, logo
-um `motor` igual ao anterior significa que o código **não** recarregou. Antes de o saber,
-o gateway esteve horas a decidir com 3.16.0 enquanto o disco tinha 3.17.0 — daí o campo.
+Proof that it entered: the next ledger line (`/opt/data/plugin-data/vipernet-model-manager/uso.jsonl`)
+brings a new `motor` **and** a new `inst`; `motor` is read from `plugin.yaml` on import, so
+a `motor` equal to the previous one means the code **did not** reload. Before knowing this,
+the gateway spent hours deciding with 3.16.0 while disk had 3.17.0 — hence the field.
 
-O painel (`hermes-dashboard`, no host 13) é outro processo e outra imagem: exige
-`docker restart hermes-dashboard`. Ele lê o mesmo `/opt/data`, portanto os ficheiros lá
-estão assim que são escritos aqui.
+The panel (`hermes-dashboard`, on host 13) is another process and another image: requires
+`docker restart hermes-dashboard`. It reads the same `/opt/data`, so the files there
+are there as soon as they are written here.
 
-Não vale a pena pôr `gestor.py` a recarregar por `mtime` dentro do middleware: foi tentado
-e re-executa o módulo a meio do turno, o que parte o harness de testes e não acrescenta nada
-ao `reload-plugins`.
+It is not worth making `gestor.py` reload by `mtime` inside the middleware: was tried
+and re-executes the module mid-turn, which breaks the test harness and adds nothing to
+`reload-plugins`.
 
-O nível fixado por turno tem ainda duas provas próprias:
+The turn-pinned level still has two dedicated proofs:
 
-- `test_turno.py` (23 verificações, offline) — um turno sintético de seis
-  pedidos, com `decidir` a correr uma só vez, cinco `pin: reutilizado`, a
-  aritmética `reutilizados == pedidos − turnos`, e os casos negativos: dois
-  turnos com o mesmo texto, a chave por hash sem `turn_id`, a rota morta
-  (`excecao: rota`), o contexto que deixa de caber (`excecao: capacidade`) e o
-  interruptor desligado.
-- `eval/replay_turno.py` — o replay sobre turnos **reais** do `state.db`:
-  reconstrói a janela de cada pedido, corre o middleware verdadeiro com as
-  rotas substituídas e compara o modo `hoje` com o modo `pin`. Medido a
-  2026-11-02: 156 turnos, 1 109 pedidos, **38 turnos instáveis em `hoje`** e
-  **0 em `pin`**, com `953 = 1 109 − 156` reutilizações.
+- `test_turno.py` (23 checks, offline) — a synthetic turn of six requests,
+  with `decidir` running once, five `pin: reutilizado`, the arithmetic
+  `reutilizados == pedidos − turnos`, and the negative cases: two turns with
+  the same text, the hash key without `turn_id`, the dead route
+  (`excecao: rota`), the context that no longer fits (`excecao: capacidade`) and the
+  switch off.
+- `eval/replay_turno.py` — the replay over **real** turns from `state.db`:
+  reconstructs the window of each request, runs the real middleware with routes
+  swapped and compares `hoje` mode with `pin` mode. Measured on
+  2026-11-02: 156 turns, 1,109 requests, **38 unstable turns in `hoje`** and
+  **0 in `pin`**, with `953 = 1 109 − 156` reuses.
 
 
-186 verificações no selftest, 55 no classificador por modelo (servidor HTTP
-local a sério, sem mocks), 32 no banco de avaliação (métricas, percentis,
-congelamento do gold, recusa de afinar, consistência entre registos) e mais 79
-em quatro holdouts rotulados à mão, 266 no painel — incluindo a lógica pura do
-editor corrida em node —, 51 na triagem por necessidades, 22 na
-amostragem/rotulagem, 55 no ciclo de aprendizagem, 23 no nível fixado por turno
-e 16 de tarefas.
+186 checks in selftest, 55 in per-model classifier (real local HTTP server, no
+mocks), 32 in evaluation harness (metrics, percentiles, gold freeze, tune
+refusal, cross-register consistency) and 79 more in four hand-labelled
+holdouts, 266 in panel — including pure editor logic run in node —, 51 in
+needs triage, 22 in sampling/labelling, 55 in learning cycle, 23 in
+turn-pinned level and 16 in tasks.
+

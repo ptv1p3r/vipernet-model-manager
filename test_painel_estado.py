@@ -184,8 +184,8 @@ def test_identidade() -> None:
     meta = api._meta_plugin()
     verificar("identidade: traz versao", bool(meta.get("versao")), str(meta))
     verificar("identidade: traz autor", bool(meta.get("autor")), str(meta))
-    verificar("identidade: github e o repositorio do plugin",
-              meta.get("github") == "https://github.com/ptv1p3r/vipernet-model-manager", str(meta.get("github")))
+    verificar("identidade: o repositorio do plugin e o Gitea interno",
+              meta.get("github") == "https://gitea.home.server/proldan/vipernet-model-manager", str(meta.get("github")))
     verificar("identidade: github do autor separado do repositorio",
               meta.get("autor_github") == "https://github.com/ptv1p3r", str(meta.get("autor_github")))
     verificar("identidade: autor e o nome completo",
@@ -262,7 +262,7 @@ def test_endpoint(tmp: Path) -> None:
         verificar("GET estado: bloco plugin presente", bool(ident), str(list(ident)))
         verificar("GET estado: plugin.versao", bool(ident.get("versao")), str(ident))
         verificar("GET estado: plugin.autor", ident.get("autor") == "Pedro Tiago de Jesus Estevanez Roldan", str(ident.get("autor")))
-        verificar("GET estado: plugin.github", ident.get("github") == "https://github.com/ptv1p3r/vipernet-model-manager", str(ident.get("github")))
+        verificar("GET estado: plugin.github traz o repo do Gitea", ident.get("github") == "https://gitea.home.server/proldan/vipernet-model-manager", str(ident.get("github")))
 
         # Cliente antigo, corpo cru: grava mas fica marcado sem_rev
         r = cliente.post(base + "/config", json=novo)
