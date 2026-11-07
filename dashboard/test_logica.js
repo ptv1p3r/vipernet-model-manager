@@ -67,6 +67,11 @@ function carregar() {
   vm.createContext(contexto);
   vm.runInContext(codigo, contexto, { filename: "index.js" });
   ferramentas.__registos = registos;
+  // Estes testes verificam o texto em portugues, que e a lingua de origem do
+  // painel (o dicionario tem PT como chave). O padrao da instalacao e ingles,
+  // por isso a lingua e fixada aqui; o ingles testa-se a parte, no bloco de
+  // i18n abaixo, com o dicionario a ser virado de proposito.
+  ferramentas.idioma.setIdioma("pt");
   return ferramentas;
 }
 
@@ -666,6 +671,184 @@ const cfgSecao = {
 };
 const arvoreSecao = renderSecao(cfgSecao, opcoesReais);
 
+// ---- ensaio A/B na pagina de configuracao ---------------------------------
+// A informacao existia em dois ficheiros (interruptor no config, MODELOS no
+// pre-registo selado) e nao aparecia em nenhum formulario: quem abria a
+// configuracao via um editor de JSON. Estes casos provam que os bracos sao
+// editaveis onde se edita o resto, e que o selo e o aviso nao desaparecem.
+const estadoSombra = {
+  perfis: {
+    default: { catalogo: [{ modelo: "modelo-do-catalogo", provider: "p", complexidade: ["leve"] }] },
+  },
+  sombra: {
+    activo: true,
+    vida_ttl_h: 24,
+    bracos: { a: "deepseek-flash", b: "nvidia/nemotron-3-ultra-550b-a55b:free" },
+    // O provider faz parte do desenho: sem ele a sonda adivinhava a credencial
+    // pelo nome do modelo. A lista e fechada e sai do catalogo.
+    providers: { a: "deepseek", b: "openrouter" },
+    providers_declarados: true,
+    providers_disponiveis: ["deepseek", "openrouter"],
+    selo_valido: true,
+    selo: "5275bbf6eba15dbb" + "0".repeat(48),
+    ensaio: "taxa de falha por chamada de ferramenta",
+    p0: 0.0463, margem: 0.01, n_por_braco: 18536, dias_estimados: 2.3,
+    pre_registo: "/tmp/pre-registo-20261105b.json",
+    pre_registo_recente: "/tmp/pre-registo-20261105b.json",
+    pre_registo_recente_selado: true,
+    vida: {
+      medida_ts: "2026-11-05T10:29:59+00:00",
+      bracos: {
+        a: { modelo: "deepseek-flash", ok: true, http: 200, motivo: "" },
+        b: { modelo: "nvidia/nemotron-3-ultra-550b-a55b:free", ok: false, http: 404,
+             motivo: "unavailable for free" },
+      },
+      todos_vivos: false,
+    },
+  },
+};
+// O harness nao executa componentes-funcao (um `h(SecaoSombra)` fica um no com
+// o tag do nome), por isso encontra-se o no dentro da seccao e chama-se a
+// funcao a mao — a mesma convencao que ja se usa para a SecaoClassificador.
+function renderSombra(estado, extra) {
+  const arvore = renderSecao({ perfis: { default: {} } }, {}, estado);
+  const no = recolher(arvore, function (n) { return n.tag === "SecaoSombra"; });
+  if (!no.length) return null;
+  const props = Object.assign({}, no[0].props, extra || {});
+  return T.SecaoSombra(props);
+}
+
+const arvoreSombraCompleta = renderSombra(estadoSombra);
+check("render: a seccao monta o bloco do ensaio", arvoreSombraCompleta !== null);
+
+const textosSombra = arvoreSombraCompleta ? textoDaArvore(arvoreSombraCompleta) : "";
+const inputsSombra = arvoreSombraCompleta ? recolher(arvoreSombraCompleta,
+  function (no) { return no.tag === "input"; }) : [];
+const valoresSombra = inputsSombra.map(function (n) { return n.props.value; });
+
+check("render: o ensaio tem bloco proprio no editor",
+      textosSombra.indexOf("Ensaio A/B em sombra") !== -1, textosSombra.slice(0, 200));
+check("render: os dois modelos dos bracos estao nos campos",
+      valoresSombra.indexOf("deepseek-flash") !== -1
+      && valoresSombra.indexOf("nvidia/nemotron-3-ultra-550b-a55b:free") !== -1,
+      JSON.stringify(valoresSombra));
+check("render: mostra os numeros do ensaio (p0, margem, n, dias)",
+      textosSombra.indexOf("0.0463") !== -1 && textosSombra.indexOf("0.01") !== -1
+      && textosSombra.indexOf("18536") !== -1 && textosSombra.indexOf("2.3") !== -1,
+      textosSombra);
+check("render: mostra o selo do pre-registo",
+      textosSombra.indexOf("5275bbf6eba15dbb") !== -1);
+check("render: mostra a sonda de vida de cada braco, com o motivo da falha",
+      textosSombra.indexOf("vivo") !== -1 && textosSombra.indexOf("morto") !== -1
+      && textosSombra.indexOf("unavailable for free") !== -1, textosSombra);
+check("render: as sugestoes de modelo vem do catalogo real",
+      (function () {
+        const dl = recolher(arvoreSombraCompleta, function (n) { return n.tag === "datalist"; });
+        if (!dl.length) return false;
+        // `filhos` no harness, `props.children` no React real.
+        const dentro = recolher(dl[0], function (n) { return n.tag === "option"; });
+        const opcoes = dentro.length ? dentro : recolher(
+          { tag: "x", props: { children: (dl[0].props || {}).children }, filhos: dl[0].filhos },
+          function (n) { return n.tag === "option"; });
+        return opcoes.length === 1 && opcoes[0].props.value === "modelo-do-catalogo";
+      })());
+
+// O provider nao se adivinha. Estes casos provam que o formulario o pede numa
+// lista fechada (tirada do catalogo), que o mostra preenchido com o que esta
+// selado, e que diz em voz alta quando o selo nao o declara.
+const selectsSombra = arvoreSombraCompleta ? recolher(arvoreSombraCompleta,
+  function (no) { return no.tag === "select"; }) : [];
+const valoresSelects = selectsSombra.map(function (n) { return n.props.value; });
+check("render: ha um select de provider por braco", selectsSombra.length === 2,
+      "obtive " + selectsSombra.length);
+check("render: o provider selado vem preenchido nos dois selects",
+      valoresSelects.indexOf("deepseek") !== -1
+      && valoresSelects.indexOf("openrouter") !== -1,
+      JSON.stringify(valoresSelects));
+const opcoesSelectProvider = (function () {
+  if (!selectsSombra.length) return [];
+  // `h` guarda os filhos em `filhos`; nao se junta `props.children` para nao
+  // contar a mesma lista duas vezes.
+  const crus = selectsSombra[0].filhos || [];
+  const filhos = [];
+  crus.forEach(function (f) {
+    if (Array.isArray(f)) f.forEach(function (g) { filhos.push(g); });
+    else filhos.push(f);
+  });
+  const vistos = [];
+  recolher({ tag: "x", filhos: filhos }, function (n) {
+    if (n.tag !== "option") return false;
+    const v = n.props.value;
+    if (vistos.indexOf(v) === -1) vistos.push(v);
+    return false;
+  });
+  return vistos.sort();
+})();
+check("render: a lista de providers e fechada e tirada do catalogo",
+      // "" = (auto); `deepseek`/`openrouter` vem do selo; `p` vem do catalogo
+      // do perfil — prova que a lista nao e escrita a mao no painel.
+      JSON.stringify(opcoesSelectProvider)
+      === JSON.stringify(["", "deepseek", "openrouter", "p"]),
+      JSON.stringify(opcoesSelectProvider));
+check("render: com provider declarado, diz qual e o do selo",
+      textosSombra.indexOf("provider declarado no selo") !== -1, textosSombra);
+
+// Caso negativo: selo antigo, sem provider. O painel nao pode mostrar um
+// provider que nao existe — tem de dizer que o selo nao o declara.
+const estadoSemProvider = JSON.parse(JSON.stringify(estadoSombra));
+delete estadoSemProvider.sombra.providers;
+estadoSemProvider.sombra.providers_declarados = false;
+const arvoreSemProvider = renderSombra(estadoSemProvider);
+check("render: selo sem provider e dito, nao inventado",
+      arvoreSemProvider !== null
+      && textoDaArvore(arvoreSemProvider).indexOf("NÃO declara o provider") !== -1,
+      arvoreSemProvider ? textoDaArvore(arvoreSemProvider).slice(0, 400) : "sem arvore");
+
+
+const botoesSombra = arvoreSombraCompleta ? recolher(arvoreSombraCompleta,
+  function (no) {
+    const filhos = (no.filhos || []).concat((no.props || {}).children || []);
+    return no.tag === "button" && filhos.indexOf("Re-selar braços") !== -1;
+  }) : [];
+check("render: o botao de re-selar existe", botoesSombra.length === 1,
+      "obtive " + botoesSombra.length);
+check("render: re-selar comeca desligado ate confirmar",
+      botoesSombra.length === 1 && botoesSombra[0].props.disabled === true);
+
+// A classe do aviso tem de aparecer quando o ensaio grava: sem isso, gravar
+// com sucesso e nao ver nada e indistinguivel de um botao morto.
+const temasAviso = renderSombra(estadoSombra, { aviso: "braços re-selados" });
+check("render: o aviso de sucesso aparece no sitio do gesto",
+      temasAviso !== null && textoDaArvore(temasAviso).indexOf("braços re-selados") !== -1);
+
+// Caso negativo do selo: com selo invalido o painel avisa em vez de mostrar os
+// bracos como aprovados.
+const estadoSombraMau = JSON.parse(JSON.stringify(estadoSombra));
+estadoSombraMau.sombra.selo_valido = false;
+estadoSombraMau.sombra.pre_registo_recente_selado = false;
+estadoSombraMau.sombra.bracos = { a: null, b: null };
+const arvoreSombraMau = renderSombra(estadoSombraMau);
+const textosSombraMau = arvoreSombraMau ? textoDaArvore(arvoreSombraMau) : "";
+check("render: selo invalido e dito por extenso, nao escondido",
+      textosSombraMau.indexOf("NÃO bate") !== -1, textosSombraMau.slice(0, 260));
+
+// Terceiro caso, distinto do anterior: NAO existe pre-registo nenhum. O painel
+// nao pode confundir "nao ha" com "ha um e o selo nao bate" — sao acoes
+// diferentes (criar vs. investigar quem editou o ficheiro).
+const estadoSemRegisto = JSON.parse(JSON.stringify(estadoSombra));
+estadoSemRegisto.sombra.selo_valido = false;
+estadoSemRegisto.sombra.selo = null;
+estadoSemRegisto.sombra.pre_registo = "";
+estadoSemRegisto.sombra.pre_registo_recente = "";
+estadoSemRegisto.sombra.pre_registo_recente_selado = null;
+estadoSemRegisto.sombra.bracos = { a: null, b: null };
+const arvoreSemRegisto = renderSombra(estadoSemRegisto);
+const textosSemRegisto = arvoreSemRegisto ? textoDaArvore(arvoreSemRegisto) : "";
+check("render: distingue 'nao ha pre-registo' de 'selo nao bate'",
+      textosSemRegisto.indexOf("sem pré-registo") !== -1
+      && textosSemRegisto.indexOf("NÃO bate") === -1,
+      textosSemRegisto.slice(0, 260));
+
 check("render: os blocos distintos — Complexidade, Estrategia e Superficies",
       textoDaArvore(arvoreSecao).indexOf("Complexidade") !== -1
       && textoDaArvore(arvoreSecao).indexOf("Estratégia") !== -1
@@ -795,13 +978,30 @@ check("render: o painel principal nao tem um unico controlo de configuracao",
           && corpo.indexOf("<select") === -1;
       })());
 
-check("render: o editor tem os tres blocos com titulo proprio",
+check("render: o editor tem os seis blocos com titulo proprio",
       (function () {
-        const titulos = (srcPainel.match(/tituloBloco\("/g) || []).length;
-        return titulos === 3
-          && srcPainel.indexOf('tituloBloco("Complexidade"') !== -1
-          && srcPainel.indexOf('tituloBloco("Estratégia"') !== -1
-          && srcPainel.indexOf('tituloBloco("Superfícies"') !== -1;
+        // O titulo pode chegar ao `tituloBloco` em portugues (lingua de origem)
+        // ou ja passado por `T(...)`, que e a forma que o painel usa para
+        // traduzir. Aceitam-se as duas: o que se prova e que o bloco existe e
+        // que o titulo e o certo, nao a forma sintactica da chamada.
+        const comTitulo = function (texto) {
+          return srcPainel.indexOf('tituloBloco("' + texto + '"') !== -1
+            || srcPainel.indexOf('tituloBloco(T("' + texto + '")') !== -1;
+        };
+        const titulos = (srcPainel.match(/tituloBloco\("/g) || []).length
+          + (srcPainel.match(/tituloBloco\(T\("/g) || []).length;
+        return titulos === 6
+          && comTitulo("Complexidade")
+          && comTitulo("Tarefa persistente")
+          && comTitulo("Estratégia")
+          // O circuit breaker e configuracao global e por perfil desde que a
+          // regra "X falhas em Y minutos -> cooldown +Z%" entrou: o bloco tem de
+          // estar no formulario, nao so no JSON.
+          && comTitulo("Circuit Breaker")
+          && comTitulo("Superfícies")
+          // O ensaio A/B e configuracao como as outras: os modelos dos bracos
+          // estavam so no pre-registo e nao apareciam em nenhum formulario.
+          && comTitulo("Ensaio A/B em sombra");
       })());
 
 check("render: com JSON invalido a seccao avisa em vez de desaparecer",
@@ -1421,6 +1621,79 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   }, "default", "");
   check("escrita: tarefa sem id e recusada", r7.erro.length === 1, JSON.stringify(r7.erro));
 
+  // --- tarefa persistente: perfil (leitura, escrita, limites) -------------
+  // O bloco tem dois sitios: o global na pagina de configuracao, o delta no
+  // perfil. Se a conversao deixar de o transportar, o POST leva "herdar" e a
+  // caixa do painel mente — e nada no servidor se queixa.
+  const comTp = t.perfilParaForm({
+    activo: true, tarefas: {},
+    tarefa_persistente: { activo: false, expira_turnos: 3 },
+  });
+  check("tp: declarado -> tpHerdar falso", comTp.tpHerdar === false);
+  check("tp: activo false preservado", comTp.tpActivo === false);
+  check("tp: turnos como texto", comTp.tpTurnos === "3");
+  check("tp: chave ausente fica vazia, para herdar so essa",
+        comTp.tpMin === "", JSON.stringify(comTp.tpMin));
+
+  const semTp = t.perfilParaForm({ activo: true, tarefas: {} });
+  check("tp: sem bloco -> herda o global", semTp.tpHerdar === true);
+
+  const e1 = t.formParaPerfil(
+    { activo: true, tarefas: [], clsHerdar: true, estHerdar: true, tpHerdar: true },
+    "default", "");
+  check("tp: herdar -> a palavra, nao uma copia do valor",
+        e1.corpo.tarefa_persistente === "herdar", JSON.stringify(e1.corpo.tarefa_persistente));
+
+  const e2 = t.formParaPerfil({
+    activo: true, tarefas: [], clsHerdar: true, estHerdar: true,
+    tpHerdar: false, tpActivo: true, tpTurnos: "8", tpMin: "",
+  }, "default", "");
+  check("tp: declarar -> inteiro e chave vazia fora",
+        e2.corpo.tarefa_persistente.activo === true
+          && e2.corpo.tarefa_persistente.expira_turnos === 8
+          && !("expira_min" in e2.corpo.tarefa_persistente),
+        JSON.stringify(e2.corpo.tarefa_persistente));
+  check("tp: declarar sem erro", e2.erro.length === 0, e2.erro.join("; "));
+
+  const e3 = t.formParaPerfil({
+    activo: true, tarefas: [], clsHerdar: true, estHerdar: true,
+    tpHerdar: false, tpActivo: true, tpTurnos: "0", tpMin: "2000",
+  }, "default", "");
+  check("tp: 0 turnos e 2000 min recusados", e3.erro.length === 2, JSON.stringify(e3.erro));
+  check("tp: cada erro nomeia o seu prazo",
+        /turnos/.test(e3.erro[0]) && /minutos/.test(e3.erro[1]), JSON.stringify(e3.erro));
+
+  // --- tarefa persistente: o JSON da configuracao (painel de config) ------
+  const cfgTp = {
+    analise: { limiares: { alta: 4 } },
+    perfis: { pessoal: { analise: { modo: "modelo",
+                                    tarefa_persistente: { expira_min: 30 } } } },
+  };
+  check("tp config: sem bloco global devolve null", t.tarefaPersistenteDe(cfgTp, null) === null);
+  check("tp config: le o delta do perfil",
+        t.tarefaPersistenteDe(cfgTp, "pessoal").expira_min === 30);
+  const cfgNovo = t.comTarefaPersistente(cfgTp, null, { activo: false }, false);
+  check("tp config: escreve o global dentro de analise",
+        cfgNovo.analise.tarefa_persistente.activo === false, JSON.stringify(cfgNovo.analise));
+  check("tp config: nao toca no que la estava",
+        cfgNovo.analise.limiares.alta === 4
+          && cfgNovo.perfis.pessoal.analise.tarefa_persistente.expira_min === 30);
+  check("tp config: o config original fica intacto",
+        cfgTp.analise.tarefa_persistente === undefined);
+  const cfgCampoVazio = t.comTarefaPersistente(
+    { analise: { tarefa_persistente: { expira_min: 30 } } }, null, { expira_min: "" }, false);
+  check("tp config: campo vazio sai (herda em vez de fixar)",
+        (cfgCampoVazio.analise || {}).tarefa_persistente === undefined,
+        JSON.stringify(cfgCampoVazio));
+  const cfgPerfilHerdar = t.comTarefaPersistente(cfgTp, "pessoal", {}, true);
+  check("tp config: herdar no perfil apaga so o bloco",
+        cfgPerfilHerdar.perfis.pessoal.analise.tarefa_persistente === undefined
+          && cfgPerfilHerdar.perfis.pessoal.analise.modo === "modelo");
+  check("tp config: o padrao do painel e o do motor",
+        t.TAREFA_PERSISTENTE_PADRAO.expira_turnos === 6
+          && t.TAREFA_PERSISTENTE_PADRAO.expira_min === 90
+          && t.TAREFA_PERSISTENTE_PADRAO.activo === true);
+
   // --- a pagina desenha-se de verdade (sem rebentar) ---
   const arvore = t.PaginaPerfil({
     estado: { versao: "3.21.0", painel: { versao: "3.21.0" } },
@@ -1449,7 +1722,7 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   const titulos = comTag(arvore, "div").filter(function (x) {
     return String(x.props && x.props.className || "").indexOf("vmm-bloco-titulo") !== -1;
   });
-  check("render: a pagina tem os quatro blocos", titulos.length === 4, "blocos=" + titulos.length);
+  check("render: a pagina tem os cinco blocos", titulos.length === 5, "blocos=" + titulos.length);
   const textosBotoes = comTag(arvore, "button").map(function (b) { return textoPlano(b.filhos).trim(); });
   check("render: os tres botoes do editor estao la",
         textosBotoes.some(function (t) { return t === "Validar"; })
@@ -1478,8 +1751,10 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
     onValidar: function () {}, onGravar: function () {}, onDescartar: function () {},
   });
   check("render: a herdar nao mostra os campos do classificador",
-        comTag(arvoreHerdada, "Seletor").length + comTag(arvoreHerdada, "EntradaTexto").length <= 4,
+        comTag(arvoreHerdada, "Seletor").length + comTag(arvoreHerdada, "EntradaTexto").length <= 5,
         "campos=" + (comTag(arvoreHerdada, "Seletor").length + comTag(arvoreHerdada, "EntradaTexto").length));
+  // (o limite subiu de 4 para 5 com o seletor "herdar/declarar" da tarefa
+  // persistente: o bloco dela mostra sempre a definicao, nunca os tres campos)
   check("render: a herdar diz de quem herda",
         /~typesafe\/jev-latest/.test(textoPlano(arvoreHerdada)));
   // --- o icone do cartao ABRE a pagina: a ligacao, nao o desenho -----------
@@ -1592,6 +1867,136 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
         /className: "vmm-pagina" \},\s*\n\s*h\(AvisoConfig/.test(srcPainel));
   check("aviso de config: montado na pagina de configuracao",
         /"vmm-pagina vmm-pagina-config" \},\s*\n\s*h\(AvisoConfig/.test(srcPainel));
+})();
+
+// ── i18n: ingles (padrao) e portugues de Portugal ──────────────────────────
+// O que se prova aqui e o que um teste de ecra nao prova de forma estavel:
+// que o dicionario nao tem chaves vazias, que um texto desconhecido cai no PT
+// em vez de desaparecer, e que o wrapper `h` traduz texto e titulos mas NAO
+// toca em `className` nem em `value` — uma traducao que mexesse numa classe
+// partia o CSS e uma que mexesse num `value` partia um select.
+(function () {
+  const I = T.idioma;
+
+  check("i18n: as duas linguas sao en e pt", I.IDIOMAS.join(",") === "en,pt");
+  check("i18n: normaliza formas regionais",
+        I.normalizarIdioma("pt-PT") === "pt"
+        && I.normalizarIdioma("PT_br") === "pt"
+        && I.normalizarIdioma("en-US") === "en");
+  check("i18n: codigo desconhecido cai no padrao (ingles)",
+        I.normalizarIdioma("fr") === "en"
+        && I.normalizarIdioma("") === "en"
+        && I.normalizarIdioma(null) === "en");
+
+  const chaves = Object.keys(I.PT_EN);
+  check("i18n: o dicionario tem as 402 chaves medidas",
+        chaves.length === 402, "tem " + chaves.length);
+  check("i18n: nenhuma traducao vazia",
+        chaves.every(function (k) { return String(I.PT_EN[k]).trim() !== ""; }));
+  // Nomes proprios e termos tecnicos ficam iguais nas duas linguas — o que nao
+  // pode haver e prosa portuguesa a passar por traducao.
+  const INTENCIONAIS = ["Model Manager", "Circuit Breaker"];
+  check("i18n: nenhuma traducao igual a chave com maiuscula inicial",
+        chaves.filter(function (k) {
+          const v = I.PT_EN[k];
+          return v === k && /^[A-ZÀ-Ú]/.test(k) && k.length > 6
+            && INTENCIONAIS.indexOf(k) === -1;
+        }).length === 0);
+  check("i18n: as chaves de interface principais estao traduzidas",
+        I.PT_EN["Gravar"] === "Save"
+        && I.PT_EN["Cancelar"] === "Cancel"
+        && I.PT_EN["Classificador"] === "Classifier"
+        && I.PT_EN["Estratégia"] === "Strategy"
+        && I.PT_EN["Circuit Breaker"] === "Circuit Breaker"
+        && I.PT_EN["Idioma"] === "Language");
+
+  // Em portugues a funcao devolve o texto intacto: PT e a lingua de origem.
+  I.setIdioma("pt");
+  check("i18n: em pt o texto nao e tocado",
+        I.t("Gravar") === "Gravar" && I.t("Cancelar") === "Cancelar");
+  check("i18n: em en o texto e traduzido",
+        I.setIdioma("en") === true && I.t("Gravar") === "Save");
+  check("i18n: texto fora do dicionario cai no original",
+        I.t("texto que nao existe no dicionario") === "texto que nao existe no dicionario");
+
+  // Tempo decorrido: a ordem das palavras muda com a lingua.
+  check("i18n: tempo decorrido com a ordem de cada lingua",
+        I.tQuanto(5, "min") === " 5 min ago"
+        && I.tHa(12) === "12 min ago"
+        && I.tInstantes() === "moments ago");
+  I.setIdioma("pt");
+  check("i18n: tempo decorrido em pt volta a forma original",
+        I.tQuanto(5, "min") === " há 5 min"
+        && I.tHa(12) === "há 12 min"
+        && I.tInstantes() === "instantes");
+  check("i18n: datas em pt usam pt-PT e em en usam en-GB",
+        I.localeHora() === "pt-PT");
+  I.setIdioma("en");
+  check("i18n: datas em en mantem dia/mes (en-GB, nao en-US)",
+        I.localeHora() === "en-GB");
+
+  // O wrapper: traduz o que e texto, nao toca no que e logica.
+  const arvore = I.h("div", { className: "vmm-opcao-on", title: "Gravar" }, "Gravar");
+  check("i18n: o wrapper traduz o filho de texto", arvore.filhos[0] === "Save");
+  check("i18n: o wrapper traduz o titulo", arvore.props.title === "Save");
+  check("i18n: o wrapper NAO toca no className",
+        arvore.props.className === "vmm-opcao-on");
+  const select = I.h("select", { value: "en", className: "vmm-select" },
+    I.h("option", { value: "en" }, "English"));
+  check("i18n: o wrapper NAO toca no value de um select",
+        select.props.value === "en");
+
+  // Uma string que e chave do dicionario mas nao e texto visivel (por exemplo
+  // um identificador igual a uma palavra traduzida) so muda quando e filho de
+  // texto — e ai e mesmo texto.
+  check("i18n: um filho que nao e string passa intacto",
+        I.h("div", null, 42, null).filhos[0] === 42);
+
+  // O seletor: duas opcoes, valor corrente, rotulo traduzido.
+  const sel = I.SeletorIdioma({ idioma: "pt", onMudar: function () {} });
+  const campo = sel.filhos[1];
+  // O stub de `h` recebe o array de opcoes como um so filho: `filhos[0]` e a
+  // lista, nao a primeira opcao.
+  const opcoes = campo.filhos[0];
+  check("i18n: o seletor mostra as duas linguas",
+        Array.isArray(opcoes) && opcoes.length === 2
+        && opcoes[0].props.value === "en"
+        && opcoes[1].props.value === "pt");
+  check("i18n: o seletor mostra a lingua em vigor",
+        campo.props.value === "pt");
+  check("i18n: o seletor tem rotulo traduzido",
+        sel.filhos[0].filhos[0] === "Language"
+        && sel.props.title === "Change the panel language");
+  check("i18n: o seletor desliga enquanto grava",
+        I.SeletorIdioma({ idioma: "en", ocupado: true }).filhos[1].props.disabled === true);
+
+  // Volta ao portugues: o resto do teste (e o resto dos ficheiros de teste)
+  // verifica texto em portugues.
+  I.setIdioma("pt");
+})();
+
+// Paridade do painel com o formato.py. Os literais abaixo sao os MESMOS que o
+// test_formato.py fixa do lado do Python: se um dos dois lados mudar sozinho
+// (separador, ou a regra pt-PT de nao agrupar quatro digitos), um falha.
+(function () {
+  const I = T.idioma;
+  I.setIdioma("pt");
+  check("paridade pt: 1234.5 nao agrupa (minimumGroupingDigits=2)",
+        I.fmtNum(1234.5, 1) === "1234,5", I.fmtNum(1234.5, 1));
+  check("paridade pt: 12345 agrupa com U+00A0",
+        I.fmtNum(12345, 0) === "12\u00a0345", I.fmtNum(12345, 0));
+  check("paridade pt: milhoes com dois separadores",
+        I.fmtNum(1234567, 0) === "1\u00a0234\u00a0567", I.fmtNum(1234567, 0));
+  check("paridade pt: negativo com virgula decimal",
+        I.fmtNum(-12345.5, 2) === "-12\u00a0345,50", I.fmtNum(-12345.5, 2));
+  I.setIdioma("en");
+  check("paridade en: quatro digitos agrupam",
+        I.fmtNum(1234.5, 1) === "1,234.5", I.fmtNum(1234.5, 1));
+  check("paridade en: milhoes com virgula",
+        I.fmtNum(1234567, 0) === "1,234,567", I.fmtNum(1234567, 0));
+  check("paridade: valor nao numerico devolve vazio",
+        I.fmtNum(null, 0) === "" && I.fmtNum(undefined, 0) === "");
+  I.setIdioma("pt");
 })();
 
 console.log("");

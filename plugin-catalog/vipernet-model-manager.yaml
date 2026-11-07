@@ -1,0 +1,59 @@
+# Entrada de catalogo do Vipernet Model Manager.
+#
+# Destino: `plugin-catalog/vipernet-model-manager.yaml` no repositorio
+# `NousResearch/hermes-agent`, por PR com revisao humana. Esta copia vive no
+# repositorio do plugin para que o que se submete seja versionado com o codigo
+# e nao se perca numa conversa.
+#
+# Esquema lido de `hermes_cli/plugin_catalog.py` (dataclass PluginCatalogEntry):
+# o loader recusa `repo` que nao comece por https://, `sha` que nao seja 40 hex,
+# `tier` fora de official/verified/community e `category` fora de
+# desktop/memory/platform/web/tools/voice/automation/models/general.
+#
+# ESTADO 2026-11-05: entrada estruturalmente completa, NAO submissivel.
+# O `repo` aponta para o Gitea interno, por decisao do dono (so Gitea, nada no
+# GitHub). A regra 2 do catalogo exige um repositorio publico clonavel por
+# https em GitHub ou GitLab; um Gitea interno nao serve. Enquanto essa decisao
+# se mantiver, o caminho do catalogo esta fechado por decisao, nao por falta de
+# trabalho. Ver `references/admissao-ao-catalogo.md` na skill do plugin.
+
+name: vipernet-model-manager
+repo: https://gitea.home.server/proldan/vipernet-model-manager.git
+
+# OBRIGATORIO: o commit EXATO que o revisor leu, 40 caracteres hexadecimais.
+# Pin medido por `git ls-remote origin refs/heads/dev` a 2026-11-05, no ramo
+# `dev` (o default do repositorio). O `main` fica em
+# a23f7f8671ef8a90f439e2dad6c18efe721b155c (3.28.0).
+# Verificado no pin: 66 ficheiros versionados, `plugin.yaml` presente,
+# `__init__.py` presente, `version: 3.38.0` no plugin.yaml e no
+# dashboard/manifest.json. Um pin so se declara depois de o conteudo existir.
+sha: "cdc41b213146ea9cbda1717fd9ed9db1a9b6cfcb"
+
+description: >-
+  Picks the provider and model for each turn from the profile's own catalog,
+  based on the kind of work detected in the message: declared task associations
+  first, then an automatic complexity analysis. Keeps the choice stable for the
+  whole session, records every decision in an append-only ledger and degrades to
+  the next route instead of failing when a route has no credential.
+
+maintainer: proldan
+tier: community
+category: models
+requires_hermes: ">=0.22.0"
+version: "3.38.0"
+title: Vipernet Model Manager
+readme: true
+
+# Capacidades declaradas = o que o plugin regista de facto em `__init__.py`.
+# Regra 6 do catalogo: uma capacidade por declarar e' falha de validacao, uma
+# capacidade declarada a mais e' deriva. `post_tool_call` entrou na 3.35.0 (mede
+# o `exit_code` de cada chamada) e ficou por declarar ate' 2026-11-05.
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_api_request
+    - api_request_error
+    - post_tool_call
+  provides_middleware:
+    - llm_request
+  requires_env: []

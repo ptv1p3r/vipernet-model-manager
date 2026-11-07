@@ -121,6 +121,75 @@ def teste_quebra_entre_escritas() -> None:
           f"vivo={info['vivo_sha']} ultimo={info['ultimo_depois_sha']}")
 
 
+# ------------------- 3b. quebra declarada: reconcilia com testemunha, e so assim
+def teste_reconciliacao() -> None:
+    """A quebra explicada deixa de ser alarme; a declaracao sem prova nao vale.
+
+    A tentacao aqui e escrever uma entrada generica ("line 2 e conhecida") e o
+    alarme morre para sempre. Por isso a declaracao tem de trazer os tres shas
+    medidos: se nao casarem, a quebra continua a falhar.
+    """
+    d = _nova_sandbox()
+    cfg = d / "config.json"
+    bruto = json.loads(cfg.read_text(encoding="utf-8"))
+    bruto["activo"] = False
+    cfg.write_text(json.dumps(bruto, ensure_ascii=False, indent=2) + "\n",
+                   encoding="utf-8")
+    g.gravar(copy.deepcopy(g.SEED), cfg)
+    info = g.verificar_cadeia(cfg)
+    check("sem declaracao: a quebra fica por explicar",
+          info["quebras_nao_explicadas"] == [2] and not info["cadeia_continua"],
+          str(info["quebras_nao_explicadas"]))
+
+    # Declaracao com testemunha errada: nao desculpa nada.
+    (d / "escritas-quem.reconciliacao.json").write_text(json.dumps({
+        "quebras": [{"linha": 2, "antes_sha": "0000", "depois_sha": "0000",
+                     "ultimo_depois_sha": "0000", "motivo": "tentativa"}],
+    }), encoding="utf-8")
+    info = g.verificar_cadeia(cfg)
+    check("declaracao com testemunha errada nao reconcilia",
+          info["quebras_nao_explicadas"] == [2], str(info))
+
+    # Declaracao sem os shas medidos: tambem nao.
+    (d / "escritas-quem.reconciliacao.json").write_text(json.dumps({
+        "quebras": [{"linha": 2, "motivo": "confia em mim"}],
+    }), encoding="utf-8")
+    info = g.verificar_cadeia(cfg)
+    check("declaracao sem testemunha nao reconcilia",
+          info["quebras_nao_explicadas"] == [2], str(info))
+
+    # Agora a declaracao certa, com os shas lidos do proprio registo.
+    linhas = (d / "escritas-quem.log").read_text(encoding="utf-8").splitlines()
+    segunda = json.loads(linhas[1])
+    primeira = json.loads(linhas[0])
+    (d / "escritas-quem.reconciliacao.json").write_text(json.dumps({
+        "quebras": [{
+            "linha": 2,
+            "antes_sha": segunda["antes_sha"],
+            "depois_sha": segunda["depois_sha"],
+            "ultimo_depois_sha": primeira["depois_sha"],
+            "motivo": "reversao manual do config congelado",
+        }],
+    }), encoding="utf-8")
+    info = g.verificar_cadeia(cfg)
+    check("declaracao com testemunha igual reconcilia",
+          info["quebras_reconciliadas"] == [2] and info["cadeia_continua"],
+          str(info))
+    check("reconciliada nao apaga a evidencia", info["quebras"] == [2],
+          str(info["quebras"]))
+
+    # Uma segunda quebra, nova, nao fica coberta pela declaracao antiga.
+    cfg.write_text(cfg.read_text(encoding="utf-8").replace('"activo": true',
+                                                           '"activo": false'),
+                   encoding="utf-8")
+    g.gravar(copy.deepcopy(g.SEED), cfg)
+    info = g.verificar_cadeia(cfg)
+    check("quebra nova nao e coberta pela declaracao antiga",
+          info["quebras_reconciliadas"] == [2]
+          and info["quebras_nao_explicadas"] == [3],
+          f"todas={info['quebras']} nao_explicadas={info['quebras_nao_explicadas']}")
+
+
 # ------------------------------------------------- 4. registo apagado
 def teste_registo_apagado() -> None:
     d = _nova_sandbox()
@@ -187,7 +256,9 @@ def teste_producao() -> None:
         print("      (sem config viva — salto o teste de producao)")
         return
     info = g.verificar_cadeia(CONFIG_VIVA)
-    check("producao: cadeia continua", info["cadeia_continua"], str(info["quebras"]))
+    check("producao: sem quebras por explicar", info["cadeia_continua"],
+          f"todas={info['quebras']} reconciliadas={info['quebras_reconciliadas']} "
+          f"nao_explicadas={info['quebras_nao_explicadas']}")
     check("producao: config viva veio do caminho unico",
           not info["fora_da_cadeia"],
           f"vivo={info['vivo_sha']} ultimo={info['ultimo_depois_sha']}")
@@ -199,6 +270,7 @@ def main() -> int:
     teste_cadeia_limpa()
     teste_escrita_por_fora()
     teste_quebra_entre_escritas()
+    teste_reconciliacao()
     teste_registo_apagado()
     teste_linha_corrompida()
     teste_tecto()

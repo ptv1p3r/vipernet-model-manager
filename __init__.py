@@ -28,7 +28,9 @@ Regras de desenho:
 """
 from __future__ import annotations
 
+import contextlib
 import copy
+import fcntl
 import hashlib
 import importlib
 import importlib.util
@@ -47,6 +49,8 @@ try:  # carregado como pacote do Hermes
     from . import gestor
     from . import analise as _analise_mod
     from . import analise_modelo as _analise_modelo_mod
+    from . import resultado as _resultado_mod
+    from . import sombra as _sombra_mod
 except Exception:  # import directo (selftest / CLI fora do Hermes)
     import importlib.util as _ilu
 
@@ -65,6 +69,8 @@ except Exception:  # import directo (selftest / CLI fora do Hermes)
     gestor = _mod("gestor")
     _analise_mod = _mod("analise")
     _analise_modelo_mod = _mod("analise_modelo")
+    _resultado_mod = _mod("resultado")
+    _sombra_mod = _mod("sombra")
 
 NIVEIS = _analise_mod.NIVEIS
 
@@ -173,13 +179,101 @@ _contadores: dict[str, int] = {}
 _maus: set[tuple[str, str, str]] = set()
 _avisados: set[tuple[str, str, str]] = set()
 _maus_expira: dict[tuple[str, str, str], float] = {}
+# Circuit breaker: rastreio de falhas com timestamps para aplicar regra
+# "X falhas em Y minutos -> cooldown * Z". Chave: (perfil, provider, modelo) -> lista de timestamps (monotonic).
+_falhas_recente: dict[tuple[str, str, str], list[float]] = {}
 _ultimo_perfil: dict[str, str] = {}
 _ultima_decisao: dict[str, dict[str, Any]] = {}
 # Decisao fixada por turno: nivel, tarefa, origem e rota do primeiro pedido.
 # A chave e o `turn_id` do core (sessao:sessao:8hex) ou, sem ele, um hash do
 # texto — nunca o texto, para o ledger continuar sem conversa.
-_turno: dict[str, dict[str, Any]] = {}
+_turno: dict[str, Any] = {}
 _TURNO_MAX = 500
+
+#: Rasto de decisao por turno. O rasto vivia no evento `sem_troca`, escrito em
+#: **cada** chamada de API com o mesmo conteudo: medido a 2026-11-04, 11 129
+#: linhas para 4 044 turnos, com o `classificador` repetido em 95% delas. Passa a
+#: viajar na linha `resposta` (que ja existe uma vez por turno), uma vez por
+#: turno e de novo quando a decisao muda; `sem_troca` deixa de existir.
+_trace_resposta: dict[str, str] = {}
+_TRACE_MAX = 800
+#: O que nunca viaja no rasto: `sessao`/`passo`/`turno` mudam por chamada (e
+#: `sessao`/`turno` ja estao na linha), `motor`/`inst` ja vaem na `resposta`.
+_TRACE_EXCLUI = frozenset({"sessao", "passo", "turno", "motor", "inst"})
+#: Subconjunto que define "a decisao mudou". Medidas que crescem so porque a
+#: conversa cresceu (`sinais`, `triagem`, `ms`) ficam de fora: dentro das que
+#: contam, a variacao real e de 13 transicoes (nivel), 42 (score), 45
+#: (classificador), 211 (tarefa) e 227 (sinais) em 11 129 linhas. Incluir as
+#: medidas volateis tornava o corte nulo (3% em vez de 100%).
+_TRACE_ESTAVEL = (
+    "nivel", "nivel_efetivo", "tarefa", "origem", "acesso", "score",
+    "classificador", "classificador_erro", "classificador_motivo", "esforco",
+    "superficie", "superficie_fonte", "superficie_regra",
+    "indecisao", "realimentacao", "excecao", "excecao_motivo", "degradado_de",
+    "escolhido_por_janela", "fonte_turno", "entrada", "exige",
+)
+#: `pin` e `rota_pin` ficam FORA de proposito: mudam em cada chamada
+#: (`novo` -> `reutilizado`) e dentro da assinatura faziam o rasto repetir-se em
+#: todas as chamadas do turno — exactamente o que se queria cortar. Medido a
+#: 2026-11-04: com eles, um turno de 2 chamadas escrevia o rasto 2 vezes.
+
+#: Campos que so a linha `resposta`/`erro` leva. Nos eventos de troca seriam uma
+#: segunda copia do mesmo rasto — e fizeram com que uma falha do classificador
+#: contasse duas vezes no painel (na `troca` e na primeira `resposta`). Os
+#: eventos de troca ficam com o resumo: nivel, tarefa, origem, score, esforco,
+#: de/para. Medido a 2026-11-04: `classificador` era 41,6% do peso do rasto.
+_TRACE_PESADO = frozenset({
+    "classificador", "classificador_erro", "classificador_erro_herdado",
+    "classificador_motivo", "sinais", "triagem", "superficie",
+    "superficie_fonte", "superficie_regra", "kw_platform", "plataforma_kw",
+    "exige", "escolhido_por_janela",
+})
+
+
+def resumo_de(base: dict[str, Any]) -> dict[str, Any]:
+    """O resumo da decisao para os eventos de troca (sem o rasto pesado)."""
+    return {k: v for k, v in base.items() if k not in _TRACE_PESADO}
+
+
+def trace_de(base: dict[str, Any]) -> dict[str, Any]:
+    """O rasto que explica a decisao do turno, sem o que muda por chamada."""
+    return {k: v for k, v in base.items()
+            if k not in _TRACE_EXCLUI and v is not None and v != ""}
+
+
+def _assinatura(valor: Any) -> str:
+    try:
+        bruto = json.dumps(valor, sort_keys=True, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        bruto = repr(valor)
+    return hashlib.sha256(bruto.encode("utf-8")).hexdigest()[:16]
+
+
+def _assinatura_decisao(trace: dict[str, Any]) -> str:
+    """A assinatura do que define a decisao — so os campos de `_TRACE_ESTAVEL`.
+
+    Assinar o rasto inteiro nao serve: leva medidas que crescem com a conversa
+    (`sinais`, `triagem`, `ms`) e a assinatura mudava em cada chamada, logo o
+    rasto repetia-se sempre. Medido a 2026-11-04 num turno real de 6 chamadas:
+    6 copias do rasto antes, 1 depois.
+    """
+    return _assinatura({k: trace.get(k) for k in _TRACE_ESTAVEL if k in trace})
+
+
+def trace_para_resposta(chave: str, trace: dict[str, Any]) -> bool:
+    """True quando esta e a primeira linha do turno a levar este rasto.
+
+    O estado e pequeno e limitado (800 chaves) e limpa-se de uma vez quando
+    enche: e deteccao de repeticao, nao historico.
+    """
+    assinatura = _assinatura_decisao(trace)
+    with _lock:
+        if _trace_resposta.get(chave) == assinatura:
+            return False
+        _trace_resposta[chave] = assinatura
+        if len(_trace_resposta) > _TRACE_MAX:
+            _trace_resposta.clear()
+        return True
 
 #: Identidade desta instancia do modulo. Uma recarga de plugins faz
 #: `sys.modules.pop` e reimporta, logo `_turno` nasce vazio a meio do que pode
@@ -232,12 +326,41 @@ def _config() -> dict[str, Any]:
     return dados
 
 
+@contextlib.contextmanager
+def _trava_ledger(caminho: Path, *, exclusiva: bool = False):
+    """Trava cooperativa em ``<ficheiro>.lock`` — partilhada no append.
+
+    O `.lock` ao lado do ficheiro tem inode estavel; o proprio ledger nao, porque
+    a compactacao o troca com `os.replace`. Se a trava falhar (FS sem flock,
+    permissao), o append continua: perder a trava e degradar a compactacao, nao
+    perder o evento.
+    """
+    try:
+        fd = os.open(str(caminho) + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        yield
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX if exclusiva else fcntl.LOCK_SH)
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def _append_linha(caminho: Path, linha: str) -> None:
     """Uma linha por evento, num unico `write` com `O_APPEND`.
 
     A escrita e atomica para linhas pequenas mesmo com varios processos a
     acrescentar em simultaneo (o CLI e o gateway correm em processos
     diferentes). O ficheiro nasce `0600`; nada de segredos, mas por higiene.
+
+    A trava **partilhada** ao lado do ficheiro nao serializa os escritores (varios
+    podem escrever ao mesmo tempo); existe para a compactacao do ledger. Sem ela,
+    o `os.replace` de uma compactacao deitava fora as linhas escritas entre a
+    leitura e a troca — perda silenciosa de eventos exactamente enquanto se
+    arruma a casa.
     """
     try:
         caminho.parent.mkdir(parents=True, exist_ok=True)
@@ -248,9 +371,220 @@ def _append_linha(caminho: Path, linha: str) -> None:
     except OSError:
         return
     try:
-        os.write(fd, linha.encode("utf-8"))
+        with _trava_ledger(caminho, exclusiva=False):
+            os.write(fd, linha.encode("utf-8"))
     finally:
         os.close(fd)
+
+
+_ensaio_cache: dict[str, Any] = {}
+
+
+def _pre_registo_ensaio() -> dict[str, Any] | None:
+    """Pre-registo do ensaio em sombra, selado; `None` se ausente ou corrompido.
+
+    Le o ficheiro mais recente de `aprendiz/sombra/pre-registo-*.json` e verifica
+    o `sha256` que o proprio ficheiro carrega. Um pre-registo cujo selo nao bate
+    foi editado depois de escrito, e decidir sobre ele e decidir sobre numeros
+    que ninguem assinou — logo vale `None`, nao vale "quase".
+    """
+    try:
+        base = gestor.directorio() / "aprendiz" / "sombra"
+        ficheiros = sorted(base.glob("pre-registo-*.json"))
+        if not ficheiros:
+            return None
+        caminho = ficheiros[-1]
+        chave = f"{caminho}:{caminho.stat().st_mtime_ns}"
+        if chave in _ensaio_cache:
+            return _ensaio_cache[chave]
+        registo = json.loads(caminho.read_text(encoding="utf-8"))
+        if not isinstance(registo, dict) or not _sombra_mod.verificar(registo):
+            _ensaio_cache.clear()
+            _ensaio_cache[chave] = None
+            return None
+        _ensaio_cache.clear()
+        _ensaio_cache[chave] = registo
+        return registo
+    except Exception:  # noqa: BLE001 - medicao nunca parte um turno
+        return None
+
+
+def _braco_da_resposta(modelo: str, provider: str = "") -> str | None:
+    """Braco do turno, derivado do modelo que respondeu — nunca do desejado.
+
+    O provider acompanha o modelo: com dois providers a servir o mesmo slug,
+    casar so pelo nome atribuia o turno ao braco errado.
+    """
+    registo = _pre_registo_ensaio()
+    if not registo or not modelo:
+        return None
+    try:
+        return _sombra_mod.braco_do_modelo(registo, modelo, provider)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_sombra_vida_cache: dict[str, Any] = {}
+
+
+def _sombra_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Bloco `sombra` da config; desligado quando ausente ou malformado."""
+    bloco = (config or {}).get("sombra")
+    return bloco if isinstance(bloco, dict) else {}
+
+
+def _sombra_vida() -> dict[str, Any]:
+    """Vida dos dois bracos, lida do disco — o middleware nunca faz a sonda.
+
+    A sonda custa uma chamada de rede; dentro do turno pagava-se em latencia em
+    todos os turnos e um 404 so descoberto aqui queimava o turno (foi o que
+    aconteceu com `inkling-small:free`). `vmm sombra vida` mede fora do turno.
+    """
+    try:
+        # Mesma pasta do pre-registo: `aprendiz/sombra`. E a CLI (`vmm sombra
+        # vida`) que grava; ler de `sombra/` dava vida nunca medida para sempre.
+        caminho = gestor.directorio() / "aprendiz" / "sombra" / "vida.json"
+        chave = f"{caminho}:{caminho.stat().st_mtime_ns}"
+        guardado = _sombra_vida_cache.get("dados")
+        if guardado is not None and guardado[0] == chave:
+            return guardado[1]
+        dados = json.loads(caminho.read_text(encoding="utf-8"))
+        if not isinstance(dados, dict):
+            dados = {}
+        _sombra_vida_cache["dados"] = (chave, dados)
+        return dados
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _entrada_por_modelo(pcfg: dict[str, Any], modelo: Any,
+                        provider: Any = "") -> dict[str, Any] | None:
+    """Entrada do catalogo pelo **modelo**, nao pelo id: o braco nomeia modelos.
+
+    `provider` desempata quando o mesmo slug existe em dois providers — sem
+    ele, a primeira entrada do catalogo vencia em silencio e o braco servia-se
+    da credencial errada.
+    """
+    alvo = str(modelo or "").strip().lower()
+    if not alvo:
+        return None
+    alvo_prov = str(provider or "").strip().lower()
+    for entrada in gestor.catalogo_utilizavel(pcfg):
+        if str(entrada.get("modelo") or "").strip().lower() != alvo:
+            continue
+        if alvo_prov and str(entrada.get("provider") or "").strip().lower() != alvo_prov:
+            continue
+        return entrada
+    return None
+
+
+def _sombra_do_turno(
+    pcfg: dict[str, Any],
+    config: dict[str, Any] | None,
+    perfil: str,
+    sessao: str,
+    turno: Any,
+    *,
+    nivel: str,
+    needs: dict[str, Any] | None,
+    superficie: str,
+    associada: bool = False,
+    marcador: bool = False,
+) -> dict[str, Any] | None:
+    """Braco sorteado do turno e a entrada que o serve.
+
+    `None` quando o ensaio esta desligado; um diagnostico quando esta ligado,
+    **inclusive quando recusa** — e o que permite ao ledger distinguir "nao
+    sorteou" de "sorteou e nao pode aplicar". Nunca levanta: medicao nao parte
+    um turno.
+
+    A prioridade do dono mantem-se: tarefa associada e marcador explicito ganham
+    ao sorteio. Um ensaio que trocasse o modelo de um pedido de arquitetura
+    estaria a medir outro trabalho.
+    """
+    bloco = _sombra_config(config)
+    if not bloco.get("activo"):
+        return None
+    registo = _pre_registo_ensaio()
+    if not registo:
+        return {"aplicado": False, "motivo": "sem_pre_registo"}
+    try:
+        braco = _sombra_mod.braco_do_turno(registo, perfil, sessao, turno)
+    except Exception:  # noqa: BLE001
+        return {"aplicado": False, "motivo": "sorteio_falhou"}
+    modelo = registo.get(f"braco_{braco}")
+    try:
+        provider_braco = _sombra_mod.provider_do_braco(registo, braco)
+    except Exception:  # noqa: BLE001 - o diagnostico nunca parte o turno
+        provider_braco = ""
+    diag: dict[str, Any] = {"braco": braco, "modelo": modelo,
+                            "provider": provider_braco,
+                            "sha": str(registo.get("sha256") or "")[:16],
+                            "aplicado": False}
+    if associada:
+        diag["motivo"] = "tarefa_associada"
+        return diag
+    if marcador:
+        diag["motivo"] = "marcador_explicito"
+        return diag
+
+    vida = _sombra_vida()
+    if not vida:
+        diag["motivo"] = "vida_nao_medida"
+        return diag
+    try:
+        ttl_h = float(bloco.get("vida_ttl_h", 24) or 24)
+    except (TypeError, ValueError):
+        ttl_h = 24.0
+    ts = vida.get("ts_epoch")
+    if not isinstance(ts, (int, float)) or (time.time() - float(ts)) > ttl_h * 3600:
+        diag["motivo"] = "vida_expirada"
+        return diag
+    mortos = [b for b in ("a", "b")
+              if not (vida.get(f"braco_{b}") or {}).get("ok")]
+    if mortos:
+        # Braco morto nao e braco com falhas: nao ha resultado a medir. O ensaio
+        # para inteiro e o turno segue a rota normal — correr so com um braco
+        # vivo daria um "A/B" que compara um modelo com nada.
+        diag["motivo"] = "braco_sem_vida:" + ",".join(mortos)
+        diag["mortos"] = {b: str((vida.get(f"braco_{b}") or {}).get("motivo") or "")[:120]
+                          for b in mortos}
+        return diag
+
+    entrada = _entrada_por_modelo(pcfg, modelo, provider_braco)
+    if entrada is None:
+        diag["motivo"] = "modelo_fora_do_catalogo"
+        return diag
+    diag["entrada_id"] = entrada.get("id")
+    # O nivel declarado da entrada nao trava o ensaio: o sorteio do braco e a
+    # autorizacao, e um A/B que so serve o subconjunto de turnos que a entrada
+    # ja cobria mede outra coisa. O facto fica registado (`nivel_nao_declarado`)
+    # para a analise poder separar os turnos servidos fora do declarado. Nao se
+    # alarga o catalogo: alargar mudava tambem o routing normal dos turnos.
+    if nivel not in (entrada.get("complexidade") or []):
+        diag["nivel_nao_declarado"] = True
+    if superficie and not gestor.serve_superficie(entrada, superficie):
+        diag["motivo"] = "superficie_nao_serve"
+        return diag
+    motivo_cap = gestor.rota_serve(entrada, needs) if needs else ""
+    if motivo_cap:
+        diag["motivo"] = "capacidade:" + str(motivo_cap)
+        return diag
+    chave_maus = (perfil, str(entrada.get("provider") or "").lower(),
+                  str(entrada.get("modelo") or ""))
+    with _lock:
+        morta = _maus_expira.get(chave_maus, 0.0) > time.monotonic()
+    if morta:
+        diag["motivo"] = "rota_falhou_ha_pouco"
+        return diag
+    try:
+        rota = resolver_rota(perfil, entrada["provider"], entrada["modelo"])
+    except Exception as exc:  # noqa: BLE001
+        diag["motivo"] = "rota_indisponivel:" + type(exc).__name__
+        return diag
+    diag.update({"aplicado": True, "motivo": "sorteado",
+                 "entrada": entrada, "rota": rota})
+    return diag
 
 
 def _registar(entrada: dict[str, Any], *, registar: bool = True) -> None:
@@ -337,6 +671,53 @@ def _pin_gravar(chave: str, valores: dict[str, Any]) -> None:
         _turno[chave] = dict(valores)
         if len(_turno) > _TURNO_MAX:
             _turno.clear()
+
+
+#: Tarefa associada por sessao (3.32.0): `perfil\x1fsessao` -> `{tarefa, ts,
+#: idade_turnos}`. Vive ao lado do pin porque e a mesma familia de chave: o pin
+#: dura um turno, a tarefa dura a sessao. Sem isto, o detector — que le so a
+#: ultima mensagem, de proposito — perdia a associacao no primeiro "continua".
+_tarefa_sessao: dict[str, dict[str, Any]] = {}
+_TAREFA_MAX = 500
+
+
+def _tarefa_fixar(chave: str, tarefa: str) -> None:
+    """Detectada neste turno: substitui a anterior e reinicia o prazo."""
+    with _lock:
+        _tarefa_sessao[chave] = {"tarefa": tarefa, "ts": time.time(),
+                                 "idade_turnos": 0}
+        if len(_tarefa_sessao) > _TAREFA_MAX:
+            _tarefa_sessao.clear()
+
+
+def _tarefa_herdar(chave: str, expira_min: int,
+                   expira_turnos: int) -> tuple[str, int]:
+    """(tarefa viva, idade em turnos), ou `("", 0)` quando o prazo passou.
+
+    O prazo conta desde a ultima **deteccao**: herdar nao o renova. Renovar
+    deixava um "sim" de oito em oito turnos manter um modelo pago vivo sem fim,
+    e o custo aparecia na fatura sem motivo visivel.
+    """
+    agora = time.time()
+    with _lock:
+        guardado = _tarefa_sessao.get(chave)
+        if not guardado:
+            return "", 0
+        idade_min = (agora - float(guardado.get("ts") or 0.0)) / 60.0
+        if expira_min > 0 and idade_min > expira_min:
+            _tarefa_sessao.pop(chave, None)
+            return "", 0
+        idade = int(guardado.get("idade_turnos") or 0) + 1
+        if expira_turnos > 0 and idade > expira_turnos:
+            _tarefa_sessao.pop(chave, None)
+            return "", 0
+        guardado["idade_turnos"] = idade
+        return str(guardado.get("tarefa") or ""), idade
+
+
+def _tarefa_apagar(chave: str) -> None:
+    with _lock:
+        _tarefa_sessao.pop(chave, None)
 
 
 # --------------------------------------------------------------------------- rotas
@@ -898,11 +1279,17 @@ def middleware_llm_request(
                     "motor": _VERSAO_MOTOR, "inst": _INSTANCIA,
                     "origem": pin.get("origem") or "",
                     "tarefa": tarefa, "score": None, "sinais": None,
+                    "tarefa_origem": pin.get("tarefa_origem") or None,
+                    "tarefa_idade_turnos": pin.get("tarefa_idade_turnos") or None,
                     "turno": identificador_turno, "passo": passo,
                     "pin": "reutilizado", "fonte_turno": fonte_turno,
                     "superficie": superficie or None,
                     "superficie_fonte": fonte_sup or None,
                     "plataforma_kw": (platform or "").strip().lower() or None,
+                    # O ensaio decide uma vez por turno; os pedidos seguintes
+                    # (laco de ferramentas) herdam o braco do pin em vez de
+                    # sortearem outro — senao o mesmo turno comparia dois braços.
+                    "sombra": pin.get("sombra"),
                     "kw_platform": platform is not None}
             if pin.get("classificador") and (pin["classificador"] or {}).get("lido"):
                 # So a leitura se herda. Uma falha nao se herda: o cartao conta
@@ -927,6 +1314,31 @@ def middleware_llm_request(
                 pesos=analise.get("pesos"),
             )
             tarefa = _analise_mod.detectar_tarefa(mensagens, pcfg.get("tarefas") or {})
+            # (3.32.0) A tarefa vive na sessao, nao no turno. O detector le so a
+            # ultima mensagem — um "continua" ou "agora escreve o parecer" nao
+            # tem nenhum dos termos — e o pin morre com o turno: a associacao
+            # durava um turno e o seguinte caia na complexidade, trocando de
+            # modelo a meio da conversa.
+            tarefa_origem = "detectada" if tarefa else ""
+            tarefa_idade = 0
+            chave_tarefa = f"{perfil}\x1f{session_id}" if session_id else ""
+            persist = analise.get("tarefa_persistente")
+            if not isinstance(persist, dict):
+                persist = gestor.TAREFA_PERSISTENTE_PADRAO
+            persistente = bool(persist.get("activo", True)) and bool(chave_tarefa)
+            if tarefa and persistente:
+                _tarefa_fixar(chave_tarefa, str(tarefa))
+            elif persistente and decisao.get("origem") != "reset":
+                # `complexidade: auto` sem tarefa no texto e o fim explicito: nao
+                # se herda nada. Sem esta guarda a heranca repunha a tarefa antes
+                # do reset e o marcador nunca conseguiu larga-la.
+                herdada, tarefa_idade = _tarefa_herdar(
+                    chave_tarefa,
+                    int(persist.get("expira_min") or 0),
+                    int(persist.get("expira_turnos") or 0))
+                if herdada:
+                    tarefa = herdada
+                    tarefa_origem = "herdada"
             associada = tarefa if any(tarefa in e.get("tarefas", [])
                                      for e in gestor.catalogo_utilizavel(pcfg)) else None
             # A superficie manda sobre a tarefa e sobre a analise, mas nunca
@@ -974,6 +1386,8 @@ def middleware_llm_request(
                     "origem": "tarefa" if associada else decisao["origem"],
                     "tarefa": tarefa, "score": decisao.get("score"),
                     "sinais": decisao.get("sinais"),
+                    "tarefa_origem": tarefa_origem or None,
+                    "tarefa_idade_turnos": tarefa_idade or None,
                     "turno": identificador_turno, "passo": passo,
                     "pin": "novo", "fonte_turno": fonte_turno,
                     "superficie": superficie or None,
@@ -995,8 +1409,16 @@ def middleware_llm_request(
             if classificador_motivo:
                 base["classificador_motivo"] = classificador_motivo
             if not nivel:
+                # Fim da tarefa por marcador: `complexidade: auto` sem tarefa no
+                # texto larga a associacao desta sessao. E a unica saida manual
+                # — sem ela, o utilizador nao tinha como voltar ao modelo barato
+                # sem esperar pelo prazo.
+                if persistente:
+                    _tarefa_apagar(chave_tarefa)
+                    base["tarefa_limpa"] = True
                 _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
-                                 origem=base["origem"], acesso="", entrada="")
+                                 origem=base["origem"], acesso="", entrada="",
+                                 trace=trace_de(base))
                 _registar({**base, "evento": "reset"}, registar=registar)
                 return None
             if associada:
@@ -1029,9 +1451,12 @@ def middleware_llm_request(
                     "origem": base["origem"], "passo": passo,
                     "classificador": base.get("classificador"),
                     "classificador_erro": base.get("classificador_erro"),
+                    "tarefa_origem": base.get("tarefa_origem"),
+                    "tarefa_idade_turnos": base.get("tarefa_idade_turnos"),
                 })
         _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
-                         origem=base["origem"], acesso="", entrada="")
+                         origem=base["origem"], acesso="", entrada="",
+                         trace=trace_de(base))
         if not gestor.catalogo_utilizavel(pcfg):
             _registar({**base, "evento": "sem_catalogo"}, registar=registar)
             return None
@@ -1172,13 +1597,31 @@ def middleware_llm_request(
             if entrada is None or rota is None:
                 _registar({**base, "evento": "sem_rota", "falhadas": falhadas}, registar=registar)
                 return None
+        # Ensaio em sombra: o braco sorteado do turno decide o modelo. So aqui,
+        # depois de a analise ter uma rota — um ensaio que decidisse por fora da
+        # analise compararia modelos em trabalho que nao e o do dia a dia. O que
+        # nao aplicar fica registado com o motivo, para o ledger nao confundir
+        # "nao sorteou" com "sorteou e nao pode".
+        _diag_sombra = _sombra_do_turno(
+            pcfg, config, perfil, session_id, base.get("turno"),
+            nivel=str(nivel or ""), needs=needs, superficie=superficie,
+            associada=bool(associada), marcador=bool(marcador_manda))
+        if _diag_sombra is not None:
+            if _diag_sombra.get("aplicado"):
+                entrada = _diag_sombra["entrada"]
+                rota = _diag_sombra["rota"]
+                base["origem"] = "sombra"
+                base["escolhido_por_sombra"] = entrada["id"]
+            base["sombra"] = {k: v for k, v in _diag_sombra.items()
+                              if k not in ("entrada", "rota")}
         if fixar_turno:
             # A rota do turno fica fixada no mesmo pin: os pedidos seguintes
             # reutilizam-na sem repetir rodizio, estrategia nem credenciais.
             guardado = _pin_ler(chave_turno) or {}
             guardado.update({"nivel": nivel, "entrada": entrada["id"],
                              "provider": rota["provider"],
-                             "modelo": entrada["modelo"], "passo": passo})
+                             "modelo": entrada["modelo"], "passo": passo,
+                             "sombra": base.get("sombra")})
             _pin_gravar(chave_turno, guardado)
         mapa_sup = entrada.get("superficies")
         if isinstance(mapa_sup, dict) and mapa_sup:
@@ -1188,20 +1631,23 @@ def middleware_llm_request(
         _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
                          origem=base["origem"], acesso=entrada.get("acesso", ""),
                          entrada=entrada["id"], escolhido_provider=rota["provider"],
-                         escolhido_modelo=entrada["modelo"])
+                         escolhido_modelo=entrada["modelo"],
+                         pin=base.get("pin"), rota_pin=base.get("rota_pin"),
+                         turno=base.get("turno"), fonte_turno=base.get("fonte_turno"),
+                         trace=trace_de(base))
         atual = {"provider": (provider or "").strip().lower(),
                  "modelo": request.get("model") or model or ""}
         if agente is None:
             # Sem agente nao ha troca de provider: so reescreve o nome, e so quando
             # o destino pertence a rota actual — o limite da v1, mantido como rede.
             if rota["provider"].lower() != atual["provider"] or entrada["modelo"] == atual["modelo"]:
-                _registar({**base, "evento": "sem_agente", "entrada": entrada["id"],
+                _registar({**resumo_de(base), "evento": "sem_agente", "entrada": entrada["id"],
                            "acesso": entrada.get("acesso", ""),
                            "de": atual}, registar=registar)
                 return None
             pedido, esforco_fio = _pedido_com_esforco(
                 {**request, "model": entrada["modelo"]}, entrada, rota, session_id)
-            _registar({**base, "evento": "troca_so_modelo", "de": atual["modelo"],
+            _registar({**resumo_de(base), "evento": "troca_so_modelo", "de": atual["modelo"],
                        "para": entrada["modelo"], "entrada": entrada["id"],
                        "acesso": entrada.get("acesso", ""),
                        "esforco": esforco_fio or "nao_aplicado",
@@ -1215,10 +1661,10 @@ def middleware_llm_request(
             # repoe-se quando a entrada nao declara nenhum).
             esforco_agente = _aplicar_esforco(agente, entrada, session_id)
             pedido, esforco_fio = _pedido_com_esforco(request, entrada, rota, session_id)
-            _registar({**base, "evento": "sem_troca", "rota": destino,
-                       "entrada": entrada["id"], "acesso": entrada.get("acesso", ""),
-                       "esforco": esforco_agente or "nao_declarado",
-                       "ms": round((time.monotonic() - inicio) * 1000, 1)}, registar=registar)
+            # Aqui escrevia-se o evento `sem_troca` — em cada chamada de API, com
+            # o mesmo rasto. O rasto viaja agora na linha `resposta` (uma vez por
+            # turno, e de novo quando a decisao muda), e o desfecho "nao trocou"
+            # le-se de la pelo que a linha ja diz: `escolhido` == o modelo vivo.
             if esforco_fio:
                 return {"request": pedido, "source": NOME,
                         "reason": f"{perfil}:complexidade={nivel}:esforco={esforco_fio}"}
@@ -1226,10 +1672,37 @@ def middleware_llm_request(
         try:
             aplicado = _trocar(agente, entrada, rota, perfil, session_id)
         except Exception as exc:
+            agora = time.monotonic()
+            chave_falha = (perfil, entrada["provider"].lower(), entrada["modelo"])
             with _lock:
-                _maus_expira[(perfil, entrada["provider"].lower(), entrada["modelo"])] = \
-                    time.monotonic() + _TTL_MAU
-            _registar({**base, "evento": "falha_troca", "entrada": entrada["id"],
+                # Regista a falha para o circuit breaker
+                _falhas_recente.setdefault(chave_falha, []).append(agora)
+                
+                # Obtem config do circuit breaker para este perfil
+                cfg = _config()
+                pcfg = gestor.perfil_config(cfg, perfil) or {}
+                analise = pcfg.get("analise") or {}
+                cb = analise.get("circuit_breaker") or {}
+                
+                # Usa valores do config ou padrao
+                ativo = cb.get("ativo", True)
+                limite_falhas = cb.get("limite_falhas", 3)
+                janela_minutos = cb.get("janela_minutos", 5)
+                multiplicador = cb.get("multiplicador_cooldown", 1.5)
+                
+                # Calcula cooldown base (TTL_MAU) e aplica multiplicador se threshold atingido
+                cooldown_base = _TTL_MAU
+                if ativo:
+                    # Remove falhas fora da janela
+                    corte = agora - (janela_minutos * 60.0)
+                    falhas_na_janela = [t for t in _falhas_recente[chave_falha] if t >= corte]
+                    _falhas_recente[chave_falha] = falhas_na_janela
+                    
+                    if len(falhas_na_janela) >= limite_falhas:
+                        cooldown_base = cooldown_base * multiplicador
+                
+                _maus_expira[chave_falha] = agora + cooldown_base
+            _registar({**resumo_de(base), "evento": "falha_troca", "entrada": entrada["id"],
                        "acesso": entrada.get("acesso", ""),
                        "de": destino, "erro": f"{type(exc).__name__}: {exc}"[:300]},
                       registar=registar)
@@ -1239,7 +1712,7 @@ def middleware_llm_request(
         esforco_agente = _aplicar_esforco(agente, entrada, session_id)
         pedido, esforco_fio = _pedido_com_esforco(
             {**request, "model": entrada["modelo"]}, entrada, rota, session_id)
-        _registar({**base, "evento": "troca", "entrada": entrada["id"], "de": destino,
+        _registar({**resumo_de(base), "evento": "troca", "entrada": entrada["id"], "de": destino,
                    "acesso": entrada.get("acesso", ""),
                    "para": aplicado, "fonte_credencial": rota.get("source", ""),
                    "esforco": esforco_agente or "nao_declarado",
@@ -1330,6 +1803,13 @@ def pos_resposta(
             entrada["request_id"] = api_request_id
         if turn_id is not None:
             entrada["turn_id"] = turn_id
+        # Braco do ensaio em sombra, so quando o modelo que serviu e um dos dois
+        # do pre-registo selado. Fora do ensaio a chave nao existe, e a analise
+        # conta esses turnos como nao atribuidos em vez de os somar ao braco
+        # errado.
+        _braco = _braco_da_resposta(efectivo_modelo)
+        if _braco:
+            entrada["braco"] = _braco
         if task_id is not None:
             entrada["task_id"] = task_id
         if decisao.get("nivel"):
@@ -1338,11 +1818,27 @@ def pos_resposta(
             entrada["tarefa"] = decisao["tarefa"]
         if decisao.get("origem"):
             entrada["origem"] = decisao["origem"]
+        # Que entrada do catalogo serviu esta chamada. E um facto de cada chamada
+        # (nao do turno) e custa ~10 B: sem ele a linha diz o nivel mas nao o
+        # modelo escolhido, e ler o cartao obrigava a juntar com a linha da troca.
+        if decisao.get("entrada"):
+            entrada["entrada"] = decisao["entrada"]
         if decisao.get("escolhido_provider"):
             entrada["escolhido"] = {
                 "provider": decisao["escolhido_provider"],
                 "modelo": decisao.get("escolhido_modelo", ""),
             }
+        # (3.32.0) De onde veio a tarefa e ha quantos turnos vive. Sem estes dois
+        # o registo diz que houve tarefa mas nao distingue "detectada neste
+        # pedido" de "herdada de um pedido anterior" — e e essa a medida de se a
+        # heranca esta a colar demais.
+        rasto = decisao.get("trace") or {}
+        if rasto.get("tarefa_origem"):
+            entrada["tarefa_origem"] = rasto["tarefa_origem"]
+        if rasto.get("tarefa_idade_turnos"):
+            entrada["tarefa_idade_turnos"] = rasto["tarefa_idade_turnos"]
+        if rasto.get("tarefa_limpa"):
+            entrada["tarefa_limpa"] = True
         if isinstance(usage, dict):
             entrada["tokens"] = {k: usage.get(k) for k in
                                  ("input_tokens", "output_tokens", "prompt_tokens",
@@ -1384,6 +1880,27 @@ def pos_resposta(
                 }
                 if len(_resultado) > 500:
                     _resultado.clear()
+        # O pin por chamada e a prova de que o turno nao oscilou: e nesta linha que
+        # a aritmetica `reutilizados == chamadas - turnos` se mede agora que o
+        # `sem_troca` deixou de existir. Dois campos curtos, sem repetir o rasto.
+        if decisao.get("pin"):
+            entrada["pin"] = decisao["pin"]
+        if decisao.get("rota_pin"):
+            entrada["rota_pin"] = decisao["rota_pin"]
+        # A chave do turno em todas as linhas: e o que permite medir
+        # `reutilizados == chamadas - turnos` sem depender do rasto.
+        if decisao.get("turno"):
+            entrada["turno"] = decisao["turno"]
+        if decisao.get("fonte_turno"):
+            entrada["fonte_turno"] = decisao["fonte_turno"]
+        # Rasto completo (score, sinais, classificador, triagem, superficie,
+        # excecoes): uma vez por turno e de novo quando a decisao muda. E a unica
+        # casa do rasto desde que o `sem_troca` deixou de ser escrito.
+        trace = decisao.get("trace")
+        if isinstance(trace, dict) and trace:
+            if trace_para_resposta(f"{session_id}\x1f{turn_id or ''}", trace):
+                for _campo, _valor in trace.items():
+                    entrada.setdefault(_campo, _valor)
         _registar(entrada, registar=True)
     except Exception:
         return
@@ -1486,12 +2003,67 @@ def ao_erro(
                 "provider": decisao["escolhido_provider"],
                 "modelo": decisao.get("escolhido_modelo", ""),
             }
+        # O pin por chamada e a prova de que o turno nao oscilou. Vive na linha
+        # `resposta` (ver `pos_resposta`); aqui so o rasto, como rede de seguranca.
+        trace = decisao.get("trace")
+        if isinstance(trace, dict) and trace:
+            if trace_para_resposta(f"{session_id}\x1f{turn_id or ''}", trace):
+                for _campo, _valor in trace.items():
+                    entrada.setdefault(_campo, _valor)
         _registar(entrada, registar=True)
     except Exception:
         return
 
 
 # --------------------------------------------------------------------------- registo
+
+
+def ao_resultado(
+    tool_name: str = "",
+    result: Any = None,
+    status: Any = None,
+    session_id: str = "",
+    turn_id: Any = None,
+    tool_call_id: Any = None,
+    **_: Any,
+) -> None:
+    """Efeito de cada chamada de ferramenta, lido do `exit_code` que ja existe.
+
+    O core tem a coluna `effect_disposition` e preenche-a so nos caminhos de
+    erro — medido a 2026-11-05, 55 de 84 120 mensagens de ferramenta no
+    `default`, todas `unknown`/`none`, e zero sucessos. Escrever nessa coluna a
+    partir daqui seria escrever na tabela de um modulo do core, que a regra 10
+    do catalogo recusa; por isso o efeito fica no ledger do plugin, com a mesma
+    chave de juncao (`sessao` + `turno`) que as linhas de resposta ja usam.
+
+    Duas coisas que este hook nao faz de proposito: nao adivinha quando o
+    resultado nao declara efeito (uma leitura de ficheiro nao e sucesso nem
+    falha — gravar `ok` encheria o ledger de medicao falsa) e nao parte um
+    turno. Qualquer excepcao aqui e engolida com rasto em `uso.err`, porque o
+    hook corre no caminho quente de todas as ferramentas.
+    """
+    try:
+        config = _config()
+        if not isinstance(config, dict) or not config.get("registar", True):
+            return
+        medido = _resultado_mod.classificar(result)
+        if medido is None:
+            medido = _resultado_mod.efeito_do_status(status)
+        if medido is None:
+            return
+        _registar({
+            "evento": "efeito",
+            "perfil": gestor.perfil_atual(None),
+            "sessao": session_id or "",
+            "turno": str(turn_id or ""),
+            "chamada": str(tool_call_id or ""),
+            "ferramenta": str(tool_name or ""),
+            "exit_code": medido.get("exit_code"),
+            "efeito": medido.get("efeito"),
+        })
+    except Exception:
+        if _uma_vez(("ao_resultado", "erro", "hook")):
+            _falha("ao_resultado: " + traceback.format_exc(limit=3).replace("\n", " | "))
 
 
 def register(ctx: Any) -> None:
@@ -1502,6 +2074,9 @@ def register(ctx: Any) -> None:
         # uma falha de provider era um `sem_troca` sem explicacao ou uma linha
         # de traceback em uso.err.
         ctx.register_hook("api_request_error", ao_erro)
+        # 3.35.0: o resultado da chamada, para a medicao por resultado existir
+        # sem depender de rotulos humanos.
+        ctx.register_hook("post_tool_call", ao_resultado)
         gestor.garantir()  # cria o config por omissao para o dono o editar
         _config()  # aquece a cache com o que esta no disco
     except Exception:

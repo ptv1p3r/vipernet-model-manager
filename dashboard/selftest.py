@@ -18,6 +18,11 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Mensagens fixadas nestes testes sao o texto de referencia (pt), que e a chave
+# do dicionario. O default do produto e `en`; forca-se a lingua aqui para a
+# medicao continuar a ser da mensagem e nao da lingua por omissao.
+os.environ.setdefault("VMM_IDIOMA", "pt")
+
 RAIZ = Path(__file__).resolve().parents[1]
 if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
@@ -360,7 +365,7 @@ def main() -> int:
     check("painel: mensagem com contagens medidas",
           "Validado com sucesso — " in js and "rota(s)" in js and "0 erros" in js)
     check("painel: validar com erros nao deixa aviso verde",
-          "setValidacaoOk(null);\n              setErro(\"Configuração inválida" in js)
+          "setValidacaoOk(null);\n              setErro(T(\"Configuração inválida: \")" in js)
     # Na pagina exclusiva o verde vive no botao principal: validar confirma onde
     # se grava, nao num botao secundario que some ao mudar de pagina.
     check("painel: botao principal confirma a validacao",
@@ -507,6 +512,74 @@ def main() -> int:
     check("/estrategia herdar apaga o bloco do perfil",
           "estrategia" not in (em_disco["perfis"]["trabalho"] or {}),
           str((em_disco["perfis"]["trabalho"] or {}).get("estrategia")))
+
+    # --- tarefa persistente: dois sitios, uma heranca ------------------------
+    # O bloco vive em `analise`. O painel da configuracao edita o global, o do
+    # perfil edita o delta. Antes da 3.27.0 um POST destes era ignorado em
+    # silencio; a caixa do painel mentia e nada se queixava — por isso o teste
+    # le o disco, nao a resposta.
+    corpo = cli.get("/perfil", params={"nome": "trabalho"}).json() or {}
+    check("/perfil traz o bloco da tarefa persistente",
+          "tarefa_persistente" in (corpo.get("declarado") or {}),
+          str(corpo.get("declarado"))[:200])
+    check("/perfil sem declaracao devolve nulo (herda)",
+          (corpo.get("declarado") or {}).get("tarefa_persistente") is None,
+          str((corpo.get("declarado") or {}).get("tarefa_persistente")))
+    gp = ((corpo.get("global") or {}).get("tarefa_persistente") or {})
+    check("/perfil mostra o global com os padroes",
+          gp.get("activo") is True and gp.get("expira_turnos") == 6 and gp.get("expira_min") == 90,
+          str(gp))
+    check("/perfil efectivo diz que vem do padrao (ainda sem escrita)",
+          ((corpo.get("efectivo") or {}).get("tarefa_persistente") or {}).get("origem") == "padrao",
+          str((corpo.get("efectivo") or {}).get("tarefa_persistente")))
+
+    r = cli.post("/perfil", json={"perfil": "trabalho",
+                                  "tarefa_persistente": {"activo": False, "expira_turnos": 4}})
+    check("/perfil tarefa persistente 200", r.status_code == 200, r.text[:300])
+    em_disco = json.loads((d / "config.json").read_text(encoding="utf-8"))
+    bloco = ((em_disco["perfis"]["trabalho"].get("analise") or {}).get("tarefa_persistente") or {})
+    check("/perfil grava so o declarado (sem copiar o global)",
+          bloco == {"activo": False, "expira_turnos": 4}, str(bloco))
+
+    corpo = cli.get("/perfil", params={"nome": "trabalho"}).json() or {}
+    ef = (corpo.get("efectivo") or {}).get("tarefa_persistente") or {}
+    check("/perfil efectivo junta o delta ao global, chave a chave",
+          ef.get("activo") is False and ef.get("expira_turnos") == 4 and ef.get("expira_min") == 90,
+          str(ef))
+    check("/perfil efectivo passa a proprio", ef.get("origem") == "proprio", str(ef))
+
+    # Declarar exactamente os valores do global nao fica escrito: e o que impede
+    # um perfil de ficar preso ao valor do dia quando o global mudar.
+    r = cli.post("/perfil", json={"perfil": "default",
+                                  "tarefa_persistente": {"activo": True, "expira_turnos": 6,
+                                                         "expira_min": 90}})
+    check("/perfil igual ao global 200", r.status_code == 200, r.text[:300])
+    em_disco = json.loads((d / "config.json").read_text(encoding="utf-8"))
+    check("/perfil igual ao global nao fica gravado",
+          "tarefa_persistente" not in (em_disco["perfis"]["default"].get("analise") or {}),
+          str(em_disco["perfis"]["default"].get("analise")))
+
+    # Fora dos limites e recusado com o nome da chave: o painel mostra-o junto
+    # ao campo em vez de um 400 anonimo.
+    r = cli.post("/perfil", json={"perfil": "default",
+                                  "tarefa_persistente": {"expira_turnos": 0}})
+    check("/perfil fora de limites 400", r.status_code == 400, str(r.status_code))
+    check("/perfil o erro nomeia o bloco e a chave",
+          "tarefa_persistente" in r.text and "expira_turnos" in r.text, r.text[:300])
+
+    r = cli.post("/perfil", json={"perfil": "default", "tarefa_persistente": "activa"})
+    check("/perfil nao-objecto 400", r.status_code == 400, str(r.status_code))
+
+    r = cli.post("/perfil", json={"perfil": "trabalho", "tarefa_persistente": "herdar"})
+    check("/perfil herdar tarefa persistente 200", r.status_code == 200, r.text[:300])
+    em_disco = json.loads((d / "config.json").read_text(encoding="utf-8"))
+    check("/perfil herdar apaga o bloco do perfil",
+          "tarefa_persistente" not in (em_disco["perfis"]["trabalho"].get("analise") or {}),
+          str(em_disco["perfis"]["trabalho"].get("analise")))
+    ef = ((cli.get("/perfil", params={"nome": "trabalho"}).json() or {}).get("efectivo") or {}).get("tarefa_persistente") or {}
+    check("/perfil volta aos valores do global",
+          ef.get("activo") is True and ef.get("expira_turnos") == 6 and ef.get("expira_min") == 90,
+          str(ef))
 
     velho = (cli.get("/estado").json() or {}).get("rev")
     cli.post("/estrategia", json={"ambito": "global", "por": "turno"})
@@ -789,6 +862,9 @@ def main() -> int:
     print(f"\n{OK} verificacoes OK, {len(FALHAS)} falhas")
     for f in FALHAS:
         print("  FALHA:", f)
+    # A contagem no formato que a `bateria.py` le (`N/M`), depois das falhas e
+    # antes do veredito: e o ultimo par da saida, logo o que conta.
+    print(f"{OK}/{OK + len(FALHAS)} verificacoes")
     print("VEREDITO:", "PASS" if not FALHAS else "FAIL")
     return 0 if not FALHAS else 1
 

@@ -66,6 +66,46 @@ from typing import Any
 
 NOME = "vipernet-model-manager"
 
+
+#: Traducao das mensagens: chave = texto portugues, valor = ingles. A lingua vem
+#: da config viva e, em `pt`, `t()` devolve a propria chave — logo o texto
+#: historico mantem-se byte a byte. O modulo resolve-se por tres vias porque
+#: este ficheiro e carregado de duas formas (pacote do Hermes e
+#: `spec_from_file_location`, com a directoria fora do `sys.path`), e tem de ser
+#: **uma so** instancia: duas davam duas linguas no mesmo processo, e um teste
+#: que fixa a lingua numa delas nao teria efeito na outra.
+def _carregar_i18n():
+    ja = sys.modules.get("i18n")
+    if ja is not None and hasattr(ja, "t") and hasattr(ja, "IDIOMAS"):
+        return ja
+    try:  # carregado como pacote do Hermes
+        from . import i18n as mod
+
+        return mod
+    except Exception:
+        pass
+    try:  # CLI, testes e dashboard: a directoria esta no `sys.path`
+        import i18n as mod
+
+        return mod
+    except Exception:
+        pass
+    import importlib.util as _ilu
+
+    spec = _ilu.spec_from_file_location("i18n", Path(__file__).resolve().parent / "i18n.py")
+    mod = _ilu.module_from_spec(spec)  # type: ignore[arg-type]
+    sys.modules["i18n"] = mod  # nome fixo: garante uma unica instancia
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
+
+
+_i18n = _carregar_i18n()
+
+
+def _t(chave: str, /, **valores: Any) -> str:
+    """Mensagem do validador na lingua activa (ver `i18n.t`)."""
+    return _i18n.t(chave, **valores)
+
 #: Nome de sinal aceite em `analise.pesos`: minusculas, digitos e `_`.
 _RE_SINAL = re.compile(r"^[a-z][a-z0-9_]*$")
 NIVEIS = ("leve", "media", "alta")
@@ -104,6 +144,35 @@ _ESFORCO_SINONIMOS = {
 # restantes providers sao rota de API. A inferencia retrocompativel apoia-se nisto.
 _PROVIDERS_SUBSCRICAO = frozenset({"openai-codex"})
 
+# Tarefa persistente por sessao (3.32.0). O detector
+# (`analise.detectar_tarefa`) le **so** a ultima mensagem do utilizador — de
+# proposito, para nao classificar historico nem contexto injectado — e o pin
+# fixa a decisao por turno. Juntas, as duas coisas davam isto: o turno que traz
+# "analise de arquitetura" associava a rota certa, e o turno seguinte
+# ("continua", "agora escreve o parecer") nao tinha nenhum dos termos, a
+# associacao desaparecia e quem decidia era a complexidade. O turno trocava de
+# modelo a meio da conversa.
+#
+# `expira_turnos` e `expira_min` contam a partir da ultima **deteccao**, nunca
+# da ultima heranca: se herdar renovasse o prazo, um "sim" de oito em oito
+# turnos mantinha um modelo pago vivo indefinidamente e ninguem dava por isso.
+TAREFA_PERSISTENTE_PADRAO: dict[str, Any] = {
+    "activo": True,
+    "expira_turnos": 6,
+    "expira_min": 90,
+}
+TAREFA_PERSISTENTE_CHAVES = frozenset(TAREFA_PERSISTENTE_PADRAO)
+
+# Circuit breaker / failure tracking: regra "se modelo falha X vezes em Y minutos,
+# aumentar cooldown em Z%". Configuravel global e por perfil (heranca chave a chave).
+CIRCUIT_BREAKER_PADRAO: dict[str, Any] = {
+    "ativo": True,
+    "limite_falhas": 3,
+    "janela_minutos": 5,
+    "multiplicador_cooldown": 1.5,
+}
+_CHAVES_CIRCUIT_BREAKER = frozenset(CIRCUIT_BREAKER_PADRAO)
+
 ANALISE_PADRAO: dict[str, Any] = {
     "janela_mensagens": 8,
     "varredura_max_mensagens": 60,
@@ -122,6 +191,14 @@ ANALISE_PADRAO: dict[str, Any] = {
     # `cli` 27. Uma regra aqui ganha a tarefa e a analise de complexidade —
     # so o marcador explicito do utilizador (`complexidade: alta`) manda mais.
     "superficies": {},
+    # A tarefa associada vive na **sessao**, com prazo — ver
+    # `TAREFA_PERSISTENTE_PADRAO`. Herda-se do global chave a chave, como a
+    # estrategia: declarar so o prazo nao obriga a repetir o `activo`.
+    "tarefa_persistente": dict(TAREFA_PERSISTENTE_PADRAO),
+    # Circuit breaker: regra de falhas repetidas -> cooldown progressivo.
+    # Herda-se do global chave a chave (ativo, limite_falhas, janela_minutos,
+    # multiplicador_cooldown). Ausente = herda do global.
+    "circuit_breaker": dict(CIRCUIT_BREAKER_PADRAO),
     # `classificador` e preenchido mais abaixo, a partir de
     # `analise_modelo.PADRAO`: os limites do classificador (timeout, tokens,
     # cache) tem UMA casa. Duplica-los aqui foi o que deixou a config viva com
@@ -300,13 +377,25 @@ _LIMITES_INTERNOS = ("contexto_max", "latencia_p95_ms")
 # divergirem. As listas do classificador vivem em `analise_modelo` (`CHAVES`),
 # derivadas do `PADRAO` dele pela mesma razao.
 _CHAVES_CONFIG = frozenset({"versao", "activo", "registar", "analise",
-                            "estrategia", "perfis"})
+                            "estrategia", "retencao", "sombra", "idioma",
+                            "perfis"})
 _CHAVES_PERFIL = frozenset({"activo", "estrategia", "analise", "catalogo",
                             "tarefas", "latencia_max_ms", "rodizio"})
 _CHAVES_ANALISE = frozenset(set(ANALISE_PADRAO) | {"pesos", "aprendiz",
-                                                   "classificador"})
+                                                  "classificador", "circuit_breaker"})
 # `limiares` so tem dois limiares: sao os que `analise.nivel_de_score` le.
 LIMIARES_CHAVES = frozenset({"media", "alta"})
+
+# Retencao: quantos dias de detalhe ficam no ledger e quantos backups do config
+# se guardam. Fica no config para o painel e o CLI lerem o mesmo numero — um
+# limite escrito em dois sitios divergem sempre.
+RETENCAO_PADRAO: dict[str, int] = {
+    "dias_completo": 7,
+    "backups_manter": 10,
+    "backups_semanais": 1,
+}
+_CHAVES_RETENCAO = frozenset(RETENCAO_PADRAO)
+
 _CHAVES_TAREFA = frozenset({"termos", "prioridade"})
 _CHAVES_ENTRADA = frozenset({
     "id", "provider", "modelo", "complexidade", "niveis", "acesso",
@@ -334,13 +423,13 @@ def _recusar_desconhecidas(mapa: Any, permitidas: frozenset[str],
         perto = difflib.get_close_matches(str(chave), sorted(permitidas),
                                           n=1, cutoff=0.75)
         if perto:
-            dica = f"; queria dizer '{perto[0]}'?"
+            dica = _t("; queria dizer '{p0}'?", p0=perto[0])
         else:
             lista = ", ".join(sorted(permitidas))
             if len(lista) > 140:
                 lista = lista[:137] + "..."
-            dica = f" (aceita: {lista})"
-        erros.append(f"{prefixo}.{chave} desconhecida{dica}")
+            dica = _t(" (aceita: {p0})", p0=lista)
+        erros.append(_t("{p0}.{p1} desconhecida{p2}", p0=prefixo, p1=chave, p2=dica))
 
 
 # Superficies que o core ja entrega ao middleware `llm_request` via
@@ -377,16 +466,16 @@ def normalizar_superficies(
     catalogo e por perfil.
     """
     if not isinstance(valor, dict):
-        erros.append(f"{contexto} tem de ser um objecto (superficie -> regra)")
+        erros.append(_t("{p0} tem de ser um objecto (superficie -> regra)", p0=contexto))
         return {}
     saida: dict[str, dict[str, Any]] = {}
     for bruto, regra in valor.items():
         nome = str(bruto or "").strip().lower()
         if not nome:
-            erros.append(f"{contexto}: superficie com nome vazio")
+            erros.append(_t("{p0}: superficie com nome vazio", p0=contexto))
             continue
         if not isinstance(regra, dict):
-            erros.append(f"{contexto}.{nome} tem de ser um objecto")
+            erros.append(_t("{p0}.{p1} tem de ser um objecto", p0=contexto, p1=nome))
             continue
         if regra.get("activo") is False:
             saida[nome] = {"activo": False}
@@ -398,9 +487,7 @@ def normalizar_superficies(
             parecida = difflib.get_close_matches(
                 nome, SUPERFICIES_CONHECIDAS, n=1, cutoff=0.75)
             if parecida:
-                erros.append(f"{contexto}.{nome}: superficie parecida com "
-                             f"'{parecida[0]}' — corrija o nome ou use uma "
-                             f"superficie real")
+                erros.append(_t("{p0}.{p1}: superficie parecida com '{p2}' — corrija o nome ou use uma superficie real", p0=contexto, p1=nome, p2=parecida[0]))
                 continue
         limpa: dict[str, Any] = {}
         if regra.get("entrada") not in (None, ""):
@@ -408,31 +495,29 @@ def normalizar_superficies(
         if regra.get("nivel") not in (None, ""):
             nivel = str(regra["nivel"]).strip().lower()
             if nivel not in ("leve", "media", "alta"):
-                erros.append(f"{contexto}.{nome}.nivel invalido: {nivel}")
+                erros.append(_t("{p0}.{p1}.nivel invalido: {p2}", p0=contexto, p1=nome, p2=nivel))
             else:
                 limpa["nivel"] = nivel
         provider = str(regra.get("provider") or "").strip()
         modelo = str(regra.get("modelo") or "").strip()
         if provider or modelo:
             if not (provider and modelo):
-                erros.append(f"{contexto}.{nome}: provider e modelo vao juntos")
+                erros.append(_t("{p0}.{p1}: provider e modelo vao juntos", p0=contexto, p1=nome))
             else:
                 limpa["provider"] = provider
                 limpa["modelo"] = modelo
         if not limpa:
-            erros.append(f"{contexto}.{nome}: sem entrada, nivel nem provider/modelo")
+            erros.append(_t("{p0}.{p1}: sem entrada, nivel nem provider/modelo", p0=contexto, p1=nome))
             continue
         if catalogo is not None:
             if limpa.get("entrada") and not any(
                     str(e.get("id")) == limpa["entrada"] for e in catalogo):
-                erros.append(f"{contexto}.{nome}: entrada desconhecida "
-                             f"'{limpa['entrada']}' no catalogo do perfil")
+                erros.append(_t("{p0}.{p1}: entrada desconhecida '{p2}' no catalogo do perfil", p0=contexto, p1=nome, p2=limpa['entrada']))
                 continue
             if limpa.get("provider") and not any(
                     str(e.get("provider", "")).lower() == limpa["provider"].lower()
                     and str(e.get("modelo", "")) == limpa["modelo"] for e in catalogo):
-                erros.append(f"{contexto}.{nome}: {limpa['provider']}/"
-                             f"{limpa['modelo']} nao esta no catalogo do perfil")
+                erros.append(_t("{p0}.{p1}: {p2}/{p3} nao esta no catalogo do perfil", p0=contexto, p1=nome, p2=limpa['provider'], p3=limpa['modelo']))
                 continue
         saida[nome] = limpa
     return saida
@@ -506,27 +591,23 @@ def normalizar_superficies_modelo(
         # Acucar: lista de superficies permitidas vale por todas a `true`.
         valor = {str(v): True for v in valor if str(v).strip()}
     if not isinstance(valor, dict):
-        erros.append(f"{contexto}.superficies tem de ser um objecto "
-                     f"(superficie -> true/false)")
+        erros.append(_t("{p0}.superficies tem de ser um objecto (superficie -> true/false)", p0=contexto))
         return {}
     saida: dict[str, bool] = {}
     for bruto, permitido in valor.items():
         nome = str(bruto or "").strip().lower()
         if not nome:
-            erros.append(f"{contexto}.superficies: superficie com nome vazio")
+            erros.append(_t("{p0}.superficies: superficie com nome vazio", p0=contexto))
             continue
         if not isinstance(permitido, bool):
-            erros.append(f"{contexto}.superficies.{nome} tem de ser true ou false "
-                         f"(recebido {permitido!r})")
+            erros.append(_t("{p0}.superficies.{p1} tem de ser true ou false (recebido {p2})", p0=contexto, p1=nome, p2=repr(permitido)))
             continue
         if nome != CORINGA_SUPERFICIE and nome not in SUPERFICIES_CONHECIDAS \
                 and nome.isalpha():
             parecida = difflib.get_close_matches(
                 nome, SUPERFICIES_CONHECIDAS, n=1, cutoff=0.75)
             if parecida:
-                erros.append(f"{contexto}.superficies.{nome}: superficie parecida "
-                             f"com '{parecida[0]}' — corrija o nome ou use uma "
-                             f"superficie real")
+                erros.append(_t("{p0}.superficies.{p1}: superficie parecida com '{p2}' — corrija o nome ou use uma superficie real", p0=contexto, p1=nome, p2=parecida[0]))
                 continue
         saida[nome] = permitido
     return saida
@@ -576,10 +657,10 @@ def normalizar_limites(entrada: dict[str, Any], indice: int, erros: list[str]) -
             try:
                 valor = int(float(texto))
             except (TypeError, ValueError):
-                erros.append(f"catalogo[{indice}].{chave} deve ser inteiro positivo (recebido {bruto!r})")
+                erros.append(_t("catalogo[{p0}].{p1} deve ser inteiro positivo (recebido {p2})", p0=indice, p1=chave, p2=repr(bruto)))
                 continue
         if valor <= 0:
-            erros.append(f"catalogo[{indice}].{chave} deve ser positivo (recebido {valor})")
+            erros.append(_t("catalogo[{p0}].{p1} deve ser positivo (recebido {p2})", p0=indice, p1=chave, p2=valor))
             continue
         saida[chave] = valor
     if "modalidades" in entrada and entrada.get("modalidades") is not None:
@@ -587,19 +668,18 @@ def normalizar_limites(entrada: dict[str, Any], indice: int, erros: list[str]) -
         if isinstance(bruto_mods, str):
             bruto_mods = [bruto_mods]
         if not isinstance(bruto_mods, list):
-            erros.append(f"catalogo[{indice}].modalidades deve ser lista ({', '.join(MODALIDADES)})")
+            erros.append(_t("catalogo[{p0}].modalidades deve ser lista ({p1})", p0=indice, p1=', '.join(MODALIDADES)))
         else:
             mods = list(dict.fromkeys(str(m).strip().lower() for m in bruto_mods if str(m).strip()))
             invalidas = [m for m in mods if m not in MODALIDADES]
             if invalidas:
-                erros.append(f"catalogo[{indice}].modalidades invalidas: "
-                             f"{', '.join(invalidas)} (use {', '.join(MODALIDADES)})")
+                erros.append(_t("catalogo[{p0}].modalidades invalidas: {p1} (use {p2})", p0=indice, p1=', '.join(invalidas), p2=', '.join(MODALIDADES)))
             elif mods:
                 saida["modalidades"] = mods
     if "json_nativo" in entrada and entrada.get("json_nativo") is not None:
         valor = entrada.get("json_nativo")
         if not isinstance(valor, bool):
-            erros.append(f"catalogo[{indice}].json_nativo deve ser booleano (recebido {valor!r})")
+            erros.append(_t("catalogo[{p0}].json_nativo deve ser booleano (recebido {p1})", p0=indice, p1=repr(valor)))
         else:
             saida["json_nativo"] = valor
     return saida
@@ -652,7 +732,7 @@ def rota_serve(entrada: dict[str, Any], needs: dict[str, Any] | None) -> str:
 
 def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str, Any] | None:
     if not isinstance(entrada, dict):
-        erros.append(f"catalogo[{indice}] nao e um objecto")
+        erros.append(_t("catalogo[{p0}] nao e um objecto", p0=indice))
         return None
     _recusar_desconhecidas(entrada, _CHAVES_ENTRADA, f"catalogo[{indice}]", erros)
     provider = str(entrada.get("provider") or "").strip()
@@ -667,13 +747,13 @@ def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str
     niveis = list(dict.fromkeys(n for n in niveis if n))
     invalidos = [n for n in niveis if n not in NIVEIS]
     if not provider or not modelo:
-        erros.append(f"catalogo[{indice}] sem provider/modelo")
+        erros.append(_t("catalogo[{p0}] sem provider/modelo", p0=indice))
         return None
     if not niveis:
-        erros.append(f"catalogo[{indice}] ({provider}:{modelo}) sem complexidade")
+        erros.append(_t("catalogo[{p0}] ({p1}:{p2}) sem complexidade", p0=indice, p1=provider, p2=modelo))
         return None
     if invalidos:
-        erros.append(f"catalogo[{indice}] complexidade invalida: {', '.join(invalidos)}")
+        erros.append(_t("catalogo[{p0}] complexidade invalida: {p1}", p0=indice, p1=', '.join(invalidos)))
         return None
     saida = {
         "id": str(entrada.get("id") or f"{provider}:{modelo}").strip(),
@@ -689,16 +769,13 @@ def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str
     else:
         acesso = str(acesso_bruto).strip().lower()
         if acesso not in ACESSOS:
-            erros.append(f"catalogo[{indice}] ({provider}:{modelo}) acesso invalido: "
-                         f"'{acesso_bruto}' (use api|subscricao)")
+            erros.append(_t("catalogo[{p0}] ({p1}:{p2}) acesso invalido: '{p3}' (use api|subscricao)", p0=indice, p1=provider, p2=modelo, p3=acesso_bruto))
             return None
     if acesso == "subscricao" and provider.lower() not in _PROVIDERS_SUBSCRICAO:
-        erros.append(f"catalogo[{indice}] ({provider}:{modelo}) acesso 'subscricao' "
-                     f"exige provider openai-codex")
+        erros.append(_t("catalogo[{p0}] ({p1}:{p2}) acesso 'subscricao' exige provider openai-codex", p0=indice, p1=provider, p2=modelo))
         return None
     if acesso == "api" and provider.lower() in _PROVIDERS_SUBSCRICAO:
-        erros.append(f"catalogo[{indice}] ({provider}:{modelo}) provider openai-codex "
-                     f"e uma subscricao; use acesso 'subscricao'")
+        erros.append(_t("catalogo[{p0}] ({p1}:{p2}) provider openai-codex e uma subscricao; use acesso 'subscricao'", p0=indice, p1=provider, p2=modelo))
         return None
     saida["acesso"] = acesso
     # esforco de raciocinio: opcional e por rota. Ausente nao e "medio" — e
@@ -706,13 +783,13 @@ def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str
     # de outra.
     esforco, erro_esforco = normalizar_esforco(entrada.get("esforco"))
     if erro_esforco:
-        erros.append(f"catalogo[{indice}] ({provider}:{modelo}) {erro_esforco}")
+        erros.append(_t("catalogo[{p0}] ({p1}:{p2}) {p3}", p0=indice, p1=provider, p2=modelo, p3=erro_esforco))
         return None
     if esforco:
         saida["esforco"] = esforco
     tarefas = entrada.get("tarefas", [])
     if not isinstance(tarefas, list) or any(not isinstance(t, str) or not t.strip() for t in tarefas):
-        erros.append(f"catalogo[{indice}].tarefas deve ser lista de identificadores")
+        erros.append(_t("catalogo[{p0}].tarefas deve ser lista de identificadores", p0=indice))
     else:
         saida["tarefas"] = list(dict.fromkeys(t.strip() for t in tarefas))
     if entrada.get("desligado"):
@@ -722,10 +799,10 @@ def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str
         try:
             valor_custo = float(str(bruto_custo).strip())
         except (TypeError, ValueError):
-            erros.append(f"catalogo[{indice}].custo deve ser numero (recebido {bruto_custo!r})")
+            erros.append(_t("catalogo[{p0}].custo deve ser numero (recebido {p1})", p0=indice, p1=repr(bruto_custo)))
             return None
         if valor_custo < 0:
-            erros.append(f"catalogo[{indice}].custo deve ser >= 0 (recebido {valor_custo})")
+            erros.append(_t("catalogo[{p0}].custo deve ser >= 0 (recebido {p1})", p0=indice, p1=valor_custo))
             return None
         saida["custo"] = valor_custo
     if entrada.get("ordem") not in (None, ""):
@@ -733,10 +810,10 @@ def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str
         try:
             valor_ordem = int(str(bruto_ordem).strip())
         except (TypeError, ValueError):
-            erros.append(f"catalogo[{indice}].ordem deve ser inteiro (recebido {bruto_ordem!r})")
+            erros.append(_t("catalogo[{p0}].ordem deve ser inteiro (recebido {p1})", p0=indice, p1=repr(bruto_ordem)))
             return None
         if valor_ordem < 0:
-            erros.append(f"catalogo[{indice}].ordem deve ser >= 0 (recebido {valor_ordem})")
+            erros.append(_t("catalogo[{p0}].ordem deve ser >= 0 (recebido {p1})", p0=indice, p1=valor_ordem))
             return None
         saida["ordem"] = valor_ordem
     saida.update(normalizar_limites(entrada, indice, erros))
@@ -752,6 +829,128 @@ def _normalizar_entrada(entrada: Any, indice: int, erros: list[str]) -> dict[str
         if entrada.get(chave):
             saida[chave] = str(entrada[chave])
     return saida
+
+
+def normalizar_retencao(valor: Any, prefixo: str = "retencao",
+                        erros: list[str] | None = None
+                        ) -> tuple[dict[str, int], list[str]]:
+    """Normaliza o bloco de retencao: tres inteiros, listas fechadas.
+
+    So devolve o que foi declarado — ausente significa "vale o padrao", como na
+    estrategia. Um `0` explicito no `dias_completo` e legitimo (nao compacta
+    nada); o que nao e legitimo e um valor que nao seja inteiro nao negativo, ou
+    um `backups_manter` a zero, que apagaria todos os backups de rotina.
+    """
+    if erros is None:
+        erros = []
+    if valor is None or valor == "":
+        return {}, erros
+    if not isinstance(valor, dict):
+        erros.append(_t("{p0} tem de ser um objecto com {p1}", p0=prefixo, p1=sorted(_CHAVES_RETENCAO)))
+        return {}, erros
+    _recusar_desconhecidas(valor, _CHAVES_RETENCAO, prefixo, erros)
+    saida: dict[str, int] = {}
+    minimos = {"dias_completo": 0, "backups_manter": 1, "backups_semanais": 0}
+    for chave in sorted(_CHAVES_RETENCAO):
+        if chave not in valor:
+            continue
+        bruto = valor[chave]
+        if isinstance(bruto, bool) or not isinstance(bruto, (int, str)):
+            erros.append(_t("{p0}.{p1} tem de ser um inteiro (veio {p2})", p0=prefixo, p1=chave, p2=repr(bruto)))
+            continue
+        try:
+            numero = int(bruto)
+        except (TypeError, ValueError):
+            erros.append(_t("{p0}.{p1} tem de ser um inteiro (veio {p2})", p0=prefixo, p1=chave, p2=repr(bruto)))
+            continue
+        if numero < minimos[chave]:
+            erros.append(_t("{p0}.{p1} tem de ser >= {p2} (veio {p3})", p0=prefixo, p1=chave, p2=minimos[chave], p3=numero))
+            continue
+        saida[chave] = numero
+    return saida, erros
+
+
+def normalizar_tarefa_persistente(valor: Any,
+                                 prefixo: str = "analise.tarefa_persistente",
+                                 erros: list[str] | None = None
+                                 ) -> dict[str, Any]:
+    """Normaliza o bloco da tarefa persistente; devolve **so** o declarado.
+
+    Devolver so o declarado e o que mantem a heranca: em `perfil_config` uma
+    chave ausente cai no global, e preencher aqui as que faltam transformava
+    todo o perfil numa copia fixa do dia em que foi gravado.
+
+    Chave desconhecida e erro. Os numeros tem limites porque `0` e o valor que
+    parece inocente e desliga a heranca com o `activo` ainda a `true`: o dono
+    julgaria que a tarefa persistia enquanto o modelo continuava a mudar a meio
+    da conversa — o defeito que este bloco existe para corrigir.
+    """
+    if erros is None:
+        erros = []
+    if valor is None or valor == "":
+        return {}
+    if not isinstance(valor, dict):
+        erros.append(_t("{p0} tem de ser um objecto", p0=prefixo))
+        return {}
+    _recusar_desconhecidas(valor, TAREFA_PERSISTENTE_CHAVES, prefixo, erros)
+    limite = {"expira_turnos": 50, "expira_min": 1440}
+    saida: dict[str, Any] = {}
+    for chave, valor_chave in valor.items():
+        if chave not in TAREFA_PERSISTENTE_CHAVES:
+            continue
+        if chave == "activo":
+            if isinstance(valor_chave, bool):
+                saida[chave] = valor_chave
+            else:
+                erros.append(_t("{p0}.activo tem de ser booleano", p0=prefixo))
+            continue
+        if isinstance(valor_chave, bool) or not isinstance(valor_chave, int):
+            erros.append(_t("{p0}.{p1} tem de ser inteiro", p0=prefixo, p1=chave))
+            continue
+        if not 1 <= valor_chave <= limite[chave]:
+            erros.append(_t("{p0}.{p1} fora de [1, {p2}]", p0=prefixo, p1=chave, p2=limite[chave]))
+            continue
+        saida[chave] = valor_chave
+    return saida
+
+
+# Idioma do painel: lista fechada de duas linguas. O ingles e o padrao — uma
+# instalacao nova abre em ingles. O valor vive no config (e nao no browser) para
+# o painel, o CLI e qualquer sessao lerem o mesmo; e um codigo fora da lista e
+# erro, nao um silencioso "volta ao padrao", que deixaria o utilizador a julgar
+# que mudou a lingua quando nada mudou.
+IDIOMAS = ("en", "pt")
+IDIOMA_PADRAO = "en"
+
+
+def normalizar_idioma(valor: Any) -> tuple[str | None, list[str]]:
+    """Valida o codigo de lingua. Devolve `(codigo, erros)`; `None` = ausente.
+
+    Aceita as formas regionais (`pt-PT`, `en-US`, `pt_BR`) e reduz a lingua
+    base: o painel nao tem variantes, e recusar `pt-PT` obrigava o utilizador a
+    adivinhar que tinha de escrever `pt`.
+    """
+    erros: list[str] = []
+    if valor is None or valor == "":
+        return None, erros
+    if not isinstance(valor, str):
+        erros.append(_t("idioma tem de ser texto (aceita: {p0})", p0=', '.join(IDIOMAS)))
+        return None, erros
+    base = valor.strip().lower().replace("_", "-").split("-")[0]
+    if base not in IDIOMAS:
+        erros.append(_t("idioma invalido: {p0} (aceita: {p1})", p0=repr(valor), p1=', '.join(IDIOMAS)))
+        return None, erros
+    return base, erros
+
+
+def idioma_efectivo(cfg: dict[str, Any] | None) -> str:
+    """Lingua em vigor: a declarada, ou o padrao. Nunca levanta."""
+    if not isinstance(cfg, dict):
+        return IDIOMA_PADRAO
+    codigo, erros = normalizar_idioma(cfg.get("idioma"))
+    if erros or not codigo:
+        return IDIOMA_PADRAO
+    return codigo
 
 
 def normalizar_estrategia(valor: Any, prefixo: str = "estrategia",
@@ -779,27 +978,23 @@ def normalizar_estrategia(valor: Any, prefixo: str = "estrategia",
         modo = valor
     elif isinstance(valor, dict):
         for chave in sorted(set(valor) - {"modo", "por"}):
-            erros.append(f"{prefixo}.{chave} desconhecida "
-                         f"(aceita: modo, por)")
+            erros.append(_t("{p0}.{p1} desconhecida (aceita: modo, por)", p0=prefixo, p1=chave))
         modo = valor.get("modo")
         por = valor.get("por")
     else:
-        erros.append(f"{prefixo} tem de ser objecto com 'modo' e 'por' "
-                     f"(ou a string antiga com o modo)")
+        erros.append(_t("{p0} tem de ser objecto com 'modo' e 'por' (ou a string antiga com o modo)", p0=prefixo))
         return {}, erros
     saida: dict[str, str] = {}
     if modo is not None and modo != "":
         m = str(modo).strip().lower()
         if m not in ESTRATEGIAS:
-            erros.append(f"{prefixo}.modo invalido: {str(modo)!r} "
-                         f"(aceita: {', '.join(ESTRATEGIAS)})")
+            erros.append(_t("{p0}.modo invalido: {p1} (aceita: {p2})", p0=prefixo, p1=repr(str(modo)), p2=', '.join(ESTRATEGIAS)))
         else:
             saida["modo"] = m
     if por is not None and por != "":
         p = str(por).strip().lower()
         if p not in POR:
-            erros.append(f"{prefixo}.por invalido: {str(por)!r} "
-                         f"(aceita: {', '.join(POR)})")
+            erros.append(_t("{p0}.por invalido: {p1} (aceita: {p2})", p0=prefixo, p1=repr(str(por)), p2=', '.join(POR)))
         else:
             saida["por"] = p
     return saida, erros
@@ -817,6 +1012,90 @@ def opcoes_estrategia() -> dict[str, list[dict[str, str]]]:
     }
 
 
+SOMBRA_PADRAO: dict[str, Any] = {"activo": False, "vida_ttl_h": 24}
+_CHAVES_SOMBRA = frozenset(SOMBRA_PADRAO)
+
+
+def normalizar_sombra(valor: Any,
+                      campo: str = "sombra") -> tuple[dict[str, Any], list[str]]:
+    """Bloco do ensaio em sombra: interruptor e validade da sonda de vida.
+
+    Mesma regra da estrategia e da retencao — so se grava o que foi declarado.
+    `activo` ausente **nao** e `false` por acidente: e "nao decidido", e o ensaio
+    so corre com `activo` verdadeiro. `vida_ttl_h` tem tecto de uma semana: uma
+    sonda esquecida nao pode autorizar para sempre modelos que ja morreram — foi
+    assim que um slug gratuito retirado pela OpenRouter ia entrar em trafego.
+    """
+    erros: list[str] = []
+    if valor is None:
+        return {}, erros
+    if not isinstance(valor, dict):
+        return {}, [_t("{p0} nao e um objecto", p0=campo)]
+    _recusar_desconhecidas(valor, _CHAVES_SOMBRA, campo, erros)
+    saida: dict[str, Any] = {}
+    if "activo" in valor:
+        saida["activo"] = bool(valor["activo"])
+    if "vida_ttl_h" in valor:
+        try:
+            ttl = float(valor["vida_ttl_h"])
+        except (TypeError, ValueError):
+            erros.append(_t("{p0}.vida_ttl_h nao e um numero", p0=campo))
+        else:
+            if not 1 <= ttl <= 168:
+                erros.append(_t("{p0}.vida_ttl_h fora de 1..168 horas", p0=campo))
+            else:
+                saida["vida_ttl_h"] = int(ttl) if ttl.is_integer() else ttl
+    return saida, erros
+
+
+def normalizar_circuit_breaker(valor: Any,
+                                prefixo: str = "circuit_breaker",
+                                erros: list[str] | None = None
+                                ) -> tuple[dict[str, Any], list[str]]:
+    """Normaliza o bloco do circuit breaker: valida chaves e limites.
+
+    Mesma regra da estrategia/retencao/sombra — so se grava o que foi declarado.
+    A ausencia da chave no ficheiro = herda do global/padrao; a presenca da
+    chave = declaracao explicita. Um valor igual ao global nao e declaracao
+    (a regra do delta na validacao do perfil trata disso).
+    """
+    if erros is None:
+        erros = []
+    if valor is None or valor == "":
+        return {}, erros
+    if not isinstance(valor, dict):
+        return {}, [_t("{p0} tem de ser um objecto com {p1}", p0=prefixo, p1=sorted(_CHAVES_CIRCUIT_BREAKER))]
+    _recusar_desconhecidas(valor, _CHAVES_CIRCUIT_BREAKER, prefixo, erros)
+    saida: dict[str, Any] = {}
+    if "ativo" in valor:
+        if isinstance(valor["ativo"], bool):
+            saida["ativo"] = bool(valor["ativo"])
+        else:
+            erros.append(_t("{p0}.ativo tem de ser booleano", p0=prefixo))
+    if "limite_falhas" in valor:
+        if isinstance(valor["limite_falhas"], bool) or not isinstance(valor["limite_falhas"], int):
+            erros.append(_t("{p0}.limite_falhas tem de ser inteiro", p0=prefixo))
+        elif not 1 <= valor["limite_falhas"] <= 50:
+            erros.append(_t("{p0}.limite_falhas fora de 1..50 (veio {p1})", p0=prefixo, p1=valor['limite_falhas']))
+        else:
+            saida["limite_falhas"] = int(valor["limite_falhas"])
+    if "janela_minutos" in valor:
+        if isinstance(valor["janela_minutos"], bool) or not isinstance(valor["janela_minutos"], int):
+            erros.append(_t("{p0}.janela_minutos tem de ser inteiro", p0=prefixo))
+        elif not 1 <= valor["janela_minutos"] <= 1440:
+            erros.append(_t("{p0}.janela_minutos fora de 1..1440 (veio {p1})", p0=prefixo, p1=valor['janela_minutos']))
+        else:
+            saida["janela_minutos"] = int(valor["janela_minutos"])
+    if "multiplicador_cooldown" in valor:
+        if isinstance(valor["multiplicador_cooldown"], bool) or not isinstance(valor["multiplicador_cooldown"], (int, float)):
+            erros.append(_t("{p0}.multiplicador_cooldown tem de ser numero", p0=prefixo))
+        elif not 1.0 <= float(valor["multiplicador_cooldown"]) <= 10.0:
+            erros.append(_t("{p0}.multiplicador_cooldown fora de 1.0..10.0 (veio {p1})", p0=prefixo, p1=valor['multiplicador_cooldown']))
+        else:
+            saida["multiplicador_cooldown"] = float(valor["multiplicador_cooldown"])
+    return saida, erros
+
+
 def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
     """Normaliza e valida; devolve `(config, erros)`. Nunca levanta."""
     erros: list[str] = []
@@ -827,15 +1106,14 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         except (json.JSONDecodeError, ValueError):
             pass  # continuará à validação normal que rejeitará non-dict
     if not isinstance(cfg, dict):
-        return copy.deepcopy(SEED), ["config nao e um objecto"]
+        return copy.deepcopy(SEED), [_t("config nao e um objecto")]
     _recusar_desconhecidas(cfg, _CHAVES_CONFIG, "config", erros)
     # `versao` tambem nao se reescreve em silencio: um ficheiro de uma versao
     # futura aberto e gravado aqui perdia as chaves que esta versao desconhece,
     # e o utilizador ficava com uma copia mutilada sem um unico erro.
     _versao = cfg.get("versao")
     if _versao not in (None, "", 3, "3"):
-        erros.append(f"config.versao {_versao!r} nao suportada "
-                     f"(este plugin le a versao 3)")
+        erros.append(_t("config.versao {p0} nao suportada (este plugin le a versao 3)", p0=repr(_versao)))
     saida: dict[str, Any] = {
         "versao": 3,
         "activo": bool(cfg.get("activo", True)),
@@ -865,19 +1143,19 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
                 # aprendidos por `eval/aprender.py`, logo a validacao tem de
                 # travar lixo aqui, antes de entrar em producao.
                 if not isinstance(valor, dict):
-                    erros.append("'analise.pesos' tem de ser um objecto")
+                    erros.append(_t("'analise.pesos' tem de ser um objecto"))
                 else:
                     limpos: dict[str, int] = {}
                     for sinal, peso in valor.items():
                         nome_sinal = str(sinal).strip()
                         if not _RE_SINAL.match(nome_sinal):
-                            erros.append(f"'analise.pesos': sinal invalido '{nome_sinal}'")
+                            erros.append(_t("'analise.pesos': sinal invalido '{p0}'", p0=nome_sinal))
                             continue
                         if isinstance(peso, bool) or not isinstance(peso, int):
-                            erros.append(f"'analise.pesos.{nome_sinal}' tem de ser inteiro")
+                            erros.append(_t("'analise.pesos.{p0}' tem de ser inteiro", p0=nome_sinal))
                             continue
                         if not -20 <= peso <= 20:
-                            erros.append(f"'analise.pesos.{nome_sinal}' fora de [-20, 20]")
+                            erros.append(_t("'analise.pesos.{p0}' fora de [-20, 20]", p0=nome_sinal))
                             continue
                         limpos[nome_sinal] = peso
                     saida["analise"]["pesos"] = limpos
@@ -885,15 +1163,26 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
                 if isinstance(valor, bool):
                     saida["analise"][chave] = valor
                 else:
-                    erros.append("'analise.fixar_nivel_por_turno' tem de ser booleano")
+                    erros.append(_t("'analise.fixar_nivel_por_turno' tem de ser booleano"))
             elif chave == "aprendiz":
                 if not isinstance(valor, dict):
-                    erros.append("'analise.aprendiz' tem de ser um objecto")
+                    erros.append(_t("'analise.aprendiz' tem de ser um objecto"))
                 else:
                     saida["analise"]["aprendiz"] = valor
             elif chave == "superficies":
                 saida["analise"]["superficies"] = normalizar_superficies(
                     valor, "'analise.superficies'", erros)
+            elif chave == "tarefa_persistente":
+                # Funde sobre o padrao: um global que declare so o prazo mantem
+                # o `activo` do padrao, que e o que o dono espera.
+                saida["analise"]["tarefa_persistente"].update(
+                    normalizar_tarefa_persistente(
+                        valor, "'analise.tarefa_persistente'", erros))
+            elif chave == "circuit_breaker":
+                # Circuit breaker: valida e normaliza (so o que foi declarado).
+                limpo, erros_cb = normalizar_circuit_breaker(valor, "'analise.circuit_breaker'")
+                saida["analise"]["circuit_breaker"].update(limpo)
+                erros.extend(erros_cb)
             else:
                 saida["analise"][chave] = valor
 
@@ -910,17 +1199,41 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
     if est_global:
         saida["estrategia"] = dict(est_global)
 
+    # Retencao: bloco opcional, mesma regra da estrategia — so se grava o que
+    # foi declarado, e a ausencia vale o padrao.
+    retencao, erros_ret = normalizar_retencao(cfg.get("retencao"), "retencao")
+    erros.extend(erros_ret)
+    if retencao:
+        saida["retencao"] = dict(retencao)
+
+    # Ensaio em sombra: bloco opcional, mesma regra da estrategia e da retencao.
+    # Sem esta fiacao o interruptor era escrito e deitado fora na leitura, e o
+    # ensaio aparecia "ligado" no ficheiro e desligado no turno.
+    sombra, erros_sombra = normalizar_sombra(cfg.get("sombra"))
+    erros.extend(erros_sombra)
+    if sombra:
+        saida["sombra"] = dict(sombra)
+
+    # Idioma do painel: chave opcional, mesma regra — so se grava o que foi
+    # declarado, e a ausencia vale o ingles. Sem esta fiacao o seletor do painel
+    # escrevia a chave e a leitura deitava-a fora, e o painel voltava a ingles
+    # no render seguinte como se nada tivesse sido escolhido.
+    idioma, erros_idioma = normalizar_idioma(cfg.get("idioma"))
+    erros.extend(erros_idioma)
+    if idioma:
+        saida["idioma"] = idioma
+
     perfis = cfg.get("perfis")
     if not isinstance(perfis, dict):
-        erros.append("'perfis' ausente ou nao e um objecto")
+        erros.append(_t("'perfis' ausente ou nao e um objecto"))
         return saida, erros
     for nome, pcfg in perfis.items():
         nome = str(nome).strip()
         if not nome:
-            erros.append("perfil com nome vazio")
+            erros.append(_t("perfil com nome vazio"))
             continue
         if not isinstance(pcfg, dict):
-            erros.append(f"perfis.{nome} nao e um objecto")
+            erros.append(_t("perfis.{p0} nao e um objecto", p0=nome))
             continue
         _recusar_desconhecidas(pcfg, _CHAVES_PERFIL, f"perfis.{nome}", erros)
         # Estrategia do perfil: bloco opcional. Ausente = herda o global; com
@@ -955,8 +1268,7 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         # um valor declarado e invalido tem de aparecer no editor, senao o
         # utilizador grava um teto que nao existe e nunca sabe por que.
         if pcfg.get("latencia_max_ms") not in (None, "") and teto_latencia(pcfg) <= 0:
-            erros.append(f"perfis.{nome}.latencia_max_ms deve ser inteiro positivo "
-                         f"(recebido {pcfg.get('latencia_max_ms')!r})")
+            erros.append(_t("perfis.{p0}.latencia_max_ms deve ser inteiro positivo (recebido {p1})", p0=nome, p1=repr(pcfg.get('latencia_max_ms'))))
         # O perfil grava SO o que declara: a heranca faz-se na leitura
         # (`perfil_config`). Gravar uma copia do global fixava o perfil ao valor
         # do dia em que foi gravado — um global que mudasse depois deixava de
@@ -993,6 +1305,26 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
                     # Guardado bruto: a validacao estreita precisa do
                     # catalogo, que so existe depois deste laco.
                     panalise["superficies"] = valor
+                elif chave == "tarefa_persistente":
+                    # Chave a chave, e so o que difere do global: repetir o
+                    # valor global era fixar o perfil ao dia (a mesma armadilha
+                    # dos `limiares`).
+                    limpo_tp = normalizar_tarefa_persistente(
+                        valor, f"perfis.{nome}.analise.tarefa_persistente", erros)
+                    globais_tp = saida["analise"].get("tarefa_persistente") or {}
+                    declarados_tp = {k: v for k, v in limpo_tp.items()
+                                     if globais_tp.get(k) != v}
+                    if declarados_tp:
+                        panalise["tarefa_persistente"] = declarados_tp
+                elif chave == "circuit_breaker":
+                    # Circuit breaker do perfil: so o delta (chaves que diferem do global).
+                    limpo_cb = normalizar_circuit_breaker(
+                        valor, f"perfis.{nome}.analise.circuit_breaker", erros)[0]
+                    globais_cb = saida["analise"].get("circuit_breaker") or {}
+                    declarados_cb = {k: v for k, v in limpo_cb.items()
+                                     if globais_cb.get(k) != v}
+                    if declarados_cb:
+                        panalise["circuit_breaker"] = declarados_cb
                 else:
                     # Mesma regra para as chaves simples: um valor igual ao
                     # global nao e uma declaracao, e uma copia que fixa o perfil
@@ -1005,25 +1337,25 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         catalogo: list[dict[str, Any]] = []
         vistos: set[str] = set()
         if not isinstance(pcfg.get("catalogo"), list):
-            erros.append(f"perfis.{nome}.catalogo ausente ou nao e lista")
+            erros.append(_t("perfis.{p0}.catalogo ausente ou nao e lista", p0=nome))
         else:
             for i, entrada in enumerate(pcfg["catalogo"]):
                 limpa = _normalizar_entrada(entrada, i, erros)
                 if limpa is None:
                     continue
                 if limpa["id"] in vistos:
-                    erros.append(f"perfis.{nome}: id duplicado '{limpa['id']}'")
+                    erros.append(_t("perfis.{p0}: id duplicado '{p1}'", p0=nome, p1=limpa['id']))
                     continue
                 vistos.add(limpa["id"])
                 catalogo.append(limpa)
         tarefas = {}
         regras = pcfg.get("tarefas", {})
         if not isinstance(regras, dict):
-            erros.append(f"perfis.{nome}.tarefas deve ser objecto")
+            erros.append(_t("perfis.{p0}.tarefas deve ser objecto", p0=nome))
             regras = {}
         for tid, regra in regras.items():
             if not isinstance(tid, str) or not tid.strip() or not isinstance(regra, dict):
-                erros.append(f"perfis.{nome}.tarefas: regra invalida")
+                erros.append(_t("perfis.{p0}.tarefas: regra invalida", p0=nome))
                 continue
             _recusar_desconhecidas(regra, _CHAVES_TAREFA,
                                    f"perfis.{nome}.tarefas.{tid}", erros)
@@ -1032,14 +1364,14 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
             if (not isinstance(termos, list) or not termos or
                     any(not isinstance(t, str) or not t.strip() for t in termos) or
                     type(prioridade) is not int):
-                erros.append(f"perfis.{nome}.tarefas.{tid}: termos/prioridade invalidos")
+                erros.append(_t("perfis.{p0}.tarefas.{p1}: termos/prioridade invalidos", p0=nome, p1=tid))
                 continue
             tarefas[tid] = {"termos": list(dict.fromkeys(t.strip() for t in termos)),
                             "prioridade": prioridade}
         for entrada in catalogo:
             for tid in entrada.get("tarefas", []):
                 if tid not in tarefas:
-                    erros.append(f"perfis.{nome}: tarefa desconhecida '{tid}' em {entrada['id']}")
+                    erros.append(_t("perfis.{p0}: tarefa desconhecida '{p1}' em {p2}", p0=nome, p1=tid, p2=entrada['id']))
         # Superficies: valida-se o que o perfil vai REALMENTE usar — o que ele
         # declara mais o que herda do global — contra o catalogo do perfil. Uma
         # regra global nao pode ser validada no global (o catalogo e por
@@ -1055,8 +1387,7 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
                     efectivas.update({str(k).strip().lower(): v
                                       for k, v in bruto_sup.items()})
                 else:
-                    erros.append(f"perfis.{nome}.analise.superficies tem de ser "
-                                 f"um objecto (superficie -> regra)")
+                    erros.append(_t("perfis.{p0}.analise.superficies tem de ser um objecto (superficie -> regra)", p0=nome))
             limpas_sup = normalizar_superficies(
                 efectivas, f"perfis.{nome}.analise.superficies", erros,
                 catalogo=catalogo)
@@ -1100,9 +1431,9 @@ def carregar(caminho: Path | None = None) -> tuple[dict[str, Any], list[str]]:
             try:
                 bruto = json.loads(texto)
             except (json.JSONDecodeError, ValueError):
-                return copy.deepcopy(SEED), ["config nao e um objecto"]
+                return copy.deepcopy(SEED), [_t("config nao e um objecto")]
         else:
-            return copy.deepcopy(SEED), ["config nao e um objecto"]
+            return copy.deepcopy(SEED), [_t("config nao e um objecto")]
     return validar(bruto)
 
 
@@ -1174,6 +1505,55 @@ def _podar_registo(registo: Path) -> None:
         pass
 
 
+def _reconciliar(saida: dict[str, Any], registo: Path) -> None:
+    """Separa quebra **explicada** de quebra **por explicar**.
+
+    Uma escrita fora do caminho unico deixa o registo com um salto entre o
+    `depois_sha` de uma linha e o `antes_sha` da seguinte. Ha duas causas
+    possiveis e o registo sozinho nao as distingue: corrupcao (alguem mexeu no
+    ficheiro ou no log) ou uma escrita manual conhecida e reversivel.
+
+    O ficheiro ``escritas-quem.reconciliacao.json`` ao lado do registo declara
+    as quebras conhecidas. Cada declaracao tem de trazer a **testemunha** — os
+    tres shas medidos naquela linha. Sem isso, uma entrada generica desculparia
+    tambem as quebras futuras, e o alarme morria por excesso de confianca.
+
+    O que fica: `quebras` continua a listar **todas** (a evidencia nao se apaga),
+    `quebras_reconciliadas` as que teem declaracao com testemunha igual, e
+    `quebras_nao_explicadas` as restantes — so estas fazem a auditoria falhar.
+    """
+    saida["quebras_nao_explicadas"] = list(saida["quebras"])
+    ficheiro = registo.parent / "escritas-quem.reconciliacao.json"
+    try:
+        dados = json.loads(ficheiro.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return
+    declaradas = dados.get("quebras") if isinstance(dados, dict) else None
+    if not isinstance(declaradas, list):
+        return
+    for item in declaradas:
+        if not isinstance(item, dict):
+            continue
+        bruto = item.get("linha")
+        if bruto is None or isinstance(bruto, bool):
+            continue
+        try:
+            numero = int(bruto)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        testemunha = saida["_testemunhas"].get(numero)
+        if not testemunha:
+            continue
+        if (str(item.get("antes_sha") or "") != testemunha["antes_sha"]
+                or str(item.get("depois_sha") or "") != testemunha["depois_sha"]
+                or str(item.get("ultimo_depois_sha") or "") != testemunha["ultimo_depois_sha"]):
+            # Declaracao que nao casa com o medido nao desculpa nada.
+            continue
+        if numero in saida["quebras_nao_explicadas"]:
+            saida["quebras_nao_explicadas"].remove(numero)
+            saida["quebras_reconciliadas"].append(numero)
+
+
 def verificar_cadeia(caminho: Path | None = None) -> dict[str, Any]:
     """Diz se a config no disco foi escrita pelo caminho unico.
 
@@ -1199,6 +1579,9 @@ def verificar_cadeia(caminho: Path | None = None) -> dict[str, Any]:
         "linhas": 0,
         "ilegiveis": 0,
         "quebras": [],
+        "quebras_reconciliadas": [],
+        "quebras_nao_explicadas": [],
+        "_testemunhas": {},
         "ultimo_depois_sha": "",
         "vivo_sha": "",
         "cadeia_continua": True,
@@ -1232,10 +1615,19 @@ def verificar_cadeia(caminho: Path | None = None) -> dict[str, Any]:
         # A primeira escrita legitima de todas tem `antes_sha` vazio.
         if anterior and antes and antes != anterior:
             saida["quebras"].append(numero)
+            # Guarda a testemunha da quebra: e o que impede uma reconciliacao
+            # generica de desculpar uma quebra que ainda nao aconteceu.
+            saida["_testemunhas"][numero] = {
+                "antes_sha": antes,
+                "depois_sha": depois,
+                "ultimo_depois_sha": anterior,
+            }
         anterior = depois
     saida["ultimo_depois_sha"] = anterior
-    saida["cadeia_continua"] = not saida["quebras"]
+    _reconciliar(saida, registo)
+    saida["cadeia_continua"] = not saida["quebras_nao_explicadas"]
     saida["fora_da_cadeia"] = bool(anterior) and saida["vivo_sha"] != anterior
+    saida.pop("_testemunhas", None)
     return saida
 
 
@@ -1286,6 +1678,56 @@ def _trava(caminho: Path):
                 pass
 
 
+def _podar_backups(caminho: Path, manter: int = 10,
+                   semanas: int = 8) -> list[Path]:
+    """Poda os backups de config: `manter` recentes mais um por semana.
+
+    Politica decidida a 2026-11-04 e ate agora nunca implementada: cada gravacao
+    copiava o ficheiro e nada apagava, e a directoria chegou a 21 copias. O que
+    se mantem e o que serve para repor: as ultimas `manter` gravacoes (o
+    historico curto que se usa a seguir a um erro) e a copia mais recente de
+    cada uma das ultimas `semanas` semanas ISO (a rede para "voltar a semana
+    passada").
+
+    O tecto de semanas e deliberado: "uma por semana" sem limite cresce 52
+    ficheiros por ano e volta ao mesmo problema por outra porta. Com 10 + 8 o
+    maximo e 18.
+
+    Duas guardas: so se apagam ficheiros com o carimbo exato que `_escrever`
+    produz (`<nome>.bak-AAAAMMDDTHHMMSS`), para nao tocar em copias nomeadas a
+    mao, e o ficheiro recem-criado nunca sai porque esta entre os mais recentes.
+    """
+    padrao = re.compile(rf"^{re.escape(caminho.name)}\.bak-\d{{8}}T\d{{6}}$")
+    copias = [p for p in caminho.parent.glob(caminho.name + ".bak-*")
+              if p.is_file() and padrao.match(p.name)]
+    copias.sort(key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+    if len(copias) <= manter:
+        return []
+    manter_set = {p.name for p in copias[:manter]}
+    semanas_vistas: list[str] = [
+        time.strftime("%G-%V", time.localtime(p.stat().st_mtime))
+        for p in copias[:manter]
+    ]
+    for copia in copias[manter:]:
+        chave = time.strftime("%G-%V", time.localtime(copia.stat().st_mtime))
+        if chave in semanas_vistas:
+            continue
+        if len(semanas_vistas) >= manter + semanas:
+            continue
+        semanas_vistas.append(chave)
+        manter_set.add(copia.name)
+    apagadas: list[Path] = []
+    for copia in copias:
+        if copia.name in manter_set:
+            continue
+        try:
+            copia.unlink()
+            apagadas.append(copia)
+        except OSError:
+            continue
+    return apagadas
+
+
 def _escrever(cfg: dict[str, Any], caminho: Path) -> Path:
     """Valida, faz backup, escreve em `.tmp` e troca com `os.replace`."""
     limpo, erros = validar(cfg)
@@ -1296,6 +1738,11 @@ def _escrever(cfg: dict[str, Any], caminho: Path) -> Path:
     if caminho.exists():
         carimbo = time.strftime("%Y%m%dT%H%M%S")
         shutil.copy2(caminho, caminho.with_suffix(f".json.bak-{carimbo}"))
+        # Poda logo a seguir a copiar: a politica "10 mais um semanal" so vale
+        # se for aplicada na gravacao. Deixar a limpeza para um job externo
+        # significa que o dia em que o job nao correr volta o lixo todo.
+        with contextlib.suppress(Exception):
+            _podar_backups(caminho)
         try:
             antes = caminho.read_bytes()
         except OSError:
@@ -1443,8 +1890,11 @@ def normalizar_esforco(valor: Any) -> tuple[str, str]:
         return "", ""
     nome = _ESFORCO_SINONIMOS.get(bruto.lower(), "")
     if not nome:
-        return "", (f"esforco invalido: '{bruto}' (use {', '.join(ESFORCOS)}; "
-                    f"low/medium/high tambem sao aceites)")
+        return "", _t(
+            "esforco invalido: '{p0}' (use {p1}; low/medium/high tambem sao aceites)",
+            p0=bruto,
+            p1=", ".join(ESFORCOS),
+        )
     return nome, ""
 
 
@@ -1614,6 +2064,17 @@ def perfil_config(cfg: dict[str, Any], perfil: str) -> dict[str, Any] | None:
                     base = dict(analise.get("superficies") or {})
                     base.update(copy.deepcopy(valor))
                     analise["superficies"] = base
+                elif chave == "tarefa_persistente" and isinstance(valor, dict):
+                    # Chave a chave, como a estrategia: um perfil que declare
+                    # so o prazo herda o `activo` do global.
+                    base = dict(analise.get("tarefa_persistente") or {})
+                    base.update(valor)
+                    analise["tarefa_persistente"] = base
+                elif chave == "circuit_breaker" and isinstance(valor, dict):
+                    # Circuit breaker: heranca chave a chave (mesma regra da tarefa_persistente).
+                    base = dict(analise.get("circuit_breaker") or {})
+                    base.update(valor)
+                    analise["circuit_breaker"] = base
                 else:
                     analise[chave] = copy.deepcopy(valor)
         saida["analise"] = analise
@@ -1659,6 +2120,40 @@ def estrategia_efectiva(cfg: dict[str, Any], perfil: str) -> dict[str, str]:
     return {"modo": str(est.get("modo") or "rodizio"),
             "por": str(est.get("por") or "sessao"),
             "origem": str(pcfg.get("estrategia_origem") or "padrao")}
+
+
+def tarefa_persistente_efectiva(cfg: dict[str, Any], perfil: str) -> dict[str, Any]:
+    """O bloco da tarefa persistente em vigor neste perfil, com a origem.
+
+    Tres camadas pela mesma regra da estrategia: o perfil sobrepoe-se ao global
+    **chave a chave**, e o que ninguem declarar fica no valor por omissao. A
+    origem e o que o painel mostra ao lado do bloco — sem ela, um perfil que
+    herda parece ter escolhido, e o dono muda o global sem saber o que mudou.
+    """
+    pcfg = perfil_config(cfg, perfil) or {}
+    bloco = (pcfg.get("analise") or {}).get("tarefa_persistente")
+    saida: dict[str, Any] = dict(TAREFA_PERSISTENTE_PADRAO)
+    if isinstance(bloco, dict):
+        saida.update({k: bloco[k] for k in TAREFA_PERSISTENTE_CHAVES if k in bloco})
+    nome_cfg = str(pcfg.get("origem_config") or perfil)
+    cru = (((cfg.get("perfis") or {}).get(nome_cfg) or {}).get("analise") or {})
+    proprio = cru.get("tarefa_persistente") if isinstance(cru, dict) else None
+    global_tp = (cfg.get("analise") or {}).get("tarefa_persistente")
+    # O `validar` materializa o bloco global com os valores por omissao, logo
+    # "existe no ficheiro" nao quer dizer "foi declarado". Se o resultado e
+    # igual ao padrao, a origem honesta e `padrao` — dizer `global` faria o
+    # painel anunciar uma escolha que ninguem fez.
+    global_efectivo = dict(TAREFA_PERSISTENTE_PADRAO)
+    if isinstance(global_tp, dict):
+        global_efectivo.update({k: global_tp[k] for k in TAREFA_PERSISTENTE_CHAVES if k in global_tp})
+    if isinstance(proprio, dict) and proprio:
+        origem = "proprio"
+    elif global_efectivo != dict(TAREFA_PERSISTENTE_PADRAO):
+        origem = "global"
+    else:
+        origem = "padrao"
+    saida["origem"] = origem
+    return saida
 
 
 def classificador_efectivo(cfg: dict[str, Any], perfil: str) -> dict[str, Any]:
