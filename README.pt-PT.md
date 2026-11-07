@@ -1382,39 +1382,38 @@ seguinte, e tem de ser feito num conjunto de desenvolvimento e validado num
 
 ## Prontidão para o catálogo público
 
-A matriz completa, regra a regra (18 regras, com a evidência de cada uma e os
-dois bloqueios que faltam), está em **`docs/CATALOGO.md`**. Resumo aqui do que
+A matriz completa, regra a regra (18 regras, com a evidência de cada uma e a
+única lacuna que resta), está em **`docs/CATALOGO.md`**. Resumo aqui do que
 muda o desenho, não do que é processo:
 
 Regras verificadas à data desta versão, com a evidência onde ela existe:
 
-- **Só superfícies públicas**, e uma exceção declarada. O plugin usa middleware,
-  `ctx.register_*`, `agent.switch_model`, `agent.reasoning_config` e o SDK do
-  dashboard. Depende de **uma** superfície não pública —
-  `resolve_runtime_provider`, para trocar o modelo do agente vivo — isolada em
-  `seams.py`, com a regra 9 do catálogo citada e a indicação do sítio único a
-  mudar quando existir seam público. As outras duas que existiam saíram:
-  `get_active_profile_name` foi substituída por `HERMES_PROFILE`, e
-  `reload_gateway_plugins` desapareceu com o comando `vmm recarregar`
-  (recarregar plugins é operação do anfitrião). Não há patch a código do Hermes
-  nem a markup do Desktop em runtime. `hermes_constants` e `agent.secret_scope`
-  não contam para esta exceção: ambos estão na lista de módulos públicos do
-  próprio validador.
+- **Só superfícies públicas — sem exceção declarada.** O plugin estende o Hermes
+  por middleware, `ctx.register_*`, `agent.switch_model`, `agent.reasoning_config`,
+  `agent.secret_scope`, `agent.credential_pool.load_pool` (resolução de credencial e
+  endpoint quando troca o modelo do agente vivo) e o SDK do dashboard web. Nada é
+  substituído, envolvido ou religado no lugar, e nenhum módulo interno não
+  documentado é importado: `hermes plugins validate` responde
+  `no core override — no runtime rebinds of Hermes core`, sem qualquer aviso de
+  import ou de chamada privada.
 
-  **Porque a exceção não se resolveu sozinha, medido.** Tentou-se substituir o
-  seam pela via pública (`providers.get_provider_profile` +
-  `agent.secret_scope.get_secret`) e mediu-se caso a caso contra o resolver
-  privado, no perfil default: `deepseek` e `openrouter` reproduzem-se (perfil
-  dá `base_url` e `api_mode`; a chave vem do `env_vars` declarado), mas
-  `deepseek` resolve por `source: manual`, ou seja a chave está na config e não
-  no ambiente; `inception` chega como provider `custom` com `base_url` vazio
-  (a config dos providers custom manda); e `openai-codex` é OAuth, onde a
-  própria regra 11 proíbe que o token chegue ao plugin. Reimplementar essas
-  quatro escadas por fora é duplicar a resolução de credenciais do Hermes —
-  exactamente o que a regra desaconselha — e falharia na subscrição. Fica uma
-  costura declarada, degradável (`seam_disponivel()`), e o caminho correcto
-  para a fechar é o que a documentação do catálogo prescreve: pedir o hook. O
-  texto do pedido está em `docs/issue-seam-switch-model.md`.
+  A única exceção que esta secção declarava fechou na 3.47.0.
+  `hermes_cli.runtime_provider.resolve_runtime_provider` — a única superfície não
+  pública, usada para entregar ao `agent.switch_model` uma chave, um endpoint e um
+  `api_mode` já resolvidos — deu lugar a `agent.credential_pool.load_pool`, que é a
+  resolução do próprio Hermes. Isso importa para a regra: a alternativa medida antes
+  era reimplementar as escadas por fora (`providers.get_provider_profile` +
+  `agent.secret_scope.get_secret`), e reproduzia `deepseek` e `openrouter` mas não
+  `inception` (provider `custom`, `base_url` vazio no perfil público) nem
+  `openai-codex` (OAuth, onde a regra 11 proíbe que o token chegue ao plugin) —
+  exatamente a duplicação que a regra desaconselha. O `load_pool` é o caminho de
+  resolução do core, logo chaves de sessão, chaves em config e subscrições são
+  resolvidas pelo Hermes e nunca ficam na posse do plugin. Outras duas utilizações
+  não públicas saíram ainda antes: `get_active_profile_name` deu lugar a
+  `HERMES_PROFILE`, e `reload_gateway_plugins` desapareceu com o comando `vmm
+  recarregar` (recarregar plugins é operação do anfitrião). `hermes_constants` e
+  `agent.secret_scope` estão na lista de módulos públicos do próprio validador e não
+  contam como exceção.
 - **Validação local no commit que se publica**:
   `hermes plugins validate /opt/data/plugins/vipernet-model-manager` → rc 0.
 - **`requires_hermes`** declarado em `plugin.yaml` (`>=0.22.0`), nunca mais
@@ -1452,10 +1451,12 @@ Regras verificadas à data desta versão, com a evidência onde ela existe:
   código que publicam; o painel mostra `versao` lida do manifest, não uma
   constante escrita à mão.
 
-Uma ressalva honesta antes de submeter: o catálogo pede repositório em GitHub
-ou GitLab, e este vive num Gitea interno. Publicar lá exige um espelho público
-e uma decisão do dono sobre o que vai com ele (o `config.json` de produção não
-vai; o `config.example.json` vai).
+O catálogo exige um repositório público que qualquer pessoa clone por https. Este
+é público: https://github.com/ptv1p3r/vipernet-model-manager — espelhado do `main`
+do Gitea interno a cada push, clonável anonimamente, e a entrada pina um commit de
+40 hex presente lá. O que o espelho carrega foi decidido pelo dono: o código, o
+`config.example.json`, a documentação e o código de avaliação com a rubrica; o
+`config.json` de produção e a amostra construída de conversa real não vão.
 
 ## Auto-teste
 

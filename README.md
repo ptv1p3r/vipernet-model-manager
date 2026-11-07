@@ -1384,37 +1384,36 @@ and must be done on a development set and validated on a
 ## Public catalogue readiness
 
 The complete matrix, rule by rule (18 rules, with the evidence for each and
-the two blockers still missing), is in **`docs/CATALOGO.md`**. Summary here of what
+the single gap still open), is in **`docs/CATALOGO.md`**. Summary here of what
 changes the design, not what is process:
 
 Rules verified as of this version, with the evidence where it exists:
 
-- **Only public surfaces**, and one declared exception. The plugin uses middleware,
-  `ctx.register_*`, `agent.switch_model`, `agent.reasoning_config` and the dashboard SDK.
-  It depends on **one** non-public surface —
-  `resolve_runtime_provider`, to swap the live agent model — isolated in
-  `seams.py`, with catalogue rule 9 cited and the indication of the single
-  place to change when a public seam exists. The other two that existed were
-  removed: `get_active_profile_name` was replaced by `HERMES_PROFILE`, and
-  `reload_gateway_plugins` disappeared with the `vmm recarregar` command
-  (reloading plugins is a host operation). No patch to Hermes code nor to
-  Desktop markup at runtime. `hermes_constants` and `agent.secret_scope` do
-  not count for this exception: both are on the validator's own public modules
-  list.
+- **Only public surfaces — no declared exception any more.** The plugin extends
+  Hermes through middleware, `ctx.register_*`, `agent.switch_model`,
+  `agent.reasoning_config`, `agent.secret_scope`, `agent.credential_pool.load_pool`
+  (credential and endpoint resolution when it swaps the live agent model) and the
+  web-dashboard SDK. Nothing is patched, wrapped or rebound in place, and no
+  undocumented core module is imported: `hermes plugins validate` reports
+  `no core override — no runtime rebinds of Hermes core` and no warning on imports
+  or private calls.
 
-  **Why the exception did not resolve itself, measured.** Tried replacing the
-  seam via the public path (`providers.get_provider_profile` +
-  `agent.secret_scope.get_secret`) and measured case by case against the
-  private resolver, on the default profile: `deepseek` and `openrouter` reproduce
-  (profile gives `base_url` and `api_mode`; the key comes from the declared `env_vars`), but
-  `deepseek` resolves via `source: manual`, i.e. the key is in config and not
-  in env; `inception` arrives as provider `custom` with empty `base_url` (custom provider config mandates it); and
-
-  `openai-codex` is OAuth, where rule 11 itself forbids the token reaching the plugin. Reimplementing those four ladders from outside duplicates Hermes credential resolution —
-  exactly what the rule discourages — and would fail on subscription. It remains a declared seam,
-  degradable (`seam_disponivel()`), and the correct path to close it is what the catalogue documentation
-  prescribes: request the hook. The request text is in
-  `docs/issue-seam-switch-model.md`.
+  The one exception this section used to declare was closed in 3.47.0.
+  `hermes_cli.runtime_provider.resolve_runtime_provider` — the only non-public
+  surface, used to hand `agent.switch_model` a resolved key, endpoint and
+  `api_mode` — gave way to `agent.credential_pool.load_pool`, which is Hermes's own
+  resolution. That matters for the rule: the alternative measured earlier was to
+  re-implement the ladders from outside (`providers.get_provider_profile` +
+  `agent.secret_scope.get_secret`), and it reproduced `deepseek` and `openrouter`
+  but not `inception` (custom provider, empty `base_url` from the public profile) nor
+  `openai-codex` (OAuth, where rule 11 forbids the token reaching a plugin) — exactly
+  the duplication the rule discourages. `load_pool` is the core's own resolution
+  path, so session keys, config keys and subscription sign-ins are resolved by
+  Hermes and never held by the plugin. Two other non-public uses were dropped even earlier:
+  `get_active_profile_name` gave way to `HERMES_PROFILE`, and
+  `reload_gateway_plugins` disappeared with the `vmm recarregar` command (reloading
+  plugins is a host operation). `hermes_constants` and `agent.secret_scope` are on
+  the validator's own public module list and do not count as exceptions.
 
 - **Local validation on the commit that gets published**:
   `hermes plugins validate /opt/data/plugins/vipernet-model-manager` → rc 0.
@@ -1453,10 +1452,12 @@ Rules verified as of this version, with the evidence where it exists:
   they publish; the panel shows `versao` read from the manifest, not a
   hard-coded constant.
 
-An honest caveat before submitting: the catalogue asks for a GitHub or GitLab
-repository, and this one lives in an internal Gitea. Publishing there requires a public mirror and
-an owner decision on what goes with it (the production `config.json` does not go;
-`config.example.json` does).
+The catalogue requires a public repository that anyone can clone over https. This
+one is public: https://github.com/ptv1p3r/vipernet-model-manager — mirrored from the
+internal Gitea `main` on every push, anonymously clonable, and the entry pins a full
+40-hex commit present there. What the mirror carries was decided by the owner: the
+code, `config.example.json`, the docs and the evaluation code with its rubric; the
+production `config.json` and the sample built from real conversations do not go.
 
 ## Self-test
 
