@@ -484,6 +484,12 @@
     "padrao": "default",
     "sistema-um": "System One",
     "raciocinio": "reasoning",
+    // Tempo decorrido: uma chave por frase, com {n}/{u} substituidos no
+    // chamador. Fragmentos soltos escreviam "5 ago min" e uma traducao vazia
+    // ("ha " -> "") violaria a regra de nenhuma traducao vazia.
+    " há {n} {u}": " {n} {u} ago",
+    "há {n} min": "{n} min ago",
+    "instantes": "moments ago",
     // Rotulos de superficie: so o texto entre parenteses muda.
     "cron (execução agendada)": "cron (scheduled run)",
     "api_server (API/chat)": "api_server (API/chat)",
@@ -522,19 +528,25 @@
   }
 
   // Tempo decorrido: em PT o "ha" vai antes do numero, em EN o "ago" vai
-  // depois. Traduzir os fragmentos um a um escrevia "5 ago min".
+  // depois. Uma chave por frase, com {n}/{u} substituidos aqui: fragmentos
+  // soltos escreviam "5 ago min" e traducoes vazias para calar o prefixo.
+  function tCom(texto, valores) {
+    const base = T(texto);
+    return Object.keys(valores).reduce(function (acc, k) {
+      return acc.split("{" + k + "}").join(String(valores[k]));
+    }, base);
+  }
+
   function tQuanto(n, unidade) {
-    return IDIOMA === "pt"
-      ? " há " + n + " " + unidade
-      : " " + n + " " + unidade + " ago";
+    return tCom(" há {n} {u}", { n: n, u: unidade });
   }
 
   function tHa(min) {
-    return IDIOMA === "pt" ? "há " + min + " min" : min + " min ago";
+    return tCom("há {n} min", { n: min });
   }
 
   function tInstantes() {
-    return IDIOMA === "pt" ? "instantes" : "moments ago";
+    return T("instantes");
   }
 
   // Locale das datas. Em ingles usa-se `en-GB` de proposito: mantem dia/mes e
@@ -1014,7 +1026,7 @@
     if (lidas > 0) {
       const taxaTxt = (taxa.leituras || 0) + "/" + lidas + T(" leituras ok")
         + (taxa.falhas ? " (" + fmtNum((taxa.falhas / lidas) * 100, 0) + T("% falhas)") : "");
-      evidencia = evidencia ? evidencia + T(" · classificador: ") + taxaTxt : "classificador: " + taxaTxt;
+      evidencia = evidencia ? evidencia + T(" · classificador: ") + taxaTxt : T("classificador: ") + taxaTxt;
     }
     const rasto = a.rasto || {};
     // O aviso so vale para a ultima chamada: um erro antigo nao pode ficar a
@@ -1061,7 +1073,7 @@
             : idade < 5400 ? tQuanto(fmtNum(idade / 60, 0), T("min"))
             : tQuanto(fmtNum(idade / 3600, 0), T("h")));
         extra.push(T("histórico: ") + hist.lido + quando
-          + " com " + (hist.provider || "?") + "/" + (hist.modelo || "?"));
+          + T(" com ") + (hist.provider || "?") + "/" + (hist.modelo || "?"));
       }
       // Um motivo antigo tambem e historia. A config mudou depois dele, ou
       // passou tempo sem um turno que o confirmasse: apresentá-lo como «sem
@@ -1448,7 +1460,7 @@
                     rotulo: sup,
                     ajuda: v === undefined ? "herda do perfil" : (v ? "pode servir" : "não serve"),
                   }, h(Seletor, {
-                    rotulo: "superfície " + sup,
+                    rotulo: T("superfície ") + sup,
                     opcoes: opcoesTri,
                     valor: v === undefined ? "herdar" : (v ? "sim" : "nao"),
                     onChange: function (val) { mudarSup(sup, val); },
@@ -2012,7 +2024,7 @@
                 h("strong", null, "Tarefa persistente"),
                 h("span", { className: "vmm-mudo" },
                   T("  em vigor: ") + (tpEfectiva.activo === false ? "desligada" : "activa")
-                    + " · " + String(tpEfectiva.expira_turnos == null ? "?" : tpEfectiva.expira_turnos) + " turnos"
+                    + " · " + String(tpEfectiva.expira_turnos == null ? "?" : tpEfectiva.expira_turnos) + T(" turnos")
                     + " · " + String(tpEfectiva.expira_min == null ? "?" : tpEfectiva.expira_min) + T(" min")
                     + " · " + String(tpEfectiva.origem || "?"))
               ),
@@ -2690,7 +2702,7 @@
           rotulo: "prazo em turnos",
           valor: tpGlobal.expira_turnos == null ? "" : String(tpGlobal.expira_turnos),
           opcoes: [{ valor: "", rotulo: "turnos: por omissão" }].concat(
-            TURNOS_PRAZO.map(function (n) { return { valor: String(n), rotulo: T("dura ") + n + " turnos" }; })),
+            TURNOS_PRAZO.map(function (n) { return { valor: String(n), rotulo: T("dura ") + n + T(" turnos") }; })),
           onChange: function (v) { aplicarTarefa("expira_turnos", v === "" ? "" : parseInt(v, 10)); },
         }),
         h(Seletor, {
@@ -2918,7 +2930,7 @@
 
     return h("div", { className: "vmm-classif" },
       props.versao
-        ? h("div", { className: "vmm-mudo vmm-versao-linha" }, "painel " + props.versao)
+        ? h("div", { className: "vmm-mudo vmm-versao-linha" }, T("painel ") + props.versao)
         : null,
       blocoComplexidade,
       blocoTarefa,
@@ -3820,7 +3832,7 @@
             return;
           }
           setPerfilOk(T("Validado — perfil ") + perfilAberto
-            + " · " + Object.keys(r.corpo.tarefas || {}).length + " tarefa(s)"
+            + " · " + Object.keys(r.corpo.tarefas || {}).length + T(" tarefa(s)")
             + T(" · classificador ") + (r.corpo.classificador === "herdar" ? "herdado" : "próprio")
             + T(" · estratégia ") + (r.corpo.estrategia === "herdar" ? "herdada" : "própria")
             + T(" · 0 erros"));
@@ -3855,7 +3867,7 @@
           setPerfilAberto(null);
           setPerfilForm({});
           setPerfilRev("");
-          setValidacaoOk("Perfil " + r.corpo.perfil + T(" gravado — o gestor já o lê"));
+          setValidacaoOk(T("Perfil ") + r.corpo.perfil + T(" gravado — o gestor já o lê"));
           carregar();
         })
         .catch(function (e) {

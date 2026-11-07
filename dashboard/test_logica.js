@@ -1889,8 +1889,8 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
         && I.normalizarIdioma(null) === "en");
 
   const chaves = Object.keys(I.PT_EN);
-  check("i18n: o dicionario tem as 452 chaves medidas",
-        chaves.length === 452, "tem " + chaves.length);
+  check("i18n: o dicionario tem as 455 chaves medidas",
+        chaves.length === 455, "tem " + chaves.length);
   check("i18n: nenhuma traducao vazia",
         chaves.every(function (k) { return String(I.PT_EN[k]).trim() !== ""; }));
   // Nomes proprios e termos tecnicos ficam iguais nas duas linguas — o que nao
@@ -1972,6 +1972,19 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   const regraEn = T.rotuloRegra({ nivel: "alta" }, []);
   check("i18n: o rotulo da regra nao deixa o nivel em portugues",
         regraEn.indexOf("alta") === -1, regraEn);
+
+  // Tempo decorrido: a ordem das palavras muda entre linguas. Uma chave com
+  // {n}/{u} resolve as duas sem ramos por idioma e sem traducao vazia.
+  check("i18n: tempo decorrido em ingles poe o 'ago' no fim",
+        I.tHa(5) === "5 min ago" && I.tQuanto(5, "min") === " 5 min ago",
+        I.tHa(5) + " | " + I.tQuanto(5, "min"));
+  check("i18n: instantes em ingles", I.tInstantes() === "moments ago", I.tInstantes());
+  I.setIdioma("pt");
+  check("i18n: tempo decorrido em portugues mantem a ordem",
+        I.tHa(5) === "há 5 min" && I.tQuanto(5, "min") === " há 5 min"
+        && I.tInstantes() === "instantes",
+        I.tHa(5) + " | " + I.tQuanto(5, "min"));
+  I.setIdioma("en");
 
   // O seletor: duas opcoes, valor corrente, rotulo traduzido.
   const sel = I.SeletorIdioma({ idioma: "pt", onMudar: function () {} });
