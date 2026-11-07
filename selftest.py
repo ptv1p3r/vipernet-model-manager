@@ -934,29 +934,54 @@ def testes_verificar() -> None:
         def reset_secret_scope(self, token):
             chamadas["scope_reset"].append(token)
 
-    class _FakeRuntimeProvider:
-        def resolve_runtime_provider(self, requested, target_model):
-            chamadas["resolve"].append((requested, target_model))
-            return {"provider": requested, "api_key": "k" * 40,
-                    "base_url": "https://t/v1", "api_mode": "chat", "source": "fake"}
+    class _FakeEntrada:
+        """Entrada da pool com a forma que o seams.py le (nunca valores reais)."""
+
+        def __init__(self, provider):
+            self.provider = provider
+            self.runtime_api_key = "k" * 40
+            self.runtime_base_url = "https://t/v1"
+            self.base_url = "https://t/v1"
+            self.source = "fake"
+
+    class _FakePool:
+        def __init__(self, provider):
+            self._provider = provider
+
+        def entries(self):
+            return [_FakeEntrada(self._provider)]
+
+    class _FakeCredentialPool:
+        """Substitui `agent.credential_pool`, a via PUBLICA de credenciais.
+
+        Antes falsificava-se `hermes_cli.runtime_provider`, import privado e
+        portanto motivo de recusa pela regra 9 do catalogo. A superficie
+        publica e' `load_pool(provider)`, logo e' esta que se falsifica.
+        """
+
+        def load_pool(self, provider):
+            chamadas["resolve"].append(provider)
+            return _FakePool(provider)
 
     raiz = Path(tempfile.mkdtemp(prefix="vmm-verif-"))
     chamadas.update({"raiz": raiz, "home_set": [], "home_reset": [],
                      "scope_build": [], "scope_set": [], "scope_reset": [],
                      "resolve": []})
-    fc, fs, fr = _FakeConstants(), _FakeScope(), _FakeRuntimeProvider()
+    fc, fs, fcp = _FakeConstants(), _FakeScope(), _FakeCredentialPool()
     agp = types.ModuleType("agent")
     agp.secret_scope = fs  # type: ignore[attr-defined]
+    cpm = types.ModuleType("agent.credential_pool")
+    cpm.load_pool = fcp.load_pool  # type: ignore[attr-defined]
+    agp.credential_pool = cpm  # type: ignore[attr-defined]
     hc = types.ModuleType("hermes_cli")
-    hc.runtime_provider = fr  # type: ignore[attr-defined]
     antigos = {k: sys.modules.get(k) for k in
                ("hermes_constants", "agent", "agent.secret_scope",
-                "hermes_cli", "hermes_cli.runtime_provider")}
+                "agent.credential_pool", "hermes_cli")}
     sys.modules["hermes_constants"] = fc
     sys.modules["agent"] = agp
     sys.modules["agent.secret_scope"] = fs
+    sys.modules["agent.credential_pool"] = cpm
     sys.modules["hermes_cli"] = hc
-    sys.modules["hermes_cli.runtime_provider"] = fr
 
     d = _dir_com(_cfg_base())
     os.environ["VMM_DIR"] = str(d)

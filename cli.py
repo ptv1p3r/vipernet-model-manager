@@ -388,9 +388,9 @@ def cmd_classificador(args) -> int:
         try:
             _seams = _seams_mod()
             if not _seams.seam_disponivel():
-                return _erro(_t('resolve_runtime_provider indisponivel: {v0}', v0=_seams.seam_erro()), 1)
+                return _erro(_t('credenciais do provider indisponiveis: {v0}', v0=_seams.seam_erro()), 1)
         except Exception as exc:  # noqa: BLE001
-            return _erro(_t('resolve_runtime_provider indisponivel: {v0}', v0=exc), 1)
+            return _erro(_t('credenciais do provider indisponiveis: {v0}', v0=exc), 1)
 
         def resolver(provider: str, modelo: str) -> dict:
             rt = _seams.resolver_provider(provider, modelo)
@@ -1133,9 +1133,9 @@ def cmd_verificar(args) -> int:
     try:
         _seams = _seams_mod()
         if not _seams.seam_disponivel():
-            return _erro(_t('resolve_runtime_provider indisponivel: {v0}', v0=_seams.seam_erro()), 1)
+            return _erro(_t('credenciais do provider indisponiveis: {v0}', v0=_seams.seam_erro()), 1)
     except Exception as exc:
-        return _erro(_t('resolve_runtime_provider indisponivel: {v0}', v0=exc), 1)
+        return _erro(_t('credenciais do provider indisponiveis: {v0}', v0=exc), 1)
     # Contexto do perfil alvo: home + escopo de segredos. Sem isto, o CLI
     # resolveria sempre no escopo do processo de arranque e perfis com .env
     # proprio (pessoal/trabalho) pareceriam sem credenciais.

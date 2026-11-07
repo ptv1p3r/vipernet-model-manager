@@ -161,7 +161,7 @@ def garantir_interpretador() -> None:
         return
     try:
         import ruamel.yaml  # noqa: F401,PLC0415
-        from hermes_cli.runtime_provider import resolve_runtime_provider  # noqa: F401,PLC0415
+        from agent.credential_pool import load_pool  # noqa: F401,PLC0415
 
         return
     except Exception:  # noqa: BLE001
