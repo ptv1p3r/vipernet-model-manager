@@ -337,7 +337,8 @@ _LIMITES_INTERNOS = ("contexto_max", "latencia_p95_ms")
 # divergirem. As listas do classificador vivem em `analise_modelo` (`CHAVES`),
 # derivadas do `PADRAO` dele pela mesma razao.
 _CHAVES_CONFIG = frozenset({"versao", "activo", "registar", "analise",
-                            "estrategia", "retencao", "sombra", "perfis"})
+                            "estrategia", "retencao", "sombra", "idioma",
+                            "perfis"})
 _CHAVES_PERFIL = frozenset({"activo", "estrategia", "analise", "catalogo",
                             "tarefas", "latencia_max_ms", "rodizio"})
 _CHAVES_ANALISE = frozenset(set(ANALISE_PADRAO) | {"pesos", "aprendiz",
@@ -886,6 +887,46 @@ def normalizar_tarefa_persistente(valor: Any,
     return saida
 
 
+# Idioma do painel: lista fechada de duas linguas. O ingles e o padrao — uma
+# instalacao nova abre em ingles. O valor vive no config (e nao no browser) para
+# o painel, o CLI e qualquer sessao lerem o mesmo; e um codigo fora da lista e
+# erro, nao um silencioso "volta ao padrao", que deixaria o utilizador a julgar
+# que mudou a lingua quando nada mudou.
+IDIOMAS = ("en", "pt")
+IDIOMA_PADRAO = "en"
+
+
+def normalizar_idioma(valor: Any) -> tuple[str | None, list[str]]:
+    """Valida o codigo de lingua. Devolve `(codigo, erros)`; `None` = ausente.
+
+    Aceita as formas regionais (`pt-PT`, `en-US`, `pt_BR`) e reduz a lingua
+    base: o painel nao tem variantes, e recusar `pt-PT` obrigava o utilizador a
+    adivinhar que tinha de escrever `pt`.
+    """
+    erros: list[str] = []
+    if valor is None or valor == "":
+        return None, erros
+    if not isinstance(valor, str):
+        erros.append(f"idioma tem de ser texto (aceita: {', '.join(IDIOMAS)})")
+        return None, erros
+    base = valor.strip().lower().replace("_", "-").split("-")[0]
+    if base not in IDIOMAS:
+        erros.append(f"idioma invalido: {valor!r} "
+                     f"(aceita: {', '.join(IDIOMAS)})")
+        return None, erros
+    return base, erros
+
+
+def idioma_efectivo(cfg: dict[str, Any] | None) -> str:
+    """Lingua em vigor: a declarada, ou o padrao. Nunca levanta."""
+    if not isinstance(cfg, dict):
+        return IDIOMA_PADRAO
+    codigo, erros = normalizar_idioma(cfg.get("idioma"))
+    if erros or not codigo:
+        return IDIOMA_PADRAO
+    return codigo
+
+
 def normalizar_estrategia(valor: Any, prefixo: str = "estrategia",
                           erros: list[str] | None = None
                           ) -> tuple[dict[str, str], list[str]]:
@@ -1151,6 +1192,15 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
     erros.extend(erros_sombra)
     if sombra:
         saida["sombra"] = dict(sombra)
+
+    # Idioma do painel: chave opcional, mesma regra — so se grava o que foi
+    # declarado, e a ausencia vale o ingles. Sem esta fiacao o seletor do painel
+    # escrevia a chave e a leitura deitava-a fora, e o painel voltava a ingles
+    # no render seguinte como se nada tivesse sido escolhido.
+    idioma, erros_idioma = normalizar_idioma(cfg.get("idioma"))
+    erros.extend(erros_idioma)
+    if idioma:
+        saida["idioma"] = idioma
 
     perfis = cfg.get("perfis")
     if not isinstance(perfis, dict):

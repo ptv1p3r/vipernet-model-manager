@@ -783,6 +783,10 @@ def estado() -> dict[str, Any]:
         # configuracao do teste existia em dois ficheiros e nao aparecia em
         # nenhum formulario.
         "sombra": _sombra_estado(cfg),
+        # Lingua do painel, lida do config. O painel aplica-a antes de desenhar
+        # o primeiro componente — sem isto abria em ingles e so mudava depois
+        # de um segundo render, o que se via como um piscar de portugues.
+        "idioma": gestor.idioma_efectivo(cfg),
         "opcoes": {
             "estrategia": gestor.opcoes_estrategia(),
             # Superficies que ja foram vistas neste ambiente. Nao e a lista
@@ -862,6 +866,43 @@ def toggle(corpo: Any = Body(default=None)) -> JSONResponse:
             detail=f"gravacao nao confirmada: pedido {activo}, lido {lido}",
         )
     return JSONResponse({"ok": True, "ambito": ambito, "alvo": alvo, "activo": lido})
+
+
+@router.post("/idioma")
+def idioma_post(corpo: Any = Body(default=None)) -> JSONResponse:
+    """Muda a lingua do painel. Lista fechada (`en`|`pt`), escrita por chave.
+
+    A lingua e uma preferencia de apresentacao, mas vive no config — e o unico
+    sitio que o painel, o CLI e as sessoes do agente leem da mesma maneira. O
+    `rev` e opcional: quem muda a lingua esta a mudar SO a lingua, e um conflito
+    por a config ter mudado noutra chave so lhe pedia para repetir o gesto.
+    """
+    corpo = _corpo_objeto(corpo)
+    codigo, erros = gestor.normalizar_idioma(corpo.get("idioma"))
+    if erros or not codigo:
+        raise HTTPException(status_code=400,
+                            detail="; ".join(erros) or "'idioma' ausente")
+
+    def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
+        cfg["idioma"] = codigo
+        return cfg
+
+    try:
+        gestor.alterar(mutar, rev_esperado=str(corpo.get("rev") or "") or None)
+    except gestor.Conflito as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 500 com a razao real, nao um OK mentiroso
+        raise HTTPException(status_code=500,
+                            detail=f"nao gravou: {type(exc).__name__}: {exc}") from exc
+
+    # Releitura independente: vale o que ficou no disco, nao o que se pediu.
+    lido = gestor.idioma_efectivo(_cfg())
+    if lido != codigo:
+        raise HTTPException(status_code=500,
+                            detail=f"gravacao nao confirmada: pedido {codigo}, lido {lido}")
+    return JSONResponse({"ok": True, "idioma": lido})
 
 
 @router.post("/estrategia")
