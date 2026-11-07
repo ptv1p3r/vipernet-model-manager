@@ -431,6 +431,70 @@
     "— sem regra (herdar) —": "— no rule (inherit) —",
     "— sem tarefas declaradas neste perfil —": "— no tasks declared in this profile —",
     "✓ Gravar e voltar": "✓ Save and return",
+
+    // ── valores que o backend usa como ROTULO ──────────────────────────────
+    // Os `select` e a tabela do registo mostram o valor que vem do `api.py`
+    // (niveis, esforcos, acessos, modalidades, estrategia, origem e efeito do
+    // ledger). O `h()` traduz o filho de texto por lookup exacto, logo cada um
+    // destes tem de ser chave — sem isto o painel ingles mostrava «leve»,
+    // «desligado», «subscricao», «medidas» e «sombra». O `value` do `select`
+    // nao passa por aqui (o wrapper nunca toca em `value`), portanto a config
+    // continua a ler o identificador que conhece.
+    "leve": "light",
+    "media": "medium",
+    "alta": "high",
+    "baixo": "low",
+    "medio": "medium",
+    "alto": "high",
+    "activo": "on",
+    "desligado": "off",
+    "subscricao": "subscription",
+    "api": "api",
+    "medidas": "measured",
+    "simples": "simple",
+    "chat": "chat",
+    "decisoes": "decisions",
+    "texto": "text",
+    "imagem": "image",
+    "audio": "audio",
+    "ficheiro": "file",
+    "rodizio": "round-robin",
+    "prioridade": "priority",
+    "turno": "turn",
+    "sessao": "session",
+    "auto": "auto",
+    "on": "on",
+    "off": "off",
+    // Origem da decisao: o cartao e o registo mostram-na tal e qual.
+    "modelo": "model",
+    "analise": "analysis",
+    "tarefa": "task",
+    "sombra": "shadow",
+    "marcador": "marker",
+    "superficie": "surface",
+    "global": "global",
+    "perfil": "profile",
+    "ok": "ok",
+    "falha": "failure",
+    "desactualizado": "out of date",
+    "/braço": "/arm",
+    // Presets do catalogo: `modelo.PRESETS` sao nomes de conjuntos de campos,
+    // mostrados como rotulo no `select`. "padrao" tambem e a origem do
+    // circuit-breaker quando a chave nao vem de lado nenhum.
+    "padrao": "default",
+    "sistema-um": "System One",
+    "raciocinio": "reasoning",
+    // Rotulos de superficie: so o texto entre parenteses muda.
+    "cron (execução agendada)": "cron (scheduled run)",
+    "api_server (API/chat)": "api_server (API/chat)",
+    "cli (terminal)": "cli (terminal)",
+    "whatsapp": "whatsapp",
+    "subagent": "subagent",
+    "tui": "tui",
+    "oneshot": "oneshot",
+    "desktop": "desktop",
+    "telegram": "telegram",
+    "discord": "discord",
   };
   let IDIOMA = IDIOMA_PADRAO;
 
@@ -773,7 +837,7 @@
       });
     });
     (niveis || []).forEach(function (n) {
-      lista.push({ valor: "nivel:" + n, rotulo: T("nível ") + n });
+      lista.push({ valor: "nivel:" + n, rotulo: T("nível ") + T(n) });
     });
     return lista;
   }
@@ -792,9 +856,9 @@
     if (r.activo === false) return "nunca";
     if (r.entrada) {
       const m = (catalogo || []).filter(function (x) { return x.id === r.entrada; })[0];
-      return r.entrada + (m ? " (" + m.provider + "/" + m.modelo + ")" : " (fora do catálogo)");
+      return r.entrada + (m ? " (" + m.provider + "/" + m.modelo + ")" : T(" (fora do catálogo)"));
     }
-    if (r.nivel) return T("nível ") + r.nivel;
+    if (r.nivel) return T("nível ") + T(r.nivel);
     return (r.provider || "") + "/" + (r.modelo || "");
   }
 
@@ -1013,7 +1077,7 @@
         // provider é uma linha de traceback que nao cabe num cartao.
         const etiqueta = String(hist.motivo_antigo.motivo).split(":")[0];
         extra.push(T("histórico: ") + etiqueta + quandoM
-          + " — " + (hist.motivo_antigo.porque || "desactualizado"));
+          + " — " + T(hist.motivo_antigo.porque || "desactualizado"));
       }
       return {
         modo: "modelo",
@@ -2122,8 +2186,8 @@
               { className: "vmm-ultimo" },
               "ultimo turno: ",
               h("strong", null, (p.ultimo.provider || "?") + " / " + (p.ultimo.modelo || "?")),
-              T(" · nivel ") + (p.ultimo.nivel || "—"),
-              T(" · origem ") + (p.ultimo.origem || "—"),
+              T(" · nivel ") + T(p.ultimo.nivel || "—"),
+              T(" · origem ") + T(p.ultimo.origem || "—"),
               " · " + hora(p.ultimo.ts)
             )
           : h("div", { className: "vmm-mudo" }, "sem turnos registados neste perfil"),
@@ -2944,7 +3008,7 @@
     const numeros = [];
     if (s.p0 != null) numeros.push(T("p0 ") + s.p0);
     if (s.margem != null) numeros.push(T("margem ") + s.margem);
-    if (s.n_por_braco != null) numeros.push(numeros.length ? "n " + s.n_por_braco + "/braço" : "n " + s.n_por_braco + "/braço");
+    if (s.n_por_braco != null) numeros.push("n " + s.n_por_braco + T("/braço"));
     if (s.dias_estimados != null) numeros.push(s.dias_estimados + T(" dias"));
 
     return h("div", { className: "vmm-bloco", key: "sombra" },

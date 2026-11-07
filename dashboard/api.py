@@ -1642,8 +1642,13 @@ def modelo_get(perfil: str = Query(...), id: Optional[str] = Query(None)) -> dic
     dados, catalogo = _perfil_da_config(cfg, perfil)
     tarefas = dados.get("tarefas") or {}
     opcoes = _opcoes_modelo()
+    # O rotulo vai limpo e a prioridade em campo proprio: montar o texto aqui
+    # ("nome · prioridade 10") punha portugues dentro de um valor que o painel
+    # so sabe traduzir por chave exacta — nenhum dicionario verte uma string
+    # montada. Quem quiser mostrar a prioridade compoe com T() no painel.
     opcoes["tarefas"] = [
-        {"valor": nome, "rotulo": nome + " · prioridade " + str((tarefas.get(nome) or {}).get("prioridade", 0))}
+        {"valor": nome, "rotulo": nome,
+         "prioridade": (tarefas.get(nome) or {}).get("prioridade", 0)}
         for nome in sorted(tarefas.keys())
     ]
     opcoes["ids"] = [str(e.get("id")) for e in catalogo if isinstance(e, dict)]

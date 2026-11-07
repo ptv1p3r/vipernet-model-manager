@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -106,6 +107,117 @@ def importar_api():
     return mod
 
 
+def chaves_pt_en() -> set:
+    """Le as chaves do dicionario do painel (`PT_EN` no `index.js`).
+
+    Uma entrada por linha, com a chave entre aspas no inicio; o bloco acaba na
+    primeira linha que e so `};`. Ler o ficheiro em vez de repetir a lista no
+    teste e o que impede as duas copias de divergirem.
+    """
+    texto = (RAIZ / "dashboard" / "dist" / "index.js").read_text(encoding="utf-8")
+    if "const PT_EN = {" not in texto:
+        return set()
+    dentro = texto.split("const PT_EN = {", 1)[1]
+    chaves = set()
+    for linha in dentro.split("\n"):
+        if linha.strip() == "};":
+            break
+        m = re.match(r'\s*"((?:[^"\\]|\\.)*)"\s*:', linha)
+        if m:
+            chaves.add(m.group(1).replace('\\"', '"'))
+    return chaves
+
+
+# Campos de `opcoes` que nao sao vocabulario do plugin: nomes de tarefa
+# declarados pelo utilizador, ids de entrada do catalogo e ids de modelo sao
+# dados — traduzi-los seria pior do que deixa-los como estao.
+OPCOES_DE_DADOS = {"tarefas", "ids", "modelos", "providers"}
+
+
+def rotulos_de_opcoes(opcoes, vistos: list) -> None:
+    """Rotulos das listas fechadas de um bloco `opcoes` da API."""
+    if not isinstance(opcoes, dict):
+        return
+    for chave, valor in opcoes.items():
+        if chave in OPCOES_DE_DADOS:
+            continue
+        rotulos_de(valor, vistos)
+
+
+def rotulos_de(dados, vistos: list) -> None:
+    """Junta todos os valores de chave `rotulo` de uma resposta da API."""
+    if isinstance(dados, dict):
+        for k, v in dados.items():
+            if k == "rotulo" and isinstance(v, str):
+                vistos.append(v)
+            else:
+                rotulos_de(v, vistos)
+    elif isinstance(dados, list):
+        for x in dados:
+            rotulos_de(x, vistos)
+
+
+# Vocabulario do registo: os valores de `origem` e `efeito` que o plugin
+# escreve no ledger. `nivel` sai de NIVEIS. Passam crus para as celulas da
+# tabela do registo, logo tem de ser chave do dicionario.
+ORIGENS_LEDGER = ("modelo", "analise", "tarefa", "sombra", "marcador", "superficie")
+
+
+def verificar_rotulos_i18n(mod, cli, perfis) -> None:
+    """Guarda de classe: todo o rotulo que o backend emite existe no painel.
+
+    O `h()` do painel traduz o filho de texto por lookup exacto em `PT_EN` e,
+    sem chave, devolve o texto original — o defeito fica invisivel: o painel
+    ingles mostra «leve», «desligado», «subscricao», «medidas», «sombra».
+
+    A guarda anterior varria literais do `index.js` e dava zero, porque estes
+    rotulos nao estao no `index.js`: vem do `api.py` como valores de listas
+    fechadas. Aqui enumeram-se pela API real — um valor novo em `ESTRATEGIAS`,
+    `POR`, `NIVEIS`, `ACESSOS`, `ESFORCOS`, `MODALIDADES`, `VIAS`,
+    `ESTADOS_DECISAO` ou nas superficies falha este teste em vez de aparecer
+    em portugues no painel.
+    """
+    chaves = chaves_pt_en()
+    check("i18n: dicionario do painel legivel", len(chaves) > 400, str(len(chaves)))
+
+    vistos: list = []
+    rotulos_de(mod.gestor.opcoes_estrategia(), vistos)
+    rotulos_de(getattr(mod, "_ROTULOS_SUPERFICIE", {}), vistos)
+    # Cada rota chama-se de forma diferente: `/modelo?perfil=`, `/perfil?nome=`
+    # e `/estado` sem parametro. Com o nome errado a resposta e 422 e a
+    # enumeracao ficava vazia em silencio — foi assim que `activo`/`desligado`
+    # escaparam a primeira versao desta guarda.
+    for familia, rota in (("perfil", "/modelo"), ("nome", "/perfil")):
+        for perfil in perfis:
+            r = cli.get(f"{rota}?{familia}={perfil}")
+            check(f"i18n: {rota} responde para enumerar rotulos",
+                  r.status_code == 200, f"{r.status_code} perfil={perfil}")
+            if r.status_code == 200:
+                rotulos_de_opcoes(r.json().get("opcoes") or {}, vistos)
+    r = cli.get("/estado")
+    if r.status_code == 200:
+        rotulos_de_opcoes(r.json().get("opcoes") or {}, vistos)
+
+    # Os valores do registo: o que a tabela mostra como nivel e origem.
+    vistos.extend(ORIGENS_LEDGER)
+    for perfil in perfis:
+        est = cli.get("/estado").json()
+        ultimo = ((est.get("perfis") or {}).get(perfil) or {}).get("ultimo") or {}
+        for campo in ("nivel", "origem"):
+            if isinstance(ultimo.get(campo), str):
+                vistos.append(ultimo[campo])
+    for linha in (cli.get("/log?limite=50").json().get("linhas") or []):
+        for campo in ("nivel", "origem", "efeito"):
+            if isinstance(linha.get(campo), str):
+                vistos.append(linha[campo])
+
+    falta = sorted({x for x in vistos if x not in chaves})
+    check("i18n: a enumeracao encontrou rotulos (guarda nao vazia)",
+          len(set(vistos)) >= 20, str(len(set(vistos))))
+    check("i18n: todo o rotulo que o backend emite tem chave no painel",
+          not falta, "; ".join(falta[:12]))
+
+
 def main() -> int:
     d = preparar_dir()
     os.environ["VMM_DIR"] = str(d)
@@ -161,6 +273,9 @@ def main() -> int:
     check("/estado versao vem do manifest",
           est.get("versao_painel") == manifesto.get("version"),
           f"{est.get('versao_painel')} vs {manifesto.get('version')}")
+
+    # --- i18n do painel: rotulos que o backend emite ------------------------
+    verificar_rotulos_i18n(mod, cli, ["default", "trabalho"])
 
     # --- /log --------------------------------------------------------------
     r = cli.get("/log?limite=10")
