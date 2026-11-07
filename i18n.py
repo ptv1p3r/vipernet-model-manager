@@ -430,8 +430,8 @@ _EN: dict[str, str] = {
         '\nglobal: {v0} · {v1}/{v2}',
     '\n{v0}/{v1} · {v2} pedido(s) · {v3} ms · formato={v4} · pedido={v5} · tokens {v6}→{v7}':
         '\n{v0}/{v1} · {v2} request(s) · {v3} ms · format={v4} · request={v5} · tokens {v6}→{v7}',
-    '\n{v0}/{v1} · {v2} pedido(s) · {v3} ms · formato={v4} · pedido={v5} · tokens {v6}→{v7} · {v8} USD':
-        '\n{v0}/{v1} · {v2} request(s) · {v3} ms · format={v4} · request={v5} · tokens {v6}→{v7} · {v8} USD',
+    '\n{v0}/{v1} · {v2} pedido(s) · {v3} ms · formato={v4} · pedido={v5} · tokens {v6}→{v7} · {v8}':
+        '\n{v0}/{v1} · {v2} request(s) · {v3} ms · format={v4} · request={v5} · tokens {v6}→{v7} · {v8}',
     '  aviso: nao foi possivel montar o contexto do perfil: {v0}':
         '  warning: could not build the profile context: {v0}',
     '  braco {v0}: {v1} (HTTP {v2}) {v3}':

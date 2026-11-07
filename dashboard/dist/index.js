@@ -480,6 +480,20 @@
     return IDIOMA === "pt" ? "pt-PT" : "en-GB";
   }
 
+  // Numeros e percentagens pelo MESMO locale das datas, e `Intl` como
+  // referencia. O Python (`formato.py`) tem tabelas equivalentes: os dois tem
+  // de concordar, senao o CLI e o painel escrevem o mesmo valor de maneiras
+  // diferentes. Sem agrupamento nao havia como ler 1 234 567 tokens.
+  function fmtNum(valor, casas) {
+    if (typeof valor !== "number" || !isFinite(valor)) return "";
+    try {
+      return new Intl.NumberFormat(localeHora(), {
+        minimumFractionDigits: casas || 0,
+        maximumFractionDigits: casas === undefined || casas === null ? 3 : casas,
+      }).format(valor);
+    } catch (e) { return String(valor); }
+  }
+
   const PROPS_TEXTO = ["title", "placeholder", "aria-label", "alt", "label"];
 
   function h(type, props, ...filhos) {
@@ -967,9 +981,9 @@
       if (motivoConfig) extra.push(T("sem efeito — ") + motivoConfig);
       if (rasto.lido) {
         const conf = rasto.confianca;
-        const confTxt = (typeof conf === "number") ? " (" + Math.round(conf * 100) + "%)" : "";
+        const confTxt = (typeof conf === "number") ? " (" + fmtNum(conf * 100, 0) + "%)" : "";
         extra.push(T("leu ") + rasto.lido + confTxt
-          + (rasto.ms ? T(" em ") + Math.round(rasto.ms) + T(" ms") : ""));
+          + (rasto.ms ? T(" em ") + fmtNum(rasto.ms, 0) + T(" ms") : ""));
       }
       // Uma leitura de outro classificador (ou anterior ao erro actual) nao e
       // estado: vai rotulada como historico, com a idade e quem a produziu.
@@ -4078,7 +4092,7 @@
       t: T, setIdioma: setIdioma, idiomaActual: idiomaActual,
       normalizarIdioma: normalizarIdioma, PT_EN: PT_EN, IDIOMAS: IDIOMAS,
       SeletorIdioma: SeletorIdioma, tQuanto: tQuanto, tHa: tHa,
-      tInstantes: tInstantes, h: h, localeHora: localeHora,
+      tInstantes: tInstantes, h: h, localeHora: localeHora, fmtNum: fmtNum,
     };
   }
 })();

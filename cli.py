@@ -34,6 +34,9 @@ import i18n as _i18n  # noqa: E402
 
 # Alias curto: a saida do CLI passa toda por aqui.
 _t = _i18n.t
+# Formato de valores: unica casa onde se formata (datas, numeros,
+# moedas). O locale vem do `i18n`, por isso ha uma so fonte.
+import formato as _f  # noqa: E402
 
 _AQUI = Path(__file__).resolve().parent
 
@@ -346,7 +349,7 @@ def cmd_classificador(args) -> int:
             # um piso de confianca. Mostrar os dois na mesma coluna evita uma
             # tabela larga cheia de celulas vazias.
             if c["via"] == "decisoes":
-                alavanca = f"conf>={c['confianca_min']:.2f}"
+                alavanca = "conf>=" + _f.numero(c['confianca_min'], 2)
             else:
                 alavanca = c["esforco"] or "-"
             linhas.append([
@@ -400,13 +403,13 @@ def cmd_classificador(args) -> int:
         for texto_pedido, nivel in zip(textos, r.get("niveis") or []):
             print(f"{nivel or '?':6s}  {texto_pedido[:70]}")
         _m = "\n{v0}/{v1} · {v2} pedido(s) · {v3} ms · formato={v4} · pedido={v5} · tokens {v6}→{v7}"
-        _v = {"v0": r["provider"], "v1": r["modelo"], "v2": r.get("pedidos"),
-              "v3": r.get("ms"), "v4": r.get("formato"),
+        _v = {"v0": r["provider"], "v1": r["modelo"], "v2": _f.numero(r.get("pedidos"), 0),
+              "v3": _f.milissegundos(r.get("ms")), "v4": r.get("formato"),
               "v5": r.get("formato_pedido") or _t("texto"),
-              "v6": r.get("tokens_entrada"), "v7": r.get("tokens_saida")}
+              "v6": _f.numero(r.get("tokens_entrada"), 0), "v7": _f.numero(r.get("tokens_saida"), 0)}
         if r.get("custo_usd") is not None:
-            _m += " · {v8} USD"
-            _v["v8"] = "%.6f" % r["custo_usd"]
+            _m += " · {v8}"
+            _v["v8"] = _f.moeda_iso(r["custo_usd"], "USD", 6)
         print(_t(_m, **_v))
         return 1 if r.get("erro") else 0
 
