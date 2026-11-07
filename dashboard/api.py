@@ -1733,7 +1733,7 @@ def modelo_post(corpo: Any = Body(default=None)) -> JSONResponse:
     except gestor.Conflito as exc:
         return JSONResponse(status_code=409, content={
             "ok": False,
-            "detail": "a configuração mudou desde que esta página a leu",
+            "detail": t("a configuração mudou desde que esta página a leu"),
             "rev": exc.rev_actual,
         })
     except HTTPException as exc:
@@ -1891,21 +1891,21 @@ def perfil_post(corpo: Any = Body(default=None)) -> JSONResponse:
     """
     obj = _corpo_objeto(corpo)
     if obj is None:                      # `obrigatorio=True` ja recusou acima
-        return JSONResponse(status_code=400, content={"ok": False, "detail": "falta o corpo"})
+        return JSONResponse(status_code=400, content={"ok": False, "detail": t("falta o corpo")})
     nome = str(obj.get("perfil") or "").strip()
     if not nome:
-        return JSONResponse(status_code=400, content={"ok": False, "detail": "falta 'perfil'"})
+        return JSONResponse(status_code=400, content={"ok": False, "detail": t("falta 'perfil'")})
     apenas_validar = bool(obj.get("validar"))
 
     cfg = _cfg()
     if nome not in (cfg.get("perfis") or {}):
-        return JSONResponse(status_code=404, content={"ok": False, "detail": f"perfil {nome!r} nao existe"})
+        return JSONResponse(status_code=404, content={"ok": False, "detail": t("perfil {p0} nao existe", p0=repr(nome))})
 
     rev_cliente = str(obj.get("rev") or "")
     rev_antes = _rev(cfg)
     if rev_cliente and _conflito(rev_cliente, rev_antes):
         return JSONResponse(status_code=409, content={
-            "ok": False, "rev": rev_antes, "detail": "a configuração mudou noutro sítio — recarregue",
+            "ok": False, "rev": rev_antes, "detail": t("a configuração mudou noutro sítio — recarregue"),
         })
 
     # Trabalha-se sobre uma copia: a validacao devolve uma config NOVA e o que
@@ -1922,7 +1922,7 @@ def perfil_post(corpo: Any = Body(default=None)) -> JSONResponse:
             tarefas = {}
         if not isinstance(tarefas, dict):
             return JSONResponse(status_code=400, content={
-                "ok": False, "detail": "'tarefas' tem de ser um objecto (id -> {termos, prioridade})"})
+                "ok": False, "detail": t("'tarefas' tem de ser um objecto (id -> {termos, prioridade})")})
         # Normaliza as listas de termos: aceita lista ou texto separado por
         # virgulas (o formulario escreve texto), e descarta vazios.
         limpas: dict[str, Any] = {}
@@ -1949,7 +1949,7 @@ def perfil_post(corpo: Any = Body(default=None)) -> JSONResponse:
             teto = int(obj.get("latencia_max_ms") or 0)
         except (TypeError, ValueError):
             return JSONResponse(status_code=400, content={
-                "ok": False, "detail": "'latencia_max_ms' tem de ser inteiro (0 = sem teto)"})
+                "ok": False, "detail": t("'latencia_max_ms' tem de ser inteiro (0 = sem teto)")})
         if teto > 0:
             pcfg["latencia_max_ms"] = teto
         else:
@@ -1977,8 +1977,8 @@ def perfil_post(corpo: Any = Body(default=None)) -> JSONResponse:
         elif not isinstance(valor, dict):
             return JSONResponse(status_code=400, content={
                 "ok": False,
-                "detail": "'tarefa_persistente' tem de ser um objecto "
-                          "({activo, expira_turnos, expira_min}) ou \\\"herdar\\\""})
+                "detail": t("'tarefa_persistente' tem de ser um objecto "
+                           "({activo, expira_turnos, expira_min}) ou \"herdar\"")})
         else:
             analise["tarefa_persistente"] = valor    # o `validar` fecha as chaves
         mexeu_analise = True
@@ -2012,7 +2012,7 @@ def perfil_post(corpo: Any = Body(default=None)) -> JSONResponse:
         gestor.gravar(limpa, rev_esperado=rev_antes or None)
     except gestor.Conflito as exc:
         return JSONResponse(status_code=409, content={
-            "ok": False, "detail": "a configuração mudou desde que esta página a leu",
+            "ok": False, "detail": t("a configuração mudou desde que esta página a leu"),
             "rev": exc.rev_actual,
         })
     except ValueError as exc:

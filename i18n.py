@@ -336,6 +336,17 @@ _EN: dict[str, str] = {
     "{p0} nao e um objecto": "{p0} is not an object",
     "config nao e um objecto": "config is not an object",
     "esforco invalido: '{p0}' (use {p1}; low/medium/high tambem sao aceites)": "invalid esforco: '{p0}' (use {p1}; low/medium/high are also accepted)",
+    # Recusas da camada HTTP do painel (dashboard/api.py). Sao a mesma superficie
+    # da `detail` que ja leva as mensagens do validador: ficarem em portugues dava
+    # uma linha inglesa com uma recusa portuguesa ao lado.
+    "a configuração mudou desde que esta página a leu": "the configuration changed since this page loaded it",
+    "a configuração mudou noutro sítio — recarregue": "the configuration changed elsewhere — reload it",
+    "falta o corpo": "missing body",
+    "falta 'perfil'": "missing 'perfil'",
+    "perfil {p0} nao existe": "perfil {p0} does not exist",
+    "'tarefas' tem de ser um objecto (id -> {termos, prioridade})": "'tarefas' must be an object (id -> {termos, prioridade})",
+    "'latencia_max_ms' tem de ser inteiro (0 = sem teto)": "'latencia_max_ms' must be an integer (0 = no cap)",
+    "'tarefa_persistente' tem de ser um objecto ({activo, expira_turnos, expira_min}) ou \"herdar\"": "'tarefa_persistente' must be an object ({activo, expira_turnos, expira_min}) or \"herdar\"",
     "'analise.aprendiz' tem de ser um objecto": "'analise.aprendiz' must be an object",
     "'analise.fixar_nivel_por_turno' tem de ser booleano": "'analise.fixar_nivel_por_turno' must be a boolean",
     "'analise.pesos' tem de ser um objecto": "'analise.pesos' must be an object",
