@@ -2,41 +2,57 @@
 #
 # Destino: `plugin-catalog/vipernet-model-manager.yaml` no repositorio
 # `NousResearch/hermes-agent`, por PR com revisao humana. Esta copia vive no
-# repositorio do plugin para que o que se submete seja versionado com o codigo
-# e nao se perca numa conversa.
+# repositorio do plugin para que o que se submete seja versionado com o codigo.
 #
-# Esquema lido de `hermes_cli/plugin_catalog.py` (dataclass PluginCatalogEntry):
-# o loader recusa `repo` que nao comece por https://, `sha` que nao seja 40 hex,
+# Esquema lido de `hermes_cli/plugin_catalog.py` (dataclass PluginCatalogEntry,
+# 19 campos): o loader recusa `repo` sem https://, `sha` que nao seja 40 hex,
 # `tier` fora de official/verified/community e `category` fora de
-# desktop/memory/platform/web/tools/voice/automation/models/general.
+# desktop/memory/platform/web/tools/voice/automation/models/general. Verificado
+# com o parser do proprio core (`hermes_yaml`), nao a olho.
 #
-# ESTADO 2026-11-07: regra 2 SATISFEITA E MEDIDA.
-# `repo` aponta ao repositorio publico do GitHub. O pin foi clonado por https
-# (clone independente, nao o diretorio local) e validado com o mesmo comando
-# que o CI do catalogo corre:
-#   hermes plugins validate /opt/data/cache/scratch/gh-pin-check --install-deps
-# resultado: rc 0, "Validation passed", plugin carregavel em __init__.py.
-# No pin existem 72 ficheiros versionados, com `plugin.yaml`, `__init__.py`,
-# `dashboard/manifest.json` e `README.md` (ingles primeiro, PT em
-# `README.pt-PT.md`), que e' o que a pagina /docs/plugins/<name> renderiza.
+# ---------------------------------------------------------------------------
+# ESTADO MEDIDO 2026-11-07 — LEIA ANTES DE ABRIR O PR
+# ---------------------------------------------------------------------------
+# Regra 2 (repo publico clonavel por https + plugin carregavel no pin): OK.
+#   repo  https://github.com/ptv1p3r/vipernet-model-manager
+#   O commit pinado abaixo foi trazido por `git fetch` do GitHub e validado com
+#   o MESMO comando do CI: `hermes plugins validate <dir> --install-deps`.
+#   `Validation passed`, plugin carregavel por `__init__.py`, `README.md`
+#   ingles-primeiro (PT em `README.pt-PT.md`) — e' desse README que a pagina
+#   /docs/plugins/<nome> e' construida.
 #
-# Resta um aviso de REGRA 9 (import de modulo core nao documentado) em dois
-# ficheiros de ferramenta de desenvolvimento: `seams.py:45` e
-# `eval/aprender.py:164`, ambos `hermes_cli.runtime_provider.
-# resolve_runtime_provider`. O runtime do plugin nao os importa (so o
-# `selftest.py` os simula), mas enquanto estiverem na arvore publicada a regra 9
-# e' motivo de recusa. Ver `references/admissao-ao-catalogo.md` na skill.
+# Regra 9 (so superficies publicas): BLOQUEIA A SUBMISSAO AINDA.
+#   No commit publico 45291b10 (3.46.0) o validador acusa:
+#     eval/aprender.py:164  hermes_cli.runtime_provider.resolve_runtime_provider
+#     seams.py:45           hermes_cli.runtime_provider.resolve_runtime_provider
+#   A correcao JA ESTA FEITA e provada fora do GitHub: no Gitea, ramo `dev`,
+#   commit b1cc51cc5be1d188a3c50b555b16ea065fc3883c (version 3.47.0), o
+#   `seams.py` resolve credenciais por `agent.credential_pool.load_pool`
+#   (superficie publica) e o validador responde `no core override — no runtime
+#   rebinds of Hermes core`. Falta esse commit chegar ao GitHub.
+#
+# Porque nao chegou: o Gitea tem UM push mirror para o GitHub
+# (`remote_mirror_OgpOX3SFYj`, intervalo 8h, sync_on_commit) e o token dele
+# esta morto — `last_error: Invalid username or token. Password authentication
+# is not supported for Git operations` a 2026-11-07T16:50:12Z. Sem token
+# valido, o GitHub nao recebe a 3.47.0 e este pin nao pode avancar.
+#
+# ENTREGA: assim que o `dev` chegar ao GitHub, trocar `sha` pelo commit que
+# contem a 3.47.0 e `version` para 3.47.0 (a regra exige que `version` da
+# entrada seja a do codigo NO PIN, nao a do disco).
+#
+# PENDENTE: `screenshots` — o plugin tem painel de dashboard e a regra pede
+# capturas, tiradas depois da correcao e de uma sessao autenticada. Nao ha URLs
+# inventados aqui: sem capturas reais a galeria fica vazia.
+# ---------------------------------------------------------------------------
 
 name: vipernet-model-manager
 repo: https://github.com/ptv1p3r/vipernet-model-manager
 
-# OBRIGATORIO: o commit EXATO que o revisor leu, 40 caracteres hexadecimais.
-# Pin medido por `git ls-remote https://github.com/ptv1p3r/...` e confirmado por
-# clone independente a 2026-11-07: HEAD de `main` =
-# 03985e1ddcfa5b8a7a0e07ab1f9f1a74c574b5e6, `version: 3.45.1` no `plugin.yaml`
-# e no `dashboard/manifest.json`. A `version` da entrada e' a do codigo NO PIN,
-# nunca a do disco local (que esta em 3.46.0): a regra 14 exige que coincidam.
-sha: "03985e1ddcfa5b8a7a0e07ab1f9f1a74c574b5e6"
+# Commit EXATO que o revisor le, 40 hex. Este e' o HEAD real do repositorio
+# publico hoje (merge do PR #1, 2026-11-07T16:50:32Z). NAO e' o commit que se
+# quer submeter: e' o que existe. Ver a nota de regra 9 acima.
+sha: "45291b1099afd149d524a8f510b6a93b9bdca15a"
 
 description: >-
   Picks the provider and model for each turn from the profile's own catalog,
@@ -49,14 +65,12 @@ maintainer: proldan
 tier: community
 category: models
 requires_hermes: ">=0.22.0"
-version: "3.45.1"
+version: "3.46.0"
 title: Vipernet Model Manager
 readme: true
 
-# Capacidades declaradas = o que o plugin regista de facto em `__init__.py`.
-# Regra 6 do catalogo: uma capacidade por declarar e' falha de validacao, uma
-# capacidade declarada a mais e' deriva. `post_tool_call` entrou na 3.35.0 (mede
-# o `exit_code` de cada chamada) e ficou por declarar ate' 2026-11-05.
+# Capacidades = o que o plugin regista de facto em `__init__.py`. Uma capacidade
+# por declarar e' falha de validacao; uma a mais e' deriva.
 capabilities:
   provides_tools: []
   provides_hooks:
@@ -66,9 +80,3 @@ capabilities:
   provides_middleware:
     - llm_request
   requires_env: []
-
-# PENDENTE antes do PR: `screenshots` (a regra pede capturas para tudo o que
-# tem UI, e este plugin tem um painel de dashboard). Nao ha URLs inventados
-# aqui: as capturas exigem uma sessao autenticada no browser do painel, que
-# ainda nao foi exercitada. Ate existirem, a galeria da pagina fica vazia e o
-# revisor ve o README so.
