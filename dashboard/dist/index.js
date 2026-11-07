@@ -993,9 +993,9 @@
       if (hist && hist.lido) {
         const idade = hist.idade_s;
         const quando = idade == null ? ""
-          : (idade < 90 ? tQuanto(Math.round(idade), "s")
-            : idade < 5400 ? tQuanto(Math.round(idade / 60), "min")
-            : tQuanto(Math.round(idade / 3600), "h"));
+          : (idade < 90 ? tQuanto(fmtNum(idade, 0), T("s"))
+            : idade < 5400 ? tQuanto(fmtNum(idade / 60, 0), T("min"))
+            : tQuanto(fmtNum(idade / 3600, 0), T("h")));
         extra.push(T("histórico: ") + hist.lido + quando
           + " com " + (hist.provider || "?") + "/" + (hist.modelo || "?"));
       }
