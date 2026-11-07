@@ -250,6 +250,56 @@ def verificar_cabecalhos_tabela() -> None:
           not falta, "; ".join(falta[:12]))
 
 
+def rotulos_de_campo() -> list:
+    """Literais que servem de rotulo ou de dica de campo no `index.js`.
+
+    Terceira via da mesma classe, depois dos cabecalhos de tabela: o rotulo de
+    um campo nao vem do backend nem e cabecalho. E um literal escrito no JS que
+    chega ao ecra como filho de texto do `Campo`
+    (`h("span", ..., props.rotulo)`) ou como `placeholder`, e o `h()` so o
+    traduz por lookup exacto em `PT_EN`. Sem chave, o painel ingles mostra
+    «estado», «custo», «ordem» — como mostrou ate esta passagem.
+
+    `placeholder` puramente numerico (0, 900, 128000) fica de fora: e um
+    exemplo de valor, nao texto de interface.
+    """
+    texto = (RAIZ / "dashboard" / "dist" / "index.js").read_text(encoding="utf-8")
+    achados = re.findall(r'rotulo\s*:\s*"((?:[^"\\]|\\.)*)"', texto)
+    achados += re.findall(r'placeholder\s*:\s*"((?:[^"\\]|\\.)*)"', texto)
+    return [a for a in achados if re.search(r"[A-Za-zÀ-ÿ]", a)]
+
+
+# Rotulos que nao se traduzem porque sao DADOS do utilizador mostrados como
+# exemplo, nao vocabulario do plugin: um nome de tarefa e um id de modelo sao
+# texto do dono. A isencao e por literal e exige razao escrita; um rotulo novo
+# fora desta lista falha a guarda.
+ROTULOS_ISENTOS = {
+    "arquitetura": "nome de tarefa do utilizador mostrado como exemplo (dado)",
+    "nvidia/nemotron-3.5-lightning:free": "id de modelo mostrado como exemplo (dado)",
+}
+
+
+def verificar_rotulos_de_campo() -> None:
+    """Guarda de classe: todo o rotulo de campo tem chave no dicionario.
+
+    A guarda dos cabecalhos de tabela cobria `h("th", ...)`; a dos rotulos do
+    backend cobria o que vem no JSON da API. Ficou de fora a terceira via — o
+    rotulo de campo escrito no `index.js` — e foi por ela que «estado»,
+    «custo» e «ordem» chegaram ao ecra em portugues com o painel em ingles.
+    Enumera os rotulos reais em vez de repetir aqui os dezassete nomes: e o que
+    faz apanhar o proximo.
+    """
+    chaves = chaves_pt_en()
+    rot = rotulos_de_campo()
+    distintos = sorted(set(rot))
+    check("i18n: ha rotulos de campo para verificar (guarda nao vazia)",
+          len(distintos) >= 15, str(len(distintos)))
+    falta = [r for r in distintos
+             if r not in chaves and r not in ROTULOS_ISENTOS]
+    check("i18n: todo o rotulo de campo tem chave no dicionario",
+          not falta, "; ".join(falta[:12]))
+
+
 def main() -> int:
     d = preparar_dir()
     os.environ["VMM_DIR"] = str(d)
@@ -309,6 +359,7 @@ def main() -> int:
     # --- i18n do painel: rotulos que o backend emite ------------------------
     verificar_rotulos_i18n(mod, cli, ["default", "trabalho"])
     verificar_cabecalhos_tabela()
+    verificar_rotulos_de_campo()
 
     # --- /log --------------------------------------------------------------
     r = cli.get("/log?limite=10")

@@ -513,6 +513,29 @@
     "desktop": "desktop",
     "telegram": "telegram",
     "discord": "discord",
+
+    // Rotulos de campo — formulario de modelo e paginas de perfil. Estao
+    // escritos em portugues no `index.js` e chegam ao ecra como filho do
+    // `Campo` (`h("span", ..., props.rotulo)`), logo o `h()` so os traduz se a
+    // chave existir aqui. A guarda `verificar_rotulos_de_campo` (selftest)
+    // falha nomeando qualquer rotulo novo que escape a este bloco.
+    "activa": "on",
+    "custo": "cost",
+    "desligada": "off",
+    "ensaio": "trial",
+    "estado": "state",
+    "id": "id",
+    "ligado": "on",
+    "modalidades": "modalities",
+    "modo": "mode",
+    "nota": "note",
+    "ordem": "order",
+    "por": "by",
+    "preset": "preset",
+    "sim": "yes",
+    "temperatura": "temperature",
+    "termos": "terms",
+    "via": "via",
   };
   let IDIOMA = IDIOMA_PADRAO;
 

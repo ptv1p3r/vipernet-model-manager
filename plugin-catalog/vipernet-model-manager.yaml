@@ -41,9 +41,11 @@
 name: vipernet-model-manager
 repo: https://github.com/ptv1p3r/vipernet-model-manager
 
-# Commit EXATO que o revisor le, 40 hex. Release merge de `dev` em `main`
-# (2026-11-07), versao 3.47.0, validado com o comando do CI.
-sha: "72293cc276c2a0ee9d33d04e92d3cd8e4142e757"
+# Commit EXATO que o revisor le, 40 hex. Sincronizacao automatica do espelho
+# em 2026-11-07 17:58:23Z, versao 3.47.4. Medido a 2026-11-07: existe no
+# GitHub publico, e ANCESTRAL de `main` (fafc03f9, merge do PR #8), traz
+# `Validation passed` e os quatro entrypoints.
+sha: "cfc4ba8508015f9c3adf4c15d5db64c83cf7398b"
 
 description: >-
   Picks the provider and model for each turn from the profile's own catalog,
@@ -56,7 +58,7 @@ maintainer: proldan
 tier: community
 category: models
 requires_hermes: ">=0.22.0"
-version: "3.47.0"
+version: "3.47.4"
 title: Vipernet Model Manager
 readme: true
 
