@@ -1742,7 +1742,7 @@ def modelo_post(corpo: Any = Body(default=None)) -> JSONResponse:
     except ValueError as exc:
         return JSONResponse(status_code=400, content={
             "ok": False,
-            "detail": "não gravou: " + str(exc),
+            "detail": t("nao gravou: {erro}", erro=str(exc)),
             "erros": [p for p in str(exc).split("; ") if p],
         })
 
@@ -2017,7 +2017,7 @@ def perfil_post(corpo: Any = Body(default=None)) -> JSONResponse:
         })
     except ValueError as exc:
         return JSONResponse(status_code=400, content={
-            "ok": False, "detail": "não gravou: " + str(exc),
+            "ok": False, "detail": t("nao gravou: {erro}", erro=str(exc)),
             "erros": [p for p in str(exc).split("; ") if p],
         })
 
