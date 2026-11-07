@@ -19,6 +19,7 @@ config, e fixado em memoria por `i18n.definir_para_testes`.
 from __future__ import annotations
 
 import ast
+import re
 import sys
 from pathlib import Path
 
@@ -196,6 +197,12 @@ def test_nada_formata_fora_do_modulo() -> None:
     moeda_literal: list[str] = []
     float_a_mao: list[str] = []
     strftime_fora: list[str] = []
+    # Especificador numerico dentro de um molde de traducao (`{v0:.2f}`): a
+    # classe que escapou as duas versoes anteriores desta verificacao, porque
+    # nao e uma f-string nem um %-format — e texto passado ao `t()`.
+    espec_em_molde: list[str] = []
+    codigo_moeda: list[str] = []
+    padrão_espec = re.compile(r"\{\w+:\.[0-9]*[fFd]\}")
     for caminho, rel in _fontes():
         if rel == "formato.py":
             continue
@@ -209,6 +216,16 @@ def test_nada_formata_fora_do_modulo() -> None:
             arvore = ast.parse(texto)
         except SyntaxError:
             continue
+        # Docstrings nao apresentam nada a ninguem: `custo.py` diz "Custo em
+        # USD" na docstring do modulo e isso e prosa, nao formatacao.
+        docstrings = {
+            id(n.body[0].value)
+            for n in ast.walk(arvore)
+            if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and n.body and isinstance(n.body[0], ast.Expr)
+            and isinstance(n.body[0].value, ast.Constant)
+            and isinstance(n.body[0].value.value, str)
+        }
         for no in ast.walk(arvore):
             # Simbolo de moeda dentro de texto: a moeda passou a ser valor, e um
             # simbolo escrito a mao no molde voltaria a fixa-la na lingua errada.
@@ -226,12 +243,25 @@ def test_nada_formata_fora_do_modulo() -> None:
             if isinstance(no, ast.Attribute) and no.attr == "strftime":
                 if rel not in STRFTIME_PERMITIDO:
                     strftime_fora.append(f"{rel}:{no.lineno}")
+            # Molde de traducao que ainda formata o valor.
+            if isinstance(no, ast.Constant) and isinstance(no.value, str) and id(no) not in docstrings:
+                if padrão_espec.search(no.value):
+                    espec_em_molde.append(f"{rel}:{no.lineno}")
+                # Codigo ISO solto dentro de texto: passado como argumento ao
+                # `moeda_iso()` e legitimo; colado a uma frase nao e.
+                for cod in ("USD", "EUR"):
+                    if cod in no.value and no.value.strip() != cod:
+                        codigo_moeda.append(f"{rel}:{no.lineno}:{cod}")
     verificar("nenhum simbolo de moeda em texto fora do formato.py",
               not moeda_literal, ", ".join(moeda_literal))
     verificar("nenhum %-format de decimal fora do formato.py",
               not float_a_mao, ", ".join(float_a_mao))
     verificar("strftime so nos ficheiros declarados",
               not strftime_fora, ", ".join(strftime_fora))
+    verificar("nenhum especificador numerico em molde de traducao",
+              not espec_em_molde, ", ".join(espec_em_molde))
+    verificar("nenhum codigo de moeda colado a texto",
+              not codigo_moeda, ", ".join(codigo_moeda))
 
 
 def main() -> int:

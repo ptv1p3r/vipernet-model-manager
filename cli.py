@@ -949,7 +949,7 @@ def cmd_retencao(args) -> int:
     estado = rt.relatorio(caminho)
     if "bytes" in estado:
         print(_t('ledger {v0}', v0=caminho))
-        print(_t('  {v0:.2f} MB, {v1} linhas ({v2} de detalhe, {v3} resumos)', v0=estado['bytes'] / 1048576, v1=estado['linhas'], v2=estado['linhas_detalhe'], v3=estado['resumos']))
+        print(_t('  {v0} MB, {v1} linhas ({v2} de detalhe, {v3} resumos)', v0=_f.numero(estado['bytes'] / 1048576, 2), v1=_f.numero(estado['linhas'], 0), v2=_f.numero(estado['linhas_detalhe'], 0), v3=_f.numero(estado['resumos'], 0)))
     else:
         print(_t('ledger {v0} (inexistente)', v0=caminho))
         return 0
@@ -963,7 +963,7 @@ def cmd_retencao(args) -> int:
     antes = resultado.get("bytes_antes", 0)
     depois = resultado.get("bytes_depois", 0)
     print(_t('  dobradas {v0} linhas de {v1} dias em {v2} resumos', v0=resultado['dobradas'], v1=resultado['dias_dobrados'], v2=resultado['resumos']))
-    print(_t('  {v0:.2f} MB -> {v1:.2f} MB ({v2:.1f}%)', v0=antes / 1048576, v1=depois / 1048576, v2=100 * depois / max(antes, 1)))
+    print(_t('  {v0} MB -> {v1} MB ({v2})', v0=_f.numero(antes / 1048576, 2), v1=_f.numero(depois / 1048576, 2), v2=_f.percentagem(100 * depois / max(antes, 1), 1)))
     if resultado.get("ilegiveis"):
         print(_t('  {v0} linhas ilegiveis preservadas', v0=resultado['ilegiveis']))
     return 0
@@ -1052,15 +1052,15 @@ def cmd_backups(args) -> int:
     pasta = g.directorio()
     estado = rt.relatorio(g.caminho_ledger(), pasta)
     print(_t('backups em {v0}', v0=pasta))
-    print(_t('  {v0} datados, {v1} a mao, {v2:.2f} MB', v0=estado.get('backups_datados', 0), v1=estado.get('backups_manuais', 0), v2=estado.get('backups_bytes', 0) / 1048576))
+    print(_t('  {v0} datados, {v1} a mao, {v2} MB', v0=estado.get('backups_datados', 0), v1=estado.get('backups_manuais', 0), v2=_f.numero(estado.get('backups_bytes', 0) / 1048576, 2)))
     if not args.aplicar:
         print(_t('  politica: ficam {v0} + {v1}/semana (correr --aplicar para podar)', v0=manter, v1=semanais))
         return 0
     resultado = rt.podar_backups(pasta, manter=manter, semanais=semanais)
     if not resultado.get("aplicado"):
-        print("  nada a podar")
+        print(_t('  nada a podar'))
         return 0
-    print(_t('  removidos {v0} de {v1} datados ({v2:.2f} MB livres), ficaram {v3}', v0=resultado['removidos'], v1=resultado['datados_antes'], v2=resultado['bytes_libertados'] / 1048576, v3=resultado['datados_depois']))
+    print(_t('  removidos {v0} de {v1} datados ({v2} MB livres), ficaram {v3}', v0=resultado['removidos'], v1=resultado['datados_antes'], v2=_f.numero(resultado['bytes_libertados'] / 1048576, 2), v3=resultado['datados_depois']))
     if resultado.get("semanais_guardados"):
         print(_t('  semanais preservados: {v0}', v0=', '.join(resultado['semanais_guardados'])))
     return 0
