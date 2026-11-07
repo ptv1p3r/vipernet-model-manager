@@ -724,6 +724,16 @@
 
   function pedir(caminho, opcoes) {
     var opts = Object.assign({}, opcoes || {});
+    // O backend resolve a lingua por PEDIDO a partir destes cabecalhos. Sem
+    // eles as mensagens de recusa saiam na lingua da config, nao na que o
+    // seletor mostra — o seletor grava a config, mas a gravacao pode falhar e
+    // entre a escolha e a gravacao havia uma janela em que o ecra mentia.
+    // Vao os dois nomes por desenho (ver `_lingua_do_pedido` no api.py).
+    var linguaPedido = idiomaActual();
+    opts.headers = Object.assign(
+      { "X-VMM": linguaPedido, "VMM_IDIOMA": linguaPedido },
+      opts.headers || {}
+    );
     // O SDK.fetchJSON entrega o init tal e qual ao fetch(): um body objecto vira a
     // string "[object Object]" (text/plain) e o servidor responde 422 "Input should
     // be a valid dictionary". Serializa-se aqui e marca-se o Content-Type — o mesmo

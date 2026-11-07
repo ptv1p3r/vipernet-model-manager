@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Body, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 # O ``api.py`` e importado por caminho; o pacote do plugin tem de estar no sys.path
@@ -38,7 +38,34 @@ import i18n as _i18n  # noqa: E402  (idem)
 # Alias curto: as mensagens de recusa sao todas `t(...)`.
 t = _i18n.t
 
-router = APIRouter()
+async def _lingua_do_pedido(request: Request) -> None:
+    """Aplica a lingua que o pedido declara nos cabecalhos.
+
+    O painel envia os dois nomes (`X-VMM` e `VMM_IDIOMA`) porque o mesmo valor
+    viaja por duas vias: `X-VMM` e o cabecalho proprio do plugin; `VMM_IDIOMA`
+    e o nome que o `i18n` ja usa no ambiente, repetido como cabecalho para que
+    um proxy ou uma sonda possam reusar o mesmo identificador. Sem cabecalho,
+    ou com um codigo fora de `en`/`pt`, nao se fixa nada e a lingua volta a
+    seguir o `VMM_IDIOMA` do processo e depois a config — o comportamento
+    anterior, intacto.
+
+    Uma dependencia de router (e nao um middleware) chega aqui porque todas as
+    rotas do painel vivem neste router. Tem de ser `async`: uma dependencia
+    sincrona corre no threadpool, onde o `ContextVar` fica copiado e o handler
+    — que corre noutro worker — nunca o veria. Em `async` o valor e posto no
+    contexto da tarefa do pedido e, medido, atravessa para o threadpool que
+    serve os 40 handlers sincronos.
+    """
+    cabecalhos = request.headers
+    declarado = (cabecalhos.get("x-vmm") or cabecalhos.get("vmm_idioma") or "").strip()
+    if declarado:
+        _i18n.definir_do_pedido(declarado)
+        return
+    _i18n.definir_do_pedido(None)
+
+
+router = APIRouter(dependencies=[Depends(_lingua_do_pedido)])
+
 
 def _versao_painel() -> str:
     """Versao do painel lida do ``manifest.json`` — um numero, uma casa.
