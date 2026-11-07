@@ -24,6 +24,18 @@ Três frases que resumem o contrato:
 3. Cada **perfil** decide se usa o plugin, como usa (estratégia) e com que lista.
    Um perfil ausente da config não é tocado.
 
+## Capturas
+
+O separador **Model Manager** do painel, na `v3.47.6`, capturado de uma instalação viva:
+
+| Captura | O que mostra |
+|---|---|
+| ![Visão geral](assets/01-visao-geral.png) | **Visão geral** — estado do gestor, o modelo que serve cada perfil, a sua análise de complexidade e as associações de tarefa. |
+| ![Configuração](assets/02-configuracao.png) | **Configuração** — quem decide o nível de cada turno, como se escolhe o modelo dentro do nível, a tarefa persistente e o circuit breaker. |
+| ![Registo de uso](assets/03-registo.png) | **Registo de uso** — o que foi servido turno a turno: modelo, provider, perfil, nível, origem e superfície. |
+
+O nome completo do dono está substituído pelo handle público nestas capturas.
+
 ## Analise de complexidade (3.5)
 
 Duas vias, e a segunda e opcional:
