@@ -16,7 +16,497 @@
   if (!SDK || !window.__HERMES_PLUGINS__) return;
 
   const React = SDK.React;
-  const h = React.createElement;
+  const hBase = React.createElement;
+
+  // ── i18n — ingles (padrao) e portugues de Portugal ─────────────────────
+  // O dicionario tem o texto portugues como chave e o ingles como valor: o PT
+  // e a fonte, por isso nenhum texto pode desaparecer por falta de traducao —
+  // o que nao estiver traduzido cai no PT e le-se. `T()` so devolve outra coisa
+  // quando ha chave; o wrapper `h()` aplica-o a filhos de texto e a titulos,
+  // nunca a `className`, `value` ou `id`, logo nenhuma comparacao de logica
+  // pode ser afectada por mudar de lingua.
+  const IDIOMAS = ["en", "pt"];
+  const IDIOMA_PADRAO = "en";
+  const ETIQUETA_IDIOMA = { en: "English", pt: "Português" };
+  const PT_EN = {
+    "  em vigor: ": "  in force: ",
+    "  ultimas ": "   last ",
+    "  uma associação de tarefa manda sobre a complexidade e sobre a superfície": "  a task association overrides complexity and the surface",
+    " (HTTP ": " (HTTP ",
+    " (desconhecido)": " (unknown)",
+    " (fora do catálogo)": " (outside the catalogue)",
+    " KiB": " KiB",
+    " com ": " with ",
+    " confirmo que reabro o ensaio (a amostra recolhida deixa de valer)": " I confirm I am reopening the trial (the sample collected so far no longer counts)",
+    " dias": " days",
+    " em ": " in ",
+    " gravado em ": " saved at ",
+    " gravado — o gestor já o lê": " saved — the manager already reads it",
+    " h": " h",
+    " leituras ok": " reads ok",
+    " min": " min",
+    " ms": " ms",
+    " nível(is)": " level(s)",
+    " o id é o nome por que as rotas lhe chamam; só as tarefas daqui podem ser associadas": " the id is the name routes call it by; only tasks from here can be associated",
+    " perfil(es), ": " profile(s), ",
+    " problema(s) que esta versão ": " problem(s) this version ",
+    " respostas — modelo, provider, perfil, nivel e origem": " responses — model, provider, profile, level and origin",
+    " rota(s), ": " route(s), ",
+    " s": " s",
+    " tarefa(s)": " task(s)",
+    " tarefa(s), 0 erros": " task(s), 0 errors",
+    " termos": " terms",
+    " turnos": " turns",
+    " turnos · ": " turns · ",
+    " turnos: ": " turns: ",
+    " vez": " time",
+    " · 0 erros": " · 0 errors",
+    " · aplica-se a quem não declara": " · applies to those who do not declare",
+    " · autor: ": " · author:",
+    " · classificador ": " · classifier ",
+    " · classificador: ": " · classifier: ",
+    " · declarado": " · declared",
+    " · editem-se na página de cada modelo": " · edited on each model's page",
+    " · estratégia ": " · strategy ",
+    " · global": " · global",
+    " · herda ": " · inherits ",
+    " · herdado do global": " · inherited from global",
+    " · nivel ": " · level ",
+    " · ordem ": " · order ",
+    " · origem ": " · origin ",
+    " · painel v": " · panel v",
+    " · painel: ": " · panel: ",
+    " · por omissão (6 turnos / 90 min)": " · default (6 turns / 90 min)",
+    " · prioridade ": " · priority ",
+    " · próprio": " · own",
+    " às ": " at ",
+    " — caiu na heurística: ": " — fell back to the heuristic: ",
+    " — o gestor já o lê": " — the manager already reads it",
+    "% falhas)": "% failures)",
+    "(auto)": "(auto)",
+    "(sem id)": "(no id)",
+    ") — decide a heurística": ") — the heuristic decides",
+    "+ modelo": "+ model",
+    "+ tarefa": "+ task",
+    ". Só entra no catálogo depois de gravar; ": ". Only enters the catalogue after saving; ",
+    "0 = determinístico; modelos de raciocínio recusam o campo": "0 = deterministic; reasoning models refuse the field",
+    "0 ou vazio = sem teto; acima disto a rota é descartada": "0 or empty = no ceiling; above this the route is dropped",
+    ": JSON inválido (": ": invalid JSON (",
+    ": falta o id": ": missing the id",
+    ": nunca medida": ": never measured",
+    ": tem de ser um número": ": must be a number",
+    ": tem de ser um objecto JSON": ": must be a JSON object",
+    "A configuração foi alterada noutro sítio desde que abriu esta página. ": "The configuration was changed elsewhere since you opened this page. ",
+    "A configuração foi alterada noutro sítio desde que abriu este editor ": "The configuration was changed elsewhere since you opened this editor ",
+    "A estratégia mudou noutro sítio — recarreguei o estado. Escolha outra vez.": "The strategy changed elsewhere — I reloaded the state. Choose again.",
+    "A gravar…": "Saving…",
+    "A validar…": "Validating…",
+    "Acrescentar a superfície e depois escolher a rota na linha": "Add the surface, then choose the route on its row",
+    "Acrescentar uma tarefa a este perfil": "Add a task to this profile",
+    "Activação e limites": "Activation and limits",
+    "Activo": "Active",
+    "Actualizar": "Refresh",
+    "As rotas do catálogo têm página própria, por modelo. ": "Catalogue routes have their own page, per model. ",
+    "As superfícies mudaram noutro sítio — recarreguei o estado. Escolha outra vez.": "The surfaces changed elsewhere — I reloaded the state. Choose again.",
+    "Associacoes de tarefa": "Task associations",
+    "Cancelar": "Cancel",
+    "Catalogo e associacoes de tarefa vivem em plugin-data/vipernet-model-manager/config.json — este painel permite editar a configuração. Versao do plugin: ": "Catalogue and task associations live in plugin-data/vipernet-model-manager/config.json — this panel lets you edit the configuration. Plugin version: ",
+    "Circuit Breaker": "Circuit Breaker",
+    "Classificador": "Classifier",
+    "Complexidade": "Complexity",
+    "Complexidade (quem decide o nível de cada turno), estratégia (como se escolhe o modelo ": "Complexity (who decides each turn's level), strategy (how the model is chosen ",
+    "Complexidade e estratégia: corrija o JSON para poder editar aqui.": "Complexity and strategy: fix the JSON to be able to edit here.",
+    "Configuracao do Perfil: ": "Profile configuration: ",
+    "Configuracao validada com sucesso.": "Configuration validated successfully.",
+    "Configuração": "Configuration",
+    "Configuração gravada com sucesso — o gestor já a lê": "Configuration saved successfully — the manager already reads it",
+    "Configuração inválida: ": "Invalid configuration: ",
+    "Cooldown base: 2 min. Exemplo: 3 falhas em 5 min → 2 min × 1.5 = 3 min de espera. ": "Base cooldown: 2 min. Example: 3 failures in 5 min → 2 min × 1.5 = 3 min of waiting. ",
+    "Corrija o ficheiro.": "Fix the file.",
+    "Criar um modelo novo no catálogo de ": "Create a new model in the catalogue of ",
+    "Descartar": "Discard",
+    "Descartar e abrir outra vez para ver o estado actual.": "Discard and reopen to see the current state.",
+    "Desligado — ligar": "Off — turn on",
+    "Desligado, o turno volta a ser decidido pelo nível": "Off, the turn is decided by the level again",
+    "Editar as opções de ": "Edit the options of ",
+    "Editar configuração": "Edit configuration",
+    "Editar todas as configurações do perfil ": "Edit all the profile settings ",
+    "Ensaio A/B em sombra": "Shadow A/B trial",
+    "Erro ao carregar config: ": "Error loading config: ",
+    "Erro ao gravar a estratégia: ": "Error saving the strategy: ",
+    "Erro ao gravar a superfície: ": "Error saving the surface: ",
+    "Erro ao gravar o ensaio: ": "Error saving the trial: ",
+    "Erro ao gravar: ": "Error saving: ",
+    "Erro ao ler a rota: ": "Error reading the route: ",
+    "Erro ao ler o perfil: ": "Error reading the profile: ",
+    "Erro ao re-selar os braços: ": "Error re-sealing the arms: ",
+    "Erro ao salvar: ": "Error saving: ",
+    "Erro ao validar: ": "Error validating: ",
+    "Escolhe provider e modelo por complexidade do trabalho e por tipo de tarefa, dentro do catalogo de cada perfil. ": "Chooses provider and model by work complexity and task type, within each profile's catalogue. ",
+    "Estrategia": "Strategy",
+    "Estratégia": "Strategy",
+    "Formulário incompleto: ": "Incomplete form: ",
+    "Gravar": "Save",
+    "Gravar e voltar": "Save and return",
+    "Gravar e voltar ao painel": "Save and return to the panel",
+    "Gravar volta ao painel e passa a valer no turno seguinte.": "Saving returns to the panel and takes effect on the next turn.",
+    "Herança chave a chave: perfil só declara o que quer mudar.": "Key-by-key inheritance: a profile only declares what it wants to change.",
+    "Identidade": "Identity",
+    "JSON da configuração": "Configuration JSON",
+    "JSON inválido: ": "Invalid JSON: ",
+    "JSON nativo": "native JSON",
+    "Ligado — desligar": "On — turn off",
+    "Ligar/desligar o gestor em todos os perfis": "Turn the manager on/off in all profiles",
+    "Ligar/desligar o gestor neste perfil": "Turn the manager on/off in this profile",
+    "Limites declarados": "Declared limits",
+    "Model Manager": "Model Manager",
+    "Idioma": "Language",
+    "Mudar a língua do painel": "Change the panel language",
+    "Língua do painel": "Panel language",
+    "Modelo": "Model",
+    "Modelo ": "Model ",
+    "Novo modelo": "New model",
+    "O JSON deve ser um objecto (não array, não null, não string)": "The JSON must be an object (not an array, not null, not a string)",
+    "O config no disco tem ": "The config on disk has ",
+    "O ensaio mudou noutro sítio — recarreguei o estado. Repita a re-selagem.": "The trial changed elsewhere — I reloaded the state. Repeat the re-sealing.",
+    "O gestor recusou:": "The manager refused:",
+    "O global não é um perfil: vale para todos os que não declaram nada. Mudar aqui move quem herda.": "Global is not a profile: it applies to every profile that declares nothing. Changing it here moves everyone who inherits.",
+    "O modelo que serviu cada turno fica registado em baixo.": "The model that served each turn is recorded below.",
+    "Opcionais. Ausente é «não declarado» — a rota continua utilizável. Declarar é o que a triagem ": "Optional. Absent means «undeclared» — the route stays usable. Declaring is what the triage ",
+    "Perfil ": "Profile ",
+    "Perfil · ": "Profile · ",
+    "Quem serve a superfície continua a ser o perfil; aqui só se diz se ESTE modelo a pode servir. ": "The profile still decides who serves the surface; here you only say whether THIS model may serve it. ",
+    "Re-selar braços": "Re-seal arms",
+    "Registo de utilizacao": "Usage log",
+    "Remover a tarefa ": "Remove the task ",
+    "Repositorio publico do plugin": "Plugin public repository",
+    "Roteamento": "Routing",
+    "Superfícies": "Surfaces",
+    "Superfícies de sessão": "Session surfaces",
+    "Só este perfil. Os outros não são tocados.": "This profile only. The others are untouched.",
+    "Só se aplica à rotação": "Only applies to rotation",
+    "Tarefa persistente": "Persistent task",
+    "Tarefas": "Tasks",
+    "Todas as opções desta rota do catálogo do perfil ": "All options for this profile catalogue route ",
+    "Tudo o que este perfil declara: activação, tarefas, limites, classificador, tarefa persistente e estratégia. ": "Everything this profile declares: activation, tasks, limits, classifier, persistent task and strategy. ",
+    "Uma rota nova no catálogo do perfil ": "A new route in the profile catalogue ",
+    "Vale para todos os perfis que não declararem outra coisa. O delta de cada perfil edita-se na página do perfil.": "Applies to every profile that does not declare otherwise. Each profile's delta is edited on the profile page.",
+    "Validado com sucesso — ": "Validated successfully — ",
+    "Validado — ": "Validated — ",
+    "Validado — perfil ": "Validated — profile ",
+    "Validar": "Validate",
+    "Validar a configuração contra o schema, sem gravar": "Validate the configuration against the schema, without saving",
+    "Validar esta rota contra o schema, sem gravar": "Validate this route against the schema, without saving",
+    "Validar este perfil contra o schema, sem gravar": "Validate this profile against the schema, without saving",
+    "Validar, gravar e voltar ao painel": "Validate, save and return to the panel",
+    "Voltar ao painel sem gravar as alterações": "Return to the panel without saving changes",
+    "Voltar sem gravar": "Return without saving",
+    "a actualizar…": "refreshing…",
+    "a ler a rota do catálogo…": "reading the catalogue route…",
+    "a ler o estado do gestor…": "reading the manager state…",
+    "a ler o perfil…": "reading the profile…",
+    "a tarefa detectada num turno continua a mandar nos seguintes da mesma sessão, dentro do prazo.": "the task detected in one turn keeps deciding in the following ones of the same session, within the deadline.",
+    "abaixo disto o classificador abstém-se; 0 = nunca por confiança": "below this the classifier abstains; 0 = never on confidence",
+    "acima disto a rota não recebe o pedido": "above this the route does not get the request",
+    "acima disto o turno segue pela heurística": "above this the turn follows the heuristic",
+    "acima do teto do perfil a rota é preterida": "above the profile ceiling the route is passed over",
+    "activação": "activation",
+    "alguns modelos usam max_completion_tokens": "some models use max_completion_tokens",
+    "análise da complexidade": "complexity analysis",
+    "braço a": "arm a",
+    "braço a (pago)": "arm a (paid)",
+    "braço b": "arm b",
+    "braço b (gratuito)": "arm b (free)",
+    "braços ": "arms ",
+    "cache do classificador (s)": "classifier cache (s)",
+    "cache do classificador, não do provider": "classifier cache, not the provider's",
+    "caminho (chat)": "path (chat)",
+    "caminho (decisões)": "path (decisions)",
+    "circuit breaker": "circuit breaker",
+    "classificador activo": "classifier active",
+    "classificador desligado — decide a heurística": "classifier off — the heuristic decides",
+    "classificador sem efeito (": "classifier without effect (",
+    "classificador: ": "classifier: ",
+    "coincidir com o ficheiro, e gravar por cima vai ser recusado. ": "match the file, and saving over it will be refused. ",
+    "com o nível decidido, como se escolhe o modelo dentro dele.": "once the level is decided, how the model within it is chosen.",
+    "confiança ≥ ": "confidence ≥ ",
+    "conta desde a última detecção: herdar não renova o prazo. ": "counts from the last detection: inheriting does not renew the deadline. ",
+    "contexto máximo": "maximum context",
+    "contexto máximo (tokens)": "maximum context (tokens)",
+    "custo ": "cost ",
+    "custo —": "cost —",
+    "decide um modelo": "a model decides",
+    "declarar neste perfil": "declare in this profile",
+    "definida globalmente": "set globally",
+    "definição": "definition",
+    "definição da estratégia": "strategy definition",
+    "definição da tarefa persistente": "persistent task definition",
+    "definição do classificador": "classifier definition",
+    "dentro do nível) e superfícies (por onde corre). Fechar grava e volta ao painel.": "within the level) and surfaces (where it runs). Closing saves and returns to the panel.",
+    "desempate entre custos iguais; o id fecha o empate, por isso a posição no ficheiro nunca conta": "tie-break between equal costs; the id settles the tie, so position in the file never counts",
+    "desligada neste perfil": "off in this profile",
+    "desligado (heurística)": "off (heuristic)",
+    "desligado mantém a rota no catálogo mas fora da escolha": "off keeps the route in the catalogue but out of the selection",
+    "desligado neste perfil, o turno segue com o modelo da sessão": "off in this profile, the turn follows the session model",
+    "dura ": "lasts ",
+    "ensaio não definido": "trial not defined",
+    "ensaio: ": "trial: ",
+    "erro: ": "error: ",
+    "esforço": "effort",
+    "esforço ": "effort ",
+    "esforço de raciocínio pedido ao modelo": "reasoning effort requested from the model",
+    "esforço: alto": "effort: high",
+    "esforço: baixo": "effort: low",
+    "esforço: médio": "effort: medium",
+    "esforço: não declarado": "effort: undeclared",
+    "este perfil não declara tarefas — vêem do JSON do perfil": "this profile declares no tasks — they come from the profile JSON",
+    "estratégia": "strategy",
+    "estratégia de ": "strategy for ",
+    "ex.: deepseek-flash": "e.g. deepseek-flash",
+    "falhar ": "failures ",
+    "forma do pedido; vazio = inferir do id do modelo": "request shape; empty = infer from the model id",
+    "formato ": "format ",
+    "formato JSON": "JSON format",
+    "formato: JSON automático": "format: automatic JSON",
+    "formato: JSON obrigatório": "format: mandatory JSON",
+    "formato: texto": "format: text",
+    "gestor activo": "manager active",
+    "gestor desligado": "manager off",
+    "gestor neste perfil": "manager in this profile",
+    "headers extra": "extra headers",
+    "herda ": "inherits ",
+    "herda do perfil": "inherits from profile",
+    "herdada do global": "inherited from global",
+    "herdado do global": "inherited from global",
+    "herdar do global": "inherit from global",
+    "herdar do perfil": "inherit from profile",
+    "herdar segue o global; declarar cria um bloco próprio neste perfil": "inherit follows global; declaring creates a block of this profile's own",
+    "herdar segue o global; declarar sobrepõe-se chave a chave neste perfil": "inherit follows global; declaring overrides key by key in this profile",
+    "herdar segue o global; declarar sobrepõe-se neste perfil": "inherit follows global; declaring overrides in this profile",
+    "heurística": "heuristic",
+    "histórico: ": "history: ",
+    "há um pré-registo mas o selo NÃO bate — não usar": "a pre-registration exists but the seal does NOT match — do not use",
+    "id da rota": "route id",
+    "id da tarefa": "task id",
+    "id exacto no provider (o Jev leva o til: ~typesafe/jev-latest)": "exact id at the provider (Jev carries the tilde: ~typesafe/jev-latest)",
+    "indique os dois modelos": "give both models",
+    "janela (minutos)": "window (minutes)",
+    "janela de mensagens": "message window",
+    "latência máxima (ms)": "maximum latency (ms)",
+    "latência máxima em ms": "maximum latency in ms",
+    "latência máxima: tem de ser um inteiro em ms (0 = sem teto)": "maximum latency: must be an integer in ms (0 = no ceiling)",
+    "latência p95": "p95 latency",
+    "latência p95 (ms)": "p95 latency (ms)",
+    "leu ": "read ",
+    "limite de falhas": "failure threshold",
+    "lista fechada: os providers que a configuração já usa": "closed list: the providers the configuration already uses",
+    "margem ": "margin ",
+    "marque a confirmação de reabertura": "tick the reopening confirmation",
+    "max tokens": "max tokens",
+    "medida em ": "measured ",
+    "minutos: por omissão": "minutes: default",
+    "modelo · ": "model · ",
+    "modelos dos braços": "arm models",
+    "multiplicador de cooldown": "cooldown multiplier",
+    "máximo de caracteres": "maximum characters",
+    "n ": "n ",
+    "nome do campo de tokens": "token field name",
+    "nunca medida": "never measured",
+    "nunca: nao tratar esta superficie": "never: do not handle this surface",
+    "não": "no",
+    "não declarada": "undeclared",
+    "não declarado não é médio: é «não pedir nada»": "undeclared is not medium: it means «ask for nothing»",
+    "não reconhece — o painel está a mostrar a versão validada, que pode não ": " does not recognise — the panel shows the validated version, which may not ",
+    "não serve": "does not serve",
+    "nível ": "level ",
+    "o classificador falhou": "the classifier failed",
+    "o id exacto do modelo no provider": "the exact model id at the provider",
+    "o id é o nome por que as superfícies e as tarefas lhe chamam.": "the id is the name surfaces and tasks call it by.",
+    "o que a rota aceita receber": "what the route accepts receiving",
+    "o selo actual NÃO declara o provider — re-selar declara-o e a sonda passa a saber que credencial usar": "the current seal does NOT declare the provider — re-sealing declares it and the probe then knows which credential to use",
+    "o turno é sorteado entre dois modelos; o modelo que serve vem do braço, não do nível.": "the turn is drawn between two models; the model that serves comes from the arm, not the level.",
+    "objecto JSON de headers do pedido": "JSON object of request headers",
+    "objecto JSON fundido no corpo do pedido": "JSON object merged into the request body",
+    "obrigatório; único dentro do perfil": "required; unique within the profile",
+    "orçamento da resposta do classificador": "classifier response budget",
+    "os dois braços não podem ser o mesmo modelo": "the two arms cannot be the same model",
+    "os níveis de turno que esta rota serve (pelo menos um)": "the turn levels this route serves (at least one)",
+    "p0 ": "p0 ",
+    "painel ": "panel ",
+    "parâmetros extra": "extra parameters",
+    "piso de confiança": "confidence floor",
+    "plugin.yaml e manifest.json divergem": "plugin.yaml and manifest.json diverge",
+    "pode servir": "can serve",
+    "por omissão": "default",
+    "por omissão (1.5x)": "default (1.5x)",
+    "por omissão (3)": "default (3)",
+    "por omissão (5)": "default (5)",
+    "por sessão": "per session",
+    "por sessão mantém a sessão no mesmo modelo dentro do nível; por turno alterna e invalida a cache do provider": "per session keeps the session on the same model within the level; per turn alternates and invalidates the provider cache",
+    "por turno": "per turn",
+    "porque está aqui esta rota": "why this route is here",
+    "prazo em minutos": "deadline in minutes",
+    "prazo em turnos": "deadline in turns",
+    "preço por milhão de tokens; 0 é grátis. Em branco não é grátis: ordena depois das que declaram custo": "price per million tokens; 0 is free. Blank is not free: it sorts after those that declare a cost",
+    "prioridade (primeira da lista)": "priority (first in the list)",
+    "provider declarado no selo: ": "provider declared in the seal: ",
+    "provider do braço a": "arm a provider",
+    "provider do braço b": "arm b provider",
+    "pré-registo selado ": "sealed pre-registration ",
+    "própria": "own",
+    "própria do perfil": "this profile's own",
+    "próprio": "own",
+    "próprio do perfil": "this profile's own",
+    "quantas mensagens anteriores entram no pedido": "how many previous messages enter the request",
+    "que estado acompanha o pedido — medidas, nao transcricao": "which state accompanies the request — measurements, not a transcript",
+    "quem decide o nível de cada turno: um modelo classificador ou a heurística.": "who decides each turn's level: a classifier model or the heuristic.",
+    "quem serve o classificador; o provider tem de existir neste perfil": "who serves the classifier; the provider must exist in this profile",
+    "re-selado ": "re-sealed ",
+    "regra deste perfil": "this profile's rule",
+    "regra herdada do global — escolher aqui cria a do perfil": "rule inherited from global — choosing here creates this profile's own",
+    "renomear parte as regras de superfície que lhe chamam pelo nome": "renaming breaks the surface rules that call it by name",
+    "resposta em JSON: auto pede response_format e repete sem ele se o provider recusar": "JSON answer: auto requests response_format and retries without it if the provider refuses",
+    "rota para ": "route for ",
+    "rotas no catálogo: ": "routes in the catalogue: ",
+    "rotação": "rotation",
+    "rotação ": "rotation ",
+    "rotação de ": "rotation for ",
+    "rotação: ": "rotation: ",
+    "rotação: por omissão (sessão)": "rotation: default (session)",
+    "se a superfície da sessão for esta, o turno vai para este modelo (por perfil).": "if the session surface is this one, the turn goes to this model (per profile).",
+    "se um modelo falha repetidamente, o tempo de espera (cooldown) aumenta progressivamente.": "if a model fails repeatedly, the waiting time (cooldown) grows progressively.",
+    "sem associacoes de tarefa — decide so a analise de complexidade": "no task associations — only complexity analysis decides",
+    "sem decisão": "no decision",
+    "sem efeito — ": "no effect — ",
+    "sem modelo definido — decide a heurística": "no model set — the heuristic decides",
+    "sem pré-registo selado": "no sealed pre-registration",
+    "sem registos": "no records",
+    "sem regra": "no rule",
+    "sem regras de superfície — decide a tarefa e a complexidade": "no surface rules — task and complexity decide",
+    "sem tarefas declaradas neste perfil": "no tasks declared in this profile",
+    "sem turnos registados neste perfil": "no turns recorded in this profile",
+    "sonda de vida ": "liveness probe ",
+    "subscrição exige provider openai-codex": "subscription requires the openai-codex provider",
+    "superfície ": "surface ",
+    "superfície (ex.: cron)": "surface (e.g. cron)",
+    "superfície a acrescentar": "surface to add",
+    "superfícies não nomeadas": "unnamed surfaces",
+    "só o transporte chat a usa; em decisões a rubrica vai no criteria": "only the chat transport uses it; in decisions the rubric goes in criteria",
+    "tarefa #": "task #",
+    "tarefa persistente activa neste perfil": "persistent task active in this profile",
+    "tarefa persistente em todos os perfis": "persistent task in all profiles",
+    "tarefa persistente: o prazo em minutos tem de ser um inteiro de 1 a 1440": "persistent task: the deadline in minutes must be an integer from 1 to 1440",
+    "tarefa persistente: o prazo em turnos tem de ser um inteiro de 1 a 50": "persistent task: the deadline in turns must be an integer from 1 to 50",
+    "tarefa sem rota": "task without a route",
+    "tarefa «": "task «",
+    "tecto do texto enviado ao classificador": "ceiling for the text sent to the classifier",
+    "termos separados por vírgulas": "comma-separated terms",
+    "texto livre do dono, lido no painel": "owner's free text, read in the panel",
+    "timeout (s)": "timeout (s)",
+    "todas as outras": "all the others",
+    "todos os perfis": "all profiles",
+    "turnos: por omissão": "turns: default",
+    "ultimo turno: ": "last turn: ",
+    "uma tarefa associada vence a análise de complexidade": "an associated task beats complexity analysis",
+    "usa para recusar uma rota impossível (contexto, modalidade, JSON, latência).": "uses to refuse an impossible route (context, modality, JSON, latency).",
+    "validade da sonda (horas)": "probe validity (hours)",
+    "variante do prompt": "prompt variant",
+    "vazio = /api/alpha/decisions": "empty = /api/alpha/decisions",
+    "vazio = /chat/completions do provider": "empty = the provider's /chat/completions",
+    "vazio = herda o global; 1 a 1440": "empty = inherits global; 1 to 1440",
+    "vazio = herda o global; 1 a 50": "empty = inherits global; 1 to 50",
+    "via decisões": "via decisions",
+    "«Herdar do perfil» não escreve nada — é a ausência da regra que herda.": "«Inherit from profile» writes nothing — it is the absence of a rule that inherits.",
+    "«auto» descobre o transporte pelo preset do modelo": "«auto» discovers the transport from the model preset",
+    "«auto» tenta JSON nativo e degrada para texto": "«auto» tries native JSON and degrades to text",
+    "«complexidade: auto» numa mensagem termina a associação neste perfil.": "«complexity: auto» in a message ends the association in this profile.",
+    "«complexidade: auto» numa mensagem termina a associação; desligada, cada turno volta a decidir pela complexidade.": "«complexity: auto» in a message ends the association; when off, each turn decides by complexity again.",
+    "«não serve» aqui fecha o modelo às superfícies que não estão marcadas «pode servir»": "«does not serve» here closes the model to surfaces not marked «can serve»",
+    "«não» é uma afirmação: recusa pedidos que exigem JSON": "«no» is a statement: it refuses requests that require JSON",
+    "»: a prioridade tem de ser um inteiro": "»: priority must be an integer",
+    "»: id repetido": "»: duplicate id",
+    "últimos ": "last ",
+    "— não declarado —": "— undeclared —",
+    "— recarreguei a versão actual. Reveja o que quer mudar e grave outra vez.": "— I reloaded the current version. Review what you want to change and save again.",
+    "— sem regra (herdar) —": "— no rule (inherit) —",
+    "— sem tarefas declaradas neste perfil —": "— no tasks declared in this profile —",
+    "✓ Gravar e voltar": "✓ Save and return",
+  };
+  let IDIOMA = IDIOMA_PADRAO;
+
+  function normalizarIdioma(valor) {
+    const base = String(valor == null ? "" : valor).trim().toLowerCase()
+      .replace(/_/g, "-").split("-")[0];
+    return IDIOMAS.indexOf(base) >= 0 ? base : IDIOMA_PADRAO;
+  }
+
+  function setIdioma(valor) {
+    const novo = normalizarIdioma(valor);
+    const mudou = novo !== IDIOMA;
+    IDIOMA = novo;
+    return mudou;
+  }
+
+  function idiomaActual() {
+    return IDIOMA;
+  }
+
+  function T(texto) {
+    if (IDIOMA === "pt") return texto;
+    const traducao = PT_EN[texto];
+    return traducao === undefined ? texto : traducao;
+  }
+
+  // Tempo decorrido: em PT o "ha" vai antes do numero, em EN o "ago" vai
+  // depois. Traduzir os fragmentos um a um escrevia "5 ago min".
+  function tQuanto(n, unidade) {
+    return IDIOMA === "pt"
+      ? " há " + n + " " + unidade
+      : " " + n + " " + unidade + " ago";
+  }
+
+  function tHa(min) {
+    return IDIOMA === "pt" ? "há " + min + " min" : min + " min ago";
+  }
+
+  function tInstantes() {
+    return IDIOMA === "pt" ? "instantes" : "moments ago";
+  }
+
+  // Locale das datas. Em ingles usa-se `en-GB` de proposito: mantem dia/mes e
+  // o relogio de 24 h, como o PT — `en-US` escrevia 11/07 e lia-se como 7 de
+  // novembro em vez de 11 de julho. O fuso continua Europe/Lisbon.
+  function localeHora() {
+    return IDIOMA === "pt" ? "pt-PT" : "en-GB";
+  }
+
+  const PROPS_TEXTO = ["title", "placeholder", "aria-label", "alt", "label"];
+
+  function h(type, props, ...filhos) {
+    let p = props;
+    if (p) {
+      let copia = null;
+      for (let i = 0; i < PROPS_TEXTO.length; i += 1) {
+        const chave = PROPS_TEXTO[i];
+        if (typeof p[chave] === "string" && PT_EN[p[chave]] !== undefined) {
+          if (!copia) copia = Object.assign({}, p);
+          copia[chave] = T(p[chave]);
+        }
+      }
+      if (copia) p = copia;
+    }
+    const fs = IDIOMA === "pt" ? filhos
+      : filhos.map(function (f) { return typeof f === "string" ? T(f) : f; });
+    return hBase.apply(null, [type, p].concat(fs));
+  }
+
+  // Exposto para os testes e para o painel aplicarem a lingua antes do
+  // primeiro render — sem isto a primeira pintura saia sempre em ingles.
+  window.__VMM_I18N__ = {
+    t: T, setIdioma: setIdioma, idiomaActual: idiomaActual,
+    normalizarIdioma: normalizarIdioma, PT_EN: PT_EN, IDIOMAS: IDIOMAS,
+    etiqueta: ETIQUETA_IDIOMA,
+  };
   const hooks = SDK.hooks || {};
   const useState = hooks.useState || React.useState;
   const useEffect = hooks.useEffect || React.useEffect;
@@ -76,7 +566,7 @@
         ? h(
             "span",
             { className: "vmm-meta-deriva", title: "plugin.yaml e manifest.json divergem" },
-            " · painel v" + meta.manifest
+            T(" · painel v") + meta.manifest
           )
         : null
     );
@@ -96,10 +586,10 @@
       h(
         "div",
         null,
-        "O config no disco tem " + erros.length + " problema(s) que esta versão "
-          + "não reconhece — o painel está a mostrar a versão validada, que pode não "
-          + "coincidir com o ficheiro, e gravar por cima vai ser recusado. "
-          + "Corrija o ficheiro."
+        T("O config no disco tem ") + erros.length + T(" problema(s) que esta versão ")
+          + T("não reconhece — o painel está a mostrar a versão validada, que pode não ")
+          + T("coincidir com o ficheiro, e gravar por cima vai ser recusado. ")
+          + T("Corrija o ficheiro.")
       ),
       erros.slice(0, 6).map(function (e, i) {
         return h("div", { key: i }, "• " + e);
@@ -136,7 +626,7 @@
     const d = new Date(ts);
     if (isNaN(d.getTime())) return String(ts);
     try {
-      return d.toLocaleString("pt-PT", {
+      return d.toLocaleString(localeHora(), {
         timeZone: "Europe/Lisbon",
         day: "2-digit", month: "2-digit",
         hour: "2-digit", minute: "2-digit", second: "2-digit",
@@ -195,7 +685,7 @@
     return h(
       "div",
       { className: "vmm-config-editor" },
-      h("h3", {}, "Configuracao do Perfil: " + (props.perfil || "global")),
+      h("h3", {}, T("Configuracao do Perfil: ") + (props.perfil || "global")),
       h("div", { className: "vmm-config-campos" },
         h("label", {}, "Activo"),
         h(Interruptor, { activo: !!config.activo, onClick: function() {
@@ -234,7 +724,7 @@
     // mente sobre o que esta a decidir.
     const falta = valor && !opcoes.some(function (o) { return o.valor === valor; });
     const filhos = [];
-    if (falta) filhos.push(h("option", { key: "__f", value: valor }, valor + " (desconhecido)"));
+    if (falta) filhos.push(h("option", { key: "__f", value: valor }, valor + T(" (desconhecido)")));
     opcoes.forEach(function (o) {
       filhos.push(h("option", { key: o.valor, value: o.valor }, o.rotulo || o.valor));
     });
@@ -269,7 +759,7 @@
       });
     });
     (niveis || []).forEach(function (n) {
-      lista.push({ valor: "nivel:" + n, rotulo: "nível " + n });
+      lista.push({ valor: "nivel:" + n, rotulo: T("nível ") + n });
     });
     return lista;
   }
@@ -290,7 +780,7 @@
       const m = (catalogo || []).filter(function (x) { return x.id === r.entrada; })[0];
       return r.entrada + (m ? " (" + m.provider + "/" + m.modelo + ")" : " (fora do catálogo)");
     }
-    if (r.nivel) return "nível " + r.nivel;
+    if (r.nivel) return T("nível ") + r.nivel;
     return (r.provider || "") + "/" + (r.modelo || "");
   }
 
@@ -339,7 +829,7 @@
                 valor: valorDaRegra(r),
                 opcoes: opcoes,
                 disabled: props.aGravar,
-                rotulo: "rota para " + s,
+                rotulo: T("rota para ") + s,
                 title: rotuloRegra(r, props.catalogo),
                 onChange: function (v) { props.onMudar(s, v); },
               })
@@ -388,7 +878,7 @@
       : origem === "global" ? "definida globalmente"
       : "por omissão";
     const oque = modo === "rodizio"
-      ? "rotação " + (por === "turno" ? "por turno" : "por sessão")
+      ? T("rotação ") + (por === "turno" ? "por turno" : "por sessão")
       : "prioridade (primeira da lista)";
     return oque + " · " + onde;
   }
@@ -402,7 +892,7 @@
     try {
       const d = new Date(iso);
       if (isNaN(d.getTime())) return "";
-      return d.toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" });
+      return d.toLocaleTimeString(localeHora(), { hour: "2-digit", minute: "2-digit" });
     } catch (e) { return ""; }
   }
   function _haMin(iso) {
@@ -439,14 +929,14 @@
       if (n > 0) contagens.push(n + " " + (nomes[k] || k));
     });
     let evidencia = a.respostas > 0
-      ? "últimos " + a.respostas + " turnos: " + contagens.join(" · ")
+      ? T("últimos ") + a.respostas + T(" turnos: ") + contagens.join(" · ")
       : "";
     const taxa = a.taxa || {};
     const lidas = (taxa.leituras || 0) + (taxa.falhas || 0);
     if (lidas > 0) {
-      const taxaTxt = (taxa.leituras || 0) + "/" + lidas + " leituras ok"
-        + (taxa.falhas ? " (" + Math.round((taxa.falhas / lidas) * 100) + "% falhas)" : "");
-      evidencia = evidencia ? evidencia + " · classificador: " + taxaTxt : "classificador: " + taxaTxt;
+      const taxaTxt = (taxa.leituras || 0) + "/" + lidas + T(" leituras ok")
+        + (taxa.falhas ? " (" + Math.round((taxa.falhas / lidas) * 100) + T("% falhas)") : "");
+      evidencia = evidencia ? evidencia + T(" · classificador: ") + taxaTxt : "classificador: " + taxaTxt;
     }
     const rasto = a.rasto || {};
     // O aviso so vale para a ultima chamada: um erro antigo nao pode ficar a
@@ -466,20 +956,20 @@
       // seria descrever uma alavanca que nao esta ligada a nada.
       if (c.via === "decisoes") {
         extra.push("via decisões");
-        if (c.confianca_min) extra.push("confiança ≥ " + c.confianca_min);
+        if (c.confianca_min) extra.push(T("confiança ≥ ") + c.confianca_min);
       } else {
-        if (c.esforco) extra.push("esforço " + c.esforco);
+        if (c.esforco) extra.push(T("esforço ") + c.esforco);
         // O formato so se mostra quando nao e o de fabrica: `auto` e o normal e
         // nao vale um chip. `texto` e uma escolha, e essa ve-se.
-        if (c.formato_json && c.formato_json !== "auto") extra.push("formato " + c.formato_json);
+        if (c.formato_json && c.formato_json !== "auto") extra.push(T("formato ") + c.formato_json);
       }
       extra.push(onde);
-      if (motivoConfig) extra.push("sem efeito — " + motivoConfig);
+      if (motivoConfig) extra.push(T("sem efeito — ") + motivoConfig);
       if (rasto.lido) {
         const conf = rasto.confianca;
         const confTxt = (typeof conf === "number") ? " (" + Math.round(conf * 100) + "%)" : "";
-        extra.push("leu " + rasto.lido + confTxt
-          + (rasto.ms ? " em " + Math.round(rasto.ms) + " ms" : ""));
+        extra.push(T("leu ") + rasto.lido + confTxt
+          + (rasto.ms ? T(" em ") + Math.round(rasto.ms) + T(" ms") : ""));
       }
       // Uma leitura de outro classificador (ou anterior ao erro actual) nao e
       // estado: vai rotulada como historico, com a idade e quem a produziu.
@@ -489,10 +979,10 @@
       if (hist && hist.lido) {
         const idade = hist.idade_s;
         const quando = idade == null ? ""
-          : (idade < 90 ? " há " + Math.round(idade) + " s"
-            : idade < 5400 ? " há " + Math.round(idade / 60) + " min"
-            : " há " + Math.round(idade / 3600) + " h");
-        extra.push("histórico: " + hist.lido + quando
+          : (idade < 90 ? tQuanto(Math.round(idade), "s")
+            : idade < 5400 ? tQuanto(Math.round(idade / 60), "min")
+            : tQuanto(Math.round(idade / 3600), "h"));
+        extra.push(T("histórico: ") + hist.lido + quando
           + " com " + (hist.provider || "?") + "/" + (hist.modelo || "?"));
       }
       // Um motivo antigo tambem e historia. A config mudou depois dele, ou
@@ -503,17 +993,17 @@
         const idadeM = hist.motivo_antigo.idade_s;
         const quandoM = idadeM == null ? ""
           : (idadeM < 90 ? " há " + Math.round(idadeM) + " s"
-            : idadeM < 5400 ? " há " + Math.round(idadeM / 60) + " min"
-            : " há " + Math.round(idadeM / 3600) + " h");
+            : idadeM < 5400 ? " há " + Math.round(idadeM / 60) + T(" min")
+            : " há " + Math.round(idadeM / 3600) + T(" h"));
         // Só a etiqueta do motivo (antes do «:»): o texto completo do erro do
         // provider é uma linha de traceback que nao cabe num cartao.
         const etiqueta = String(hist.motivo_antigo.motivo).split(":")[0];
-        extra.push("histórico: " + etiqueta + quandoM
+        extra.push(T("histórico: ") + etiqueta + quandoM
           + " — " + (hist.motivo_antigo.porque || "desactualizado"));
       }
       return {
         modo: "modelo",
-        titulo: "modelo · " + (c.provider || "?") + "/" + (c.modelo || "?"),
+        titulo: T("modelo · ") + (c.provider || "?") + "/" + (c.modelo || "?"),
         tom: "default",
         detalhe: extra.join(" · "),
         evidencia: evidencia,
@@ -522,16 +1012,16 @@
           const hora = _hhmm(rasto.ts);
           const idade = _haMin(rasto.ts);
           const quando = hora
-            ? " às " + hora + (idade !== null ? " (há " + (idade < 1 ? "instantes" : idade + " min") + ")" : "")
+            ? T(" às ") + hora + (idade !== null ? " (" + (idade < 1 ? tInstantes() : tHa(idade)) + ")" : "")
             : "";
-          return "o classificador falhou" + quando + " — caiu na heurística: " + alertaBruto;
+          return T("o classificador falhou") + quando + T(" — caiu na heurística: ") + alertaBruto;
         })(),
       };
     }
     const motivo = String(c.motivo || "");
     let detalhe = "sem modelo definido — decide a heurística";
     if (motivo === "desligado") detalhe = "classificador desligado — decide a heurística";
-    else if (motivo) detalhe = "classificador sem efeito (" + motivo + ") — decide a heurística";
+    else if (motivo) detalhe = T("classificador sem efeito (") + motivo + T(") — decide a heurística");
     return {
       modo: "heuristica",
       titulo: "heurística",
@@ -737,10 +1227,10 @@
             "div",
             { className: "vmm-sub" },
             novo
-              ? "Uma rota nova no catálogo do perfil " + perfil + ". Só entra no catálogo depois de gravar; "
-                + "o id é o nome por que as superfícies e as tarefas lhe chamam."
-              : "Todas as opções desta rota do catálogo do perfil " + perfil + ". "
-                + "Gravar volta ao painel e passa a valer no turno seguinte."
+              ? T("Uma rota nova no catálogo do perfil ") + perfil + T(". Só entra no catálogo depois de gravar; ")
+                + T("o id é o nome por que as superfícies e as tarefas lhe chamam.")
+              : T("Todas as opções desta rota do catálogo do perfil ") + perfil + ". "
+                + T("Gravar volta ao painel e passa a valer no turno seguinte.")
           ),
           linhaIdentidade(meta)
         ),
@@ -771,7 +1261,7 @@
         )
       ),
 
-      props.erro ? h("div", { className: "vmm-erro" }, "erro: " + props.erro) : null,
+      props.erro ? h("div", { className: "vmm-erro" }, T("erro: ") + props.erro) : null,
 
       props.validacaoOk
         ? h("div", { className: "vmm-ok", role: "status", "aria-live": "polite" }, "✓ " + props.validacaoOk)
@@ -869,8 +1359,8 @@
               { className: "vmm-bloco" },
               h("div", { className: "vmm-bloco-titulo" }, h("strong", null, "Superfícies")),
               h("div", { className: "vmm-mudo vmm-campo-ajuda" },
-                "Quem serve a superfície continua a ser o perfil; aqui só se diz se ESTE modelo a pode servir. "
-                + "«Herdar do perfil» não escreve nada — é a ausência da regra que herda."),
+                T("Quem serve a superfície continua a ser o perfil; aqui só se diz se ESTE modelo a pode servir. ")
+                + T("«Herdar do perfil» não escreve nada — é a ausência da regra que herda.")),
               h(
                 "div",
                 { className: "vmm-modelo-campos" },
@@ -901,8 +1391,8 @@
               { className: "vmm-bloco" },
               h("div", { className: "vmm-bloco-titulo" }, h("strong", null, "Limites declarados")),
               h("div", { className: "vmm-mudo vmm-campo-ajuda" },
-                "Opcionais. Ausente é «não declarado» — a rota continua utilizável. Declarar é o que a triagem "
-                + "usa para recusar uma rota impossível (contexto, modalidade, JSON, latência)."),
+                T("Opcionais. Ausente é «não declarado» — a rota continua utilizável. Declarar é o que a triagem ")
+                + T("usa para recusar uma rota impossível (contexto, modalidade, JSON, latência).")),
               h(
                 "div",
                 { className: "vmm-modelo-campos" },
@@ -1072,16 +1562,16 @@
     (f.tarefas || []).forEach(function (t, i) {
       const id = String(t.id || "").trim();
       if (!id) {
-        erro.push("tarefa #" + (i + 1) + ": falta o id");
+        erro.push(T("tarefa #") + (i + 1) + T(": falta o id"));
         return;
       }
       if (tarefas[id]) {
-        erro.push("tarefa «" + id + "»: id repetido");
+        erro.push(T("tarefa «") + id + T("»: id repetido"));
         return;
       }
       const pr = String(t.prioridade == null ? "" : t.prioridade).trim();
       if (pr !== "" && !/^-?\d+$/.test(pr)) {
-        erro.push("tarefa «" + id + "»: a prioridade tem de ser um inteiro");
+        erro.push(T("tarefa «") + id + T("»: a prioridade tem de ser um inteiro"));
         return;
       }
       const termos = String(t.termos || "")
@@ -1103,7 +1593,7 @@
           if (txt === "") return;                       // ausente = o padrao decide
           const n = Number(txt.replace(",", "."));
           if (!isFinite(n)) {
-            erro.push(c.rotulo + ": tem de ser um número");
+            erro.push(c.rotulo + T(": tem de ser um número"));
             return;
           }
           cls[c.chave] = n;
@@ -1117,12 +1607,12 @@
         try {
           const obj = JSON.parse(txt);
           if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
-            erro.push(c.rotulo + ": tem de ser um objecto JSON");
+            erro.push(c.rotulo + T(": tem de ser um objecto JSON"));
             return;
           }
           cls[c.chave] = obj;
         } catch (e) {
-          erro.push(c.rotulo + ": JSON inválido (" + e.message + ")");
+          erro.push(c.rotulo + T(": JSON inválido (") + e.message + ")");
         }
       });
       corpo.classificador = cls;
@@ -1200,13 +1690,13 @@
         h(
           "div",
           null,
-          h("h1", { className: "vmm-h1" }, "Perfil · " + perfil),
+          h("h1", { className: "vmm-h1" }, T("Perfil · ") + perfil),
           h(
             "div",
             { className: "vmm-sub" },
-            "Tudo o que este perfil declara: activação, tarefas, limites, classificador, tarefa persistente e estratégia. "
-              + "As rotas do catálogo têm página própria, por modelo. "
-              + "Gravar volta ao painel e passa a valer no turno seguinte."
+            T("Tudo o que este perfil declara: activação, tarefas, limites, classificador, tarefa persistente e estratégia. ")
+              + T("As rotas do catálogo têm página própria, por modelo. ")
+              + T("Gravar volta ao painel e passa a valer no turno seguinte.")
           ),
           linhaIdentidade(meta)
         ),
@@ -1237,7 +1727,7 @@
         )
       ),
 
-      props.erro ? h("div", { className: "vmm-erro" }, "erro: " + props.erro) : null,
+      props.erro ? h("div", { className: "vmm-erro" }, T("erro: ") + props.erro) : null,
 
       props.validacaoOk
         ? h("div", { className: "vmm-ok", role: "status", "aria-live": "polite" }, "✓ " + props.validacaoOk)
@@ -1291,8 +1781,8 @@
                 }))
               ),
               h("div", { className: "vmm-mudo vmm-campo-ajuda" },
-                "rotas no catálogo: " + (efectivo.n_modelos == null ? "—" : efectivo.n_modelos)
-                  + " · editem-se na página de cada modelo")
+                T("rotas no catálogo: ") + (efectivo.n_modelos == null ? "—" : efectivo.n_modelos)
+                  + T(" · editem-se na página de cada modelo"))
             ),
 
             // --- 2. tarefas ------------------------------------------------
@@ -1335,8 +1825,8 @@
                           size: "sm",
                           variant: "ghost",
                           className: "vmm-icone",
-                          title: "Remover a tarefa " + (t.id || i + 1),
-                          "aria-label": "Remover a tarefa " + (t.id || i + 1),
+                          title: T("Remover a tarefa ") + (t.id || i + 1),
+                          "aria-label": T("Remover a tarefa ") + (t.id || i + 1),
                           onClick: function () { props.onRemoverTarefa(i); },
                         }, "×")
                       );
@@ -1362,7 +1852,7 @@
                 { className: "vmm-bloco-titulo" },
                 h("strong", null, "Classificador"),
                 h("span", { className: "vmm-mudo" },
-                  "  em vigor: " + (efectivo.classificador
+                  T("  em vigor: ") + (efectivo.classificador
                     ? String(efectivo.classificador.provider || "?") + "/"
                       + String(efectivo.classificador.modelo || "?")
                       + " · " + String(efectivo.classificador.origem || "?")
@@ -1378,14 +1868,14 @@
                   rotulo: "definição do classificador",
                   valor: form.clsHerdar ? "herdar" : "proprio",
                   opcoes: [
-                    { valor: "herdar", rotulo: "herdar do global" },
+                    { valor: "herdar", rotulo: T("herdar do global") },
                     { valor: "proprio", rotulo: "declarar neste perfil" },
                   ],
                   onChange: function (v) { props.onCampo("clsHerdar", v === "herdar"); },
                 })),
                 form.clsHerdar
                   ? h("div", { className: "vmm-mudo vmm-campo-ajuda" },
-                      "herda " + String((global.classificador || {}).provider || "?") + "/"
+                      T("herda ") + String((global.classificador || {}).provider || "?") + "/"
                         + String((global.classificador || {}).modelo || "?"))
                   : h(Seletor, {
                       rotulo: "classificador activo",
@@ -1443,9 +1933,9 @@
                 { className: "vmm-bloco-titulo" },
                 h("strong", null, "Tarefa persistente"),
                 h("span", { className: "vmm-mudo" },
-                  "  em vigor: " + (tpEfectiva.activo === false ? "desligada" : "activa")
+                  T("  em vigor: ") + (tpEfectiva.activo === false ? "desligada" : "activa")
                     + " · " + String(tpEfectiva.expira_turnos == null ? "?" : tpEfectiva.expira_turnos) + " turnos"
-                    + " · " + String(tpEfectiva.expira_min == null ? "?" : tpEfectiva.expira_min) + " min"
+                    + " · " + String(tpEfectiva.expira_min == null ? "?" : tpEfectiva.expira_min) + T(" min")
                     + " · " + String(tpEfectiva.origem || "?"))
               ),
               h(
@@ -1458,16 +1948,16 @@
                   rotulo: "definição da tarefa persistente",
                   valor: form.tpHerdar ? "herdar" : "proprio",
                   opcoes: [
-                    { valor: "herdar", rotulo: "herdar do global" },
+                    { valor: "herdar", rotulo: T("herdar do global") },
                     { valor: "proprio", rotulo: "declarar neste perfil" },
                   ],
                   onChange: function (v) { props.onCampo("tpHerdar", v === "herdar"); },
                 })),
                 form.tpHerdar
                   ? h("div", { className: "vmm-mudo vmm-campo-ajuda" },
-                      "herda " + ((global.tarefa_persistente || {}).activo === false ? "desligada" : "activa")
-                        + " · " + String((global.tarefa_persistente || {}).expira_turnos) + " turnos · "
-                        + String((global.tarefa_persistente || {}).expira_min) + " min")
+                      T("herda ") + ((global.tarefa_persistente || {}).activo === false ? "desligada" : "activa")
+                        + " · " + String((global.tarefa_persistente || {}).expira_turnos) + T(" turnos · ")
+                        + String((global.tarefa_persistente || {}).expira_min) + T(" min"))
                   : h("div", null,
                       h(Campo, { rotulo: "activação" },
                         h(Seletor, {
@@ -1494,8 +1984,8 @@
                           onChange: mudar("tpMin"),
                         })),
                       h("div", { className: "vmm-mudo vmm-campo-ajuda" },
-                        "conta desde a última detecção: herdar não renova o prazo. "
-                        + "«complexidade: auto» numa mensagem termina a associação neste perfil."))
+                        T("conta desde a última detecção: herdar não renova o prazo. ")
+                        + T("«complexidade: auto» numa mensagem termina a associação neste perfil.")))
               )
             ),
 
@@ -1508,7 +1998,7 @@
                 { className: "vmm-bloco-titulo" },
                 h("strong", null, "Estratégia"),
                 h("span", { className: "vmm-mudo" },
-                  "  em vigor: " + String(estrategiaEfectiva.modo || "?")
+                  T("  em vigor: ") + String(estrategiaEfectiva.modo || "?")
                     + " / " + String(estrategiaEfectiva.por || "?")
                     + " · " + String(estrategiaEfectiva.origem || "?"))
               ),
@@ -1522,14 +2012,14 @@
                   rotulo: "definição da estratégia",
                   valor: form.estHerdar ? "herdar" : "proprio",
                   opcoes: [
-                    { valor: "herdar", rotulo: "herdar do global" },
+                    { valor: "herdar", rotulo: T("herdar do global") },
                     { valor: "proprio", rotulo: "declarar neste perfil" },
                   ],
                   onChange: function (v) { props.onCampo("estHerdar", v === "herdar"); },
                 })),
                 form.estHerdar
                   ? h("div", { className: "vmm-mudo vmm-campo-ajuda" },
-                      "herda " + String((global.estrategia || {}).modo || "?")
+                      T("herda ") + String((global.estrategia || {}).modo || "?")
                         + " / " + String((global.estrategia || {}).por || "?"))
                   : h("div", null,
                       h(Campo, { rotulo: "modo" },
@@ -1579,8 +2069,8 @@
               size: "sm",
               variant: "outline",
               className: "vmm-icone vmm-icone-perfil",
-              title: "Editar todas as configurações do perfil " + nome,
-              "aria-label": "Editar todas as configurações do perfil " + nome,
+              title: T("Editar todas as configurações do perfil ") + nome,
+              "aria-label": T("Editar todas as configurações do perfil ") + nome,
               onClick: function () { props.onPerfil(nome); },
             }, "⚙"),
             h(Chip, { tone: p.activo ? "default" : "secondary" }, p.activo ? "activo" : "desligado"),
@@ -1599,8 +2089,8 @@
               size: "sm",
               variant: "outline",
               className: "vmm-icone vmm-icone-novo",
-              title: "Criar um modelo novo no catálogo de " + nome,
-              "aria-label": "Criar um modelo novo no catálogo de " + nome,
+              title: T("Criar um modelo novo no catálogo de ") + nome,
+              "aria-label": T("Criar um modelo novo no catálogo de ") + nome,
               onClick: function () { props.onNovoModelo(nome); },
             }, "+ modelo")
           ),
@@ -1618,8 +2108,8 @@
               { className: "vmm-ultimo" },
               "ultimo turno: ",
               h("strong", null, (p.ultimo.provider || "?") + " / " + (p.ultimo.modelo || "?")),
-              " · nivel " + (p.ultimo.nivel || "—"),
-              " · origem " + (p.ultimo.origem || "—"),
+              T(" · nivel ") + (p.ultimo.nivel || "—"),
+              T(" · origem ") + (p.ultimo.origem || "—"),
               " · " + hora(p.ultimo.ts)
             )
           : h("div", { className: "vmm-mudo" }, "sem turnos registados neste perfil"),
@@ -1651,8 +2141,8 @@
                   return h(
                     Chip,
                     { key: t, tone: "outline" },
-                    t + " · prioridade " + (def.prioridade != null ? def.prioridade : 0) +
-                      (termos.length ? " · " + termos.length + " termos" : "")
+                    t + T(" · prioridade ") + (def.prioridade != null ? def.prioridade : 0) +
+                      (termos.length ? " · " + termos.length + T(" termos") : "")
                   );
                 })
               )
@@ -1695,15 +2185,15 @@
                     size: "sm",
                     variant: "ghost",
                     className: "vmm-icone",
-                    title: "Editar as opções de " + m.id,
-                    "aria-label": "Editar as opções de " + m.id,
+                    title: T("Editar as opções de ") + m.id,
+                    "aria-label": T("Editar as opções de ") + m.id,
                     onClick: function () { props.onModelo(nome, m.id); },
                   }, "✎")),
                 h("td", null,
                   h("span", { className: "vmm-mono vmm-mudo vmm-celula-provider" }, m.provider + " / " + m.modelo),
                   h("span", { className: "vmm-mudo vmm-celula-ordem" },
-                    " · " + (m.custo == null ? "custo —" : "custo " + m.custo)
-                    + (m.ordem == null ? "" : " · ordem " + m.ordem))),
+                    " · " + (m.custo == null ? "custo —" : T("custo ") + m.custo)
+                    + (m.ordem == null ? "" : T(" · ordem ") + m.ordem))),
                 h("td", null, cxLista.map(function (n) { return h(Chip, { key: n }, n); })),
                 h("td", null, (m.tarefas || []).length
                   ? (m.tarefas || []).map(function (t) { return h(Chip, { key: t, tone: "outline" }, t); })
@@ -2028,7 +2518,7 @@
           h("span", { className: "vmm-classif-nome" },
             (perfil === null ? "global" : perfil),
             herda ? h("span", { className: "vmm-mudo" },
-              " · herda " + globalBloco.provider + "/" + globalBloco.modelo) : null
+              T(" · herda ") + globalBloco.provider + "/" + globalBloco.modelo) : null
           ),
           h("select", {
             className: "vmm-select",
@@ -2037,7 +2527,7 @@
           },
             (perfil === null
               ? [["desligado", "desligado (heurística)"], ["ligado", "decide um modelo"]]
-              : [["herdar", "herdar do global"], ["desligado", "desligado (heurística)"],
+              : [["herdar", T("herdar do global")], ["desligado", "desligado (heurística)"],
                  ["ligado", "decide um modelo"]]
             ).map(function (o) { return h("option", { key: o[0], value: o[0] }, o[1]); })
           ),
@@ -2122,7 +2612,7 @@
           rotulo: "prazo em turnos",
           valor: tpGlobal.expira_turnos == null ? "" : String(tpGlobal.expira_turnos),
           opcoes: [{ valor: "", rotulo: "turnos: por omissão" }].concat(
-            TURNOS_PRAZO.map(function (n) { return { valor: String(n), rotulo: "dura " + n + " turnos" }; })),
+            TURNOS_PRAZO.map(function (n) { return { valor: String(n), rotulo: T("dura ") + n + " turnos" }; })),
           onChange: function (v) { aplicarTarefa("expira_turnos", v === "" ? "" : parseInt(v, 10)); },
         }),
         h(Seletor, {
@@ -2131,14 +2621,14 @@
           valor: tpGlobal.expira_min == null ? "" : String(tpGlobal.expira_min),
           opcoes: [{ valor: "", rotulo: "minutos: por omissão" }].concat(
             MINUTOS_PRAZO.map(function (n) {
-              return { valor: String(n), rotulo: n >= 60 ? (n / 60) + " h" : n + " min" };
+              return { valor: String(n), rotulo: n >= 60 ? (n / 60) + T(" h") : n + T(" min") };
             })),
           onChange: function (v) { aplicarTarefa("expira_min", v === "" ? "" : parseInt(v, 10)); },
         })
       ),
       h("div", { className: "vmm-mudo vmm-campo-ajuda" },
-        "conta desde a última detecção: herdar não renova o prazo. "
-        + "«complexidade: auto» numa mensagem termina a associação; desligada, cada turno volta a decidir pela complexidade.")
+        T("conta desde a última detecção: herdar não renova o prazo. ")
+        + T("«complexidade: auto» numa mensagem termina a associação; desligada, cada turno volta a decidir pela complexidade."))
     );
 
     // ---- bloco 3: estrategia --------------------------------------------
@@ -2162,7 +2652,7 @@
         });
         const primeira = perfil === null
           ? [{ valor: "", rotulo: "não declarada" }]
-          : [{ valor: "", rotulo: "herdar do global"
+          : [{ valor: "", rotulo: T("herdar do global")
                 + (estGlobal && estGlobal.modo ? " (" + (curtoModo[estGlobal.modo] || estGlobal.modo) + ")" : "") }];
         const porModo = (est && est.modo) || (perfil === null ? "" : (estGlobal && estGlobal.modo) || "");
         return h("div", { key: perfil === null ? "@global" : perfil, className: "vmm-classif-linha vmm-linha-estrategia" },
@@ -2176,7 +2666,7 @@
           ),
           h(Seletor, {
             key: "est-modo",
-            rotulo: "estratégia de " + (perfil === null ? "todos os perfis" : perfil),
+            rotulo: T("estratégia de ") + (perfil === null ? "todos os perfis" : perfil),
             valor: est ? est.modo || "" : "",
             opcoes: primeira.concat(opcoesModo),
             onChange: function (v) {
@@ -2185,10 +2675,10 @@
           }),
           h(Seletor, {
             key: "est-por",
-            rotulo: "rotação de " + (perfil === null ? "todos os perfis" : perfil),
+            rotulo: T("rotação de ") + (perfil === null ? "todos os perfis" : perfil),
             valor: est ? est.por || "" : "",
             opcoes: [{ valor: "", rotulo: "rotação: por omissão (sessão)" }].concat(
-              porEst.map(function (o) { return { valor: o.valor, rotulo: "rotação: " + (o.rotulo || o.valor) }; })
+              porEst.map(function (o) { return { valor: o.valor, rotulo: T("rotação: ") + (o.rotulo || o.valor) }; })
             ),
             // `por` so governa a rotacao: em `prioridade` um select activo
             // que nao faz nada e uma armadilha.
@@ -2200,7 +2690,103 @@
       })
     );
 
-    // ---- bloco 4: superficies -------------------------------------------
+
+    // ---- bloco 4: circuit breaker -----------------------------------------
+    // Regra: "se modelo falha X vezes em Y minutos, aumentar cooldown em Z%"
+    // Configuravel global e por perfil com heranca chave a chave.
+    const blocoCircuitBreaker = h("div", { className: "vmm-bloco", key: "circuit-breaker" },
+      tituloBloco("Circuit Breaker",
+        "se um modelo falha repetidamente, o tempo de espera (cooldown) aumenta progressivamente."),
+      linhas.map(function (perfil) {
+        const [cbEfectivo, setCbEfectivo] = useState({});
+        const [cbCarregando, setCbCarregando] = useState(true);
+
+        useEffect(function () {
+          setCbCarregando(true);
+          pedir("/circuit-breaker" + (perfil ? "?perfil=" + encodeURIComponent(perfil) : ""))
+            .then(function (r) { setCbEfectivo(r.circuit_breaker || {}); })
+            .catch(function () { setCbEfectivo({}); })
+            .then(function () { setCbCarregando(false); });
+        }, [perfil]);
+
+        function aplicarCB(campo, valor) {
+          const corpo = { circuit_breaker: {} };
+          corpo.circuit_breaker[campo] = valor;
+          if (perfil) corpo.perfil = perfil;
+          return pedir("/circuit-breaker", {
+            method: "POST",
+            body: corpo,
+          }).then(function () { return carregar(); });
+        }
+
+        const cb = cbEfectivo || {};
+        const ativo = cb.ativo !== undefined ? cb.ativo.valor : true;
+        const limiteFalhas = cb.limite_falhas !== undefined ? cb.limite_falhas.valor : 3;
+        const janelaMin = cb.janela_minutos !== undefined ? cb.janela_minutos.valor : 5;
+        const multiplicador = cb.multiplicador_cooldown !== undefined ? cb.multiplicador_cooldown.valor : 1.5;
+
+        const isGlobal = perfil === null;
+
+        return h("div", { key: isGlobal ? "@global" : perfil, className: "vmm-classif-linha vmm-linha-cb" },
+          h("span", { className: "vmm-classif-nome" },
+            (isGlobal ? "global" : perfil),
+            h("span", { className: "vmm-mudo" },
+              isGlobal ? " · aplica-se a quem não declara" : ""
+            )
+          ),
+          h(Seletor, {
+            key: "cb-ativo",
+            rotulo: "circuit breaker",
+            valor: ativo ? "true" : "false",
+            opcoes: [{ valor: "true", rotulo: "activo" }, { valor: "false", rotulo: "desligado" }],
+            onChange: function (v) { aplicarCB("ativo", v === "true"); },
+            disabled: cbCarregando,
+          }),
+          h(Seletor, {
+            key: "cb-limite",
+            rotulo: "limite de falhas",
+            valor: String(limiteFalhas),
+            opcoes: [{ valor: "", rotulo: "por omissão (3)" }].concat(
+              [1, 2, 3, 4, 5, 6, 8, 10, 15, 20, 30, 50].map(function (n) {
+                return { valor: String(n), rotulo: T("falhar ") + n + T(" vez") + (n === 1 ? "" : "es") };
+              })
+            ),
+            onChange: function (v) { aplicarCB("limite_falhas", v === "" ? undefined : parseInt(v, 10)); },
+            disabled: cbCarregando || !ativo,
+          }),
+          h(Seletor, {
+            key: "cb-janela",
+            rotulo: "janela (minutos)",
+            valor: String(janelaMin),
+            opcoes: [{ valor: "", rotulo: "por omissão (5)" }].concat(
+              [1, 2, 3, 4, 5, 6, 10, 15, 20, 30, 60, 120, 240, 480, 720, 1440].map(function (n) {
+                return { valor: String(n), rotulo: n >= 60 ? (n / 60) + T(" h") : n + T(" min") };
+              })
+            ),
+            onChange: function (v) { aplicarCB("janela_minutos", v === "" ? undefined : parseInt(v, 10)); },
+            disabled: cbCarregando || !ativo,
+          }),
+          h(Seletor, {
+            key: "cb-mult",
+            rotulo: "multiplicador de cooldown",
+            valor: String(multiplicador),
+            opcoes: [{ valor: "", rotulo: "por omissão (1.5x)" }].concat(
+              [1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0, 7.5, 10.0].map(function (n) {
+                return { valor: String(n), rotulo: n + "x" };
+              })
+            ),
+            onChange: function (v) { aplicarCB("multiplicador_cooldown", v === "" ? undefined : parseFloat(v)); },
+            disabled: cbCarregando || !ativo,
+          }),
+          h("div", { className: "vmm-mudo vmm-campo-ajuda" },
+            T("Cooldown base: 2 min. Exemplo: 3 falhas em 5 min → 2 min × 1.5 = 3 min de espera. ")
+            + T("Herança chave a chave: perfil só declara o que quer mudar."))
+        );
+      })
+    );
+
+    // ---- bloco 5: superficies -------------------------------------------
+
     // "Se a superficie da sessao for cron, o turno vai para este modelo." Fica
     // aqui, e nao nos cartoes: e configuracao como as outras duas. Escreve
     // pelo endpoint `/superficies` (cada regra e um delta com rev) e nao pelo
@@ -2228,6 +2814,30 @@
       })
     );
 
+    // ---- bloco 5: ensaio A/B em sombra ----------------------------------
+    // Fica no fim porque e o unico bloco que fala do ENSAIO e nao da decisao
+    // normal: quem le de cima para baixo chega primeiro ao que decide o turno.
+    const catalogoSombra = [];
+    Object.keys(perfisEstado).forEach(function (nome) {
+      ((perfisEstado[nome] || {}).catalogo || []).forEach(function (e) {
+        if (e && (e.modelo || e.id)) catalogoSombra.push(e);
+      });
+    });
+    const estadoSombra = (props.estado || {}).sombra || null;
+    const blocoSombra = estadoSombra
+      ? h(SecaoSombra, {
+          // Remonta quando o selo muda: uma re-selagem noutra aba tem de
+          // aparecer aqui, e `useState` so le o inicial na montagem.
+          key: "sombra-" + (estadoSombra.selo || "sem-selo"),
+          sombra: estadoSombra,
+          catalogo: catalogoSombra,
+          aGravar: !!props.aGravar,
+          aviso: props.avisoSombra || "",
+          onSombra: props.onSombra,
+          onBracos: props.onBracos,
+        })
+      : null;
+
     return h("div", { className: "vmm-classif" },
       props.versao
         ? h("div", { className: "vmm-mudo vmm-versao-linha" }, "painel " + props.versao)
@@ -2235,7 +2845,231 @@
       blocoComplexidade,
       blocoTarefa,
       blocoEstrategia,
-      blocoSuperficies
+      blocoCircuitBreaker,
+      blocoSuperficies,
+      blocoSombra
+    );
+  }
+
+  // ---- ensaio A/B em sombra -----------------------------------------------
+  // Os MODELOS dos dois bracos vivem no PRÉ-REGISTO SELADO, nao no config.json:
+  // por isso esta seccao escreve por dois endpoints proprios (`/sombra` para o
+  // interruptor e a sonda, `/sombra/bracos` para re-selar) em vez do textarea
+  // JSON. Re-selar REABRE o ensaio e torna a amostra ja recolhida nao
+  // comparavel — o gesto exige confirmacao explicita e nunca acontece por se
+  // carregar em "Gravar".
+  function SecaoSombra(props) {
+    const s = props.sombra || {};
+    const bracos = s.bracos || {};
+    const vida = s.vida || {};
+    const vivos = vida.bracos || {};
+    // `useState` so le o inicial na montagem: a seccao e remontada por `key`
+    // (o selo) para que uma re-selagem noutra aba apareca aqui sem recarregar.
+    const [a, setA] = useState(bracos.a || "");
+    const [b, setB] = useState(bracos.b || "");
+    const providersSelo = s.providers || {};
+    const [provA, setProvA] = useState(providersSelo.a || "");
+    const [provB, setProvB] = useState(providersSelo.b || "");
+    const [ttl, setTtl] = useState(s.vida_ttl_h == null ? "" : String(s.vida_ttl_h));
+    const [confirmar, setConfirmar] = useState(false);
+    const [erroLocal, setErroLocal] = useState("");
+
+    // Sugestoes de modelo vem do catalogo real dos perfis. Datalist e nao
+    // lista fechada: um slug novo (os gratuitos mudam de nome com frequencia)
+    // tem de poder ser escrito sem esperar por uma versao nova do painel.
+    const modelos = [];
+    (props.catalogo || []).forEach(function (e) {
+      const nome = e && (e.modelo || e.id);
+      if (nome && modelos.indexOf(nome) === -1) modelos.push(nome);
+    });
+
+    // Lista fechada de providers: a que o backend manda (sai do catalogo) e,
+    // em falta, a que se deduz do catalogo que o painel ja tem em maos.
+    const providers = [];
+    (s.providers_disponiveis || []).forEach(function (p) {
+      if (p && providers.indexOf(p) === -1) providers.push(p);
+    });
+    (props.catalogo || []).forEach(function (e) {
+      const p = e && e.provider;
+      if (p && providers.indexOf(p) === -1) providers.push(p);
+    });
+
+    // Escrever o modelo preenche o provider quando o catalogo so tem um para
+    // esse slug: e uma consulta, nao um palpite pelo nome. Com dois ou zero
+    // candidatos nao se mexe — o servidor recusa e diz por que.
+    function autoProvider(modelo, setter) {
+      const vistos = [];
+      (props.catalogo || []).forEach(function (e) {
+        if (e && (e.modelo || e.id) === modelo && e.provider
+            && vistos.indexOf(e.provider) === -1) vistos.push(e.provider);
+      });
+      if (vistos.length === 1) setter(vistos[0]);
+    }
+
+    function reabrir() {
+      setErroLocal("");
+      if (!a || !b) { setErroLocal("indique os dois modelos"); return; }
+      if (a === b) { setErroLocal("os dois braços não podem ser o mesmo modelo"); return; }
+      if (!confirmar) { setErroLocal("marque a confirmação de reabertura"); return; }
+      props.onBracos(a, b, provA, provB).then(function () { setConfirmar(false); })
+        .catch(function (e) { setErroLocal(String(e && e.message ? e.message : e)); });
+    }
+
+    function linhaVida(rotulo, chave) {
+      const v = vivos[chave] || {};
+      if (!v.modelo) {
+        return h("div", { key: "v-" + chave, className: "vmm-mudo" },
+          rotulo + T(": nunca medida"));
+      }
+      return h("div", { key: "v-" + chave, className: "vmm-mudo" },
+        rotulo + ": " + (v.ok ? "vivo" : "morto") +
+        (v.http ? T(" (HTTP ") + v.http + ")" : "") + " — " + v.modelo +
+        (v.motivo ? " · " + v.motivo : ""));
+    }
+
+    const numeros = [];
+    if (s.p0 != null) numeros.push(T("p0 ") + s.p0);
+    if (s.margem != null) numeros.push(T("margem ") + s.margem);
+    if (s.n_por_braco != null) numeros.push(numeros.length ? "n " + s.n_por_braco + "/braço" : "n " + s.n_por_braco + "/braço");
+    if (s.dias_estimados != null) numeros.push(s.dias_estimados + T(" dias"));
+
+    return h("div", { className: "vmm-bloco", key: "sombra" },
+      tituloBloco("Ensaio A/B em sombra",
+        "o turno é sorteado entre dois modelos; o modelo que serve vem do braço, não do nível."),
+
+      // Selo: o campo que decide se os números ainda são os declarados.
+      h("div", { className: "vmm-mudo" },
+        s.selo_valido
+          ? T("pré-registo selado ") + String(s.selo || "").slice(0, 16) + "…"
+          : (s.pre_registo_recente
+              ? "há um pré-registo mas o selo NÃO bate — não usar"
+              : "sem pré-registo selado")),
+
+      h("div", { className: "vmm-mudo" }, s.ensaio || "ensaio não definido"),
+      numeros.length ? h("div", { className: "vmm-mudo" }, numeros.join("  ·  ")) : null,
+      h("div", { className: "vmm-mudo" },
+        T("sonda de vida ") + (vida.medida_ts ? T("medida em ") + vida.medida_ts : "nunca medida")),
+      linhaVida("braço a", "a"),
+      linhaVida("braço b", "b"),
+
+      h("div", { className: "vmm-classif-nome" }, "interruptor"),
+      h(Seletor, {
+        rotulo: "ensaio",
+        valor: s.activo ? "ligado" : "desligado",
+        opcoes: [
+          { valor: "ligado", rotulo: "ligado" },
+          { valor: "desligado", rotulo: "desligado" },
+        ],
+        disabled: !!props.aGravar,
+        title: "Desligado, o turno volta a ser decidido pelo nível",
+        onChange: function (v) { props.onSombra({ activo: v === "ligado" }); },
+      }),
+
+      h("div", { className: "vmm-classif-nome" }, "validade da sonda (horas)"),
+      h("div", { className: "vmm-linha" },
+        h("input", {
+          type: "number", min: "1", step: "1",
+          value: ttl,
+          onChange: function (e) { setTtl(e.target.value); },
+          style: { width: "90px" },
+        }),
+        h(Button, {
+          size: "sm", variant: "ghost", disabled: !!props.aGravar || ttl === "",
+          onClick: function () { props.onSombra({ vida_ttl_h: Number(ttl) }); },
+        }, "Gravar")
+      ),
+
+      h("div", { className: "vmm-classif-nome" }, "modelos dos braços"),
+      // O provider deixou de ser adivinhado. Um slug so nao identifica a rota
+      // (`deepseek-flash` vive em deepseek, `nvidia/...:free` em openrouter) e
+      // a heuristica antiga — tem barra ou dois pontos logo e openrouter —
+      // mandava um slug gratuito contra a credencial errada. Aqui escolhe-se
+      // numa lista fechada, tirada do catalogo; a lista vazia significa
+      // "deriva do catalogo", e o servidor recusa quando nao ha um so par.
+      h("div", { className: "vmm-linha" },
+        h("select", {
+          value: provA,
+          title: "provider do braço a",
+          onChange: function (e) { setProvA(e.target.value); },
+          style: { width: "140px" },
+        },
+          h("option", { value: "" }, "(auto)"),
+          providers.map(function (p) { return h("option", { key: p, value: p }, p); })),
+        h("input", {
+          list: "vmm-modelos-sombra", value: a, placeholder: "braço a (pago)",
+          onChange: function (e) { setA(e.target.value); autoProvider(e.target.value, setProvA); },
+          style: { flex: "1" },
+        })
+      ),
+      h("div", { className: "vmm-linha" },
+        h("select", {
+          value: provB,
+          title: "provider do braço b",
+          onChange: function (e) { setProvB(e.target.value); },
+          style: { width: "140px" },
+        },
+          h("option", { value: "" }, "(auto)"),
+          providers.map(function (p) { return h("option", { key: p, value: p }, p); })),
+        h("input", {
+          list: "vmm-modelos-sombra", value: b, placeholder: "braço b (gratuito)",
+          onChange: function (e) { setB(e.target.value); autoProvider(e.target.value, setProvB); },
+          style: { flex: "1" },
+        }),
+        h("datalist", { id: "vmm-modelos-sombra" },
+          modelos.map(function (m) { return h("option", { key: m, value: m }); }))
+      ),
+      h("div", { className: "vmm-mudo" },
+        s.providers_declarados
+          ? T("provider declarado no selo: ") + (s.providers.a || "?") + " · " + (s.providers.b || "?")
+          : "o selo actual NÃO declara o provider — re-selar declara-o e a sonda passa a saber que credencial usar"),
+
+      // A confirmacao existe porque re-selar deita fora o desenho que estava
+      // aprovado: os turnos ja recolhidos com os bracos antigos nao sao
+      // comparaveis com os novos.
+      h("label", { className: "vmm-mudo", style: { display: "block", marginTop: "6px" } },
+        h("input", {
+          type: "checkbox", checked: confirmar,
+          onChange: function (e) { setConfirmar(e.target.checked); },
+        }),
+        " confirmo que reabro o ensaio (a amostra recolhida deixa de valer)"
+      ),
+      h(Button, {
+        size: "sm", variant: "ghost",
+        disabled: !!props.aGravar || !confirmar || !a || !b || a === b,
+        onClick: reabrir,
+      }, "Re-selar braços"),
+
+      erroLocal ? h("div", { className: "vmm-erro" }, erroLocal) : null,
+      props.aviso ? h("div", { className: "vmm-ok" }, props.aviso) : null
+    );
+  }
+
+  // Seletor de lingua do painel. Lista fechada e igual a do backend
+  // (`gestor.IDIOMAS`): um codigo que o servidor recusasse nunca chega a ser
+  // opcao. O valor mostrado vem do config, nao do browser — duas abas veem a
+  // mesma lingua e o que fica gravado e o que esta no ecra.
+  function SeletorIdioma(props) {
+    const actual = normalizarIdioma(props.idioma);
+    return h(
+      "label",
+      { className: "vmm-idioma", title: "Mudar a língua do painel" },
+      h("span", { className: "vmm-idioma-rotulo" }, "Idioma"),
+      h(
+        "select",
+        {
+          className: "vmm-select vmm-idioma-select",
+          value: actual,
+          disabled: !!props.ocupado,
+          "aria-label": "Idioma",
+          onChange: function (ev) {
+            if (props.onMudar) props.onMudar(ev.target.value);
+          },
+        },
+        IDIOMAS.map(function (codigo) {
+          return h("option", { key: codigo, value: codigo },
+            ETIQUETA_IDIOMA[codigo]);
+        })
+      )
     );
   }
 
@@ -2263,14 +3097,19 @@
           h(
             "div",
             { className: "vmm-sub" },
-            "Complexidade (quem decide o nível de cada turno), estratégia (como se escolhe o modelo "
-              + "dentro do nível) e superfícies (por onde corre). Fechar grava e volta ao painel."
+            T("Complexidade (quem decide o nível de cada turno), estratégia (como se escolhe o modelo ")
+              + T("dentro do nível) e superfícies (por onde corre). Fechar grava e volta ao painel.")
           ),
           linhaIdentidade(meta)
         ),
         h(
           "div",
           { className: "vmm-accoes" },
+          h(SeletorIdioma, {
+            idioma: idiomaActual(),
+            ocupado: props.idiomaAGravar,
+            onMudar: props.onIdioma,
+          }),
           h(Button, {
             size: "sm",
             variant: "outline",
@@ -2295,7 +3134,7 @@
         )
       ),
 
-      props.erro ? h("div", { className: "vmm-erro" }, "erro: " + props.erro) : null,
+      props.erro ? h("div", { className: "vmm-erro" }, T("erro: ") + props.erro) : null,
 
       props.validacaoOk ? h(
         "div",
@@ -2312,6 +3151,9 @@
         versao: versao,
         opcoes: ((estado.opcoes || {}).estrategia) || {},
         onSuperficie: props.onSuperficie,
+        onSombra: props.onSombra,
+        onBracos: props.onBracos,
+        avisoSombra: props.avisoSombra,
         onMudar: props.onMudarJSON,
       }),
 
@@ -2355,7 +3197,15 @@
     const [limite, setLimite] = useState(40);
     const [erro, setErro] = useState(null);
     const [aGravar, setAGravar] = useState(false);
+    // Aviso efémero do ensaio: "braços re-selados" tem de aparecer no sítio do
+    // gesto. Sem isto, gravar com sucesso e nao ver nada e indistinguivel de
+    // um botao que nao faz nada.
+    const [avisoSombra, setAvisoSombra] = useState("");
     const [aCarregar, setACarregar] = useState(false);
+    // Lingua: o valor vive no config (nao no browser), por isso gravar é um
+    // POST e o estado volta a ler-se — nunca se muda so a copia local, senao o
+    // painel mostrava portugues e o ficheiro continuava em ingles.
+    const [idiomaAGravar, setIdiomaAGravar] = useState(false);
     const [mostrarEditor, setMostrarEditor] = useState(false);
     const [configJSON, setConfigJSON] = useState("");
     // Versao do config que este editor leu: volta no "Gravar" para o servidor
@@ -2401,6 +3251,9 @@
         pedir("/log?limite=" + limite),
       ])
         .then(function (r) {
+          // A lingua vem do config e aplica-se ANTES de guardar o estado: o
+          // render que se segue ja sai na lingua certa, sem um piscar de ingles.
+          setIdioma(r[0] && r[0].idioma);
           setEstado(r[0]);
           setLog((r[1] && r[1].linhas) || []);
           setErro(null);
@@ -2421,6 +3274,29 @@
         .then(function () { setAGravar(false); });
     }
 
+    // Muda a lingua do painel: grava no config (uma chave, com `rev` para o
+    // servidor recusar uma escolha feita sobre estado antigo), aplica-a e
+    // recarrega o estado. Um 409 nao e falha do gesto: o painel recarrega e
+    // mostra a lingua que ficou, em vez de dizer que mudou o que nao mudou.
+    function mudarIdioma(novo) {
+      const codigo = normalizarIdioma(novo);
+      if (codigo === idiomaActual()) return Promise.resolve();
+      setIdiomaAGravar(true);
+      return pedir("/idioma", {
+        method: "POST",
+        body: { idioma: codigo, rev: (estado && estado.rev) || "" },
+      })
+        .then(function (r) {
+          setIdioma(r && r.idioma ? r.idioma : codigo);
+          return carregar();
+        })
+        .catch(function (e) {
+          setErro(String(e && e.message ? e.message : e));
+          return carregar();
+        })
+        .then(function () { setIdiomaAGravar(false); });
+    }
+
     // Grava so o bloco de estrategia (nunca a config inteira): um `select` nao
     // pode ter o poder de repor tudo o que outra sessao escreveu. O `rev` que
     // veio do `/estado` volta no corpo para o servidor recusar (409) uma
@@ -2437,7 +3313,7 @@
           const msg = String(e && e.message ? e.message : e);
           setErro(msg.indexOf("409") !== -1
             ? "A estratégia mudou noutro sítio — recarreguei o estado. Escolha outra vez."
-            : "Erro ao gravar a estratégia: " + msg);
+            : T("Erro ao gravar a estratégia: ") + msg);
           return carregar();
         })
         .then(function () { setAGravar(false); });
@@ -2460,7 +3336,61 @@
           const msg = String(e && e.message ? e.message : e);
           setErro(msg.indexOf("409") !== -1
             ? "As superfícies mudaram noutro sítio — recarreguei o estado. Escolha outra vez."
-            : "Erro ao gravar a superfície: " + msg);
+            : T("Erro ao gravar a superfície: ") + msg);
+          return carregar();
+        })
+        .then(function () { setAGravar(false); });
+    }
+
+    function mudarSombra(campos) {
+      setAvisoSombra("");
+      setAGravar(true);
+      pedir("/sombra", {
+        method: "POST",
+        body: Object.assign({ rev: (estado && estado.rev) || "" }, campos),
+      })
+        .then(function (r) {
+          setAvisoSombra(T("ensaio: ") + (r && r.sombra && r.sombra.activo ? "ligado" : "desligado"));
+          return carregar();
+        })
+        .catch(function (e) {
+          setErro(T("Erro ao gravar o ensaio: ") + String(e && e.message ? e.message : e));
+          return carregar();
+        })
+        .then(function () { setAGravar(false); });
+    }
+
+    function mudarBracos(bracoA, bracoB, provA, provB) {
+      setAvisoSombra("");
+      setAGravar(true);
+      // `confirmar_reabertura` e obrigatorio no backend: re-selar invalida a
+      // amostra recolhida. O painel so chega aqui depois da caixa marcada, mas
+      // o campo vai no corpo porque o servidor nao confia no cliente.
+      return pedir("/sombra/bracos", {
+        method: "POST",
+        body: {
+          braco_a: bracoA,
+          braco_b: bracoB,
+          // O provider vai explicito; vazio deixa o servidor derivá-lo do
+          // catalogo (e recusar quando nao ha um so par para esse modelo).
+          braco_a_provider: provA || "",
+          braco_b_provider: provB || "",
+          confirmar_reabertura: true,
+          rev: (estado && estado.rev) || "",
+        },
+      })
+        .then(function (r) {
+          const selo = (r && r.pre_registo && r.pre_registo.selo_valido)
+            ? T("re-selado ") + String(r.pre_registo.sha256_ficheiro || "").slice(0, 12) + "…"
+            : "gravado";
+          setAvisoSombra(T("braços ") + selo);
+          return carregar();
+        })
+        .catch(function (e) {
+          const msg = String(e && e.message ? e.message : e);
+          setErro(msg.indexOf("409") !== -1
+            ? "O ensaio mudou noutro sítio — recarreguei o estado. Repita a re-selagem."
+            : T("Erro ao re-selar os braços: ") + msg);
           return carregar();
         })
         .then(function () { setAGravar(false); });
@@ -2476,7 +3406,7 @@
           setConfigRev((r && r.rev) ? String(r.rev) : "");
           setErrosValidacao([]);
         })
-        .catch(function (e) { setErro("Erro ao carregar config: " + String(e && e.message ? e.message : e)); });
+        .catch(function (e) { setErro(T("Erro ao carregar config: ") + String(e && e.message ? e.message : e)); });
     }
 
     function validarConfig() {
@@ -2494,7 +3424,7 @@
             if (r && r.erros && r.erros.length) {
               setErrosValidacao(r.erros);
               setValidacaoOk(null);
-              setErro("Configuração inválida: " + r.erros.join("; "));
+              setErro(T("Configuração inválida: ") + r.erros.join("; "));
             } else {
               setErro(null);
               setValidacaoOk(mensagemValido(cfg));
@@ -2502,13 +3432,13 @@
           })
           .catch(function (e) {
             setValidacaoOk(null);
-            setErro("Erro ao validar: " + String(e && e.message ? e.message : e));
+            setErro(T("Erro ao validar: ") + String(e && e.message ? e.message : e));
           })
           .then(function () { setAValidar(false); });
       } catch (e) {
         setAValidar(false);
         setValidacaoOk(null);
-        setErro("JSON inválido: " + String(e && e.message ? e.message : e));
+        setErro(T("JSON inválido: ") + String(e && e.message ? e.message : e));
       }
     }
 
@@ -2524,8 +3454,8 @@
         rotas += Array.isArray(p.catalogo) ? p.catalogo.length : 0;
         tarefas += p.tarefas && typeof p.tarefas === "object" ? Object.keys(p.tarefas).length : 0;
       });
-      return "Validado com sucesso — " + nomes.length + " perfil(es), " +
-        rotas + " rota(s), " + tarefas + " tarefa(s), 0 erros";
+      return T("Validado com sucesso — ") + nomes.length + T(" perfil(es), ") +
+        rotas + T(" rota(s), ") + tarefas + T(" tarefa(s), 0 erros");
     }
 
     function salvarConfig() {
@@ -2553,16 +3483,16 @@
             const msg = String(e && e.message ? e.message : e);
             if (msg.indexOf("409") !== -1) {
               setValidacaoOk(null);
-              setErro("A configuração foi alterada noutro sítio desde que abriu este editor "
-                + "— recarreguei a versão actual. Reveja o que quer mudar e grave outra vez.");
+              setErro(T("A configuração foi alterada noutro sítio desde que abriu este editor ")
+                + T("— recarreguei a versão actual. Reveja o que quer mudar e grave outra vez."));
               carregarConfig();
               carregar();
               return;
             }
-            setErro("Erro ao salvar: " + msg);
+            setErro(T("Erro ao salvar: ") + msg);
           });
       } catch (e) {
-        setErro("JSON inválido: " + String(e && e.message ? e.message : e));
+        setErro(T("JSON inválido: ") + String(e && e.message ? e.message : e));
       }
     }
 
@@ -2612,7 +3542,7 @@
           setModeloForm(entradaParaForm((r && r.entrada) || {}));
           setModeloRev(r && r.rev ? String(r.rev) : "");
         })
-        .catch(function (e) { setModeloErro("Erro ao ler a rota: " + textoDoErro(e)); })
+        .catch(function (e) { setModeloErro(T("Erro ao ler a rota: ") + textoDoErro(e)); })
         .then(function () { setModeloACarregar(false); });
     }
 
@@ -2648,15 +3578,15 @@
           const erros = (r && r.erros) || [];
           if (erros.length) {
             setModeloErros(erros);
-            setModeloErro("Configuração inválida: " + erros.join("; "));
+            setModeloErro(T("Configuração inválida: ") + erros.join("; "));
             return;
           }
           const e = corpo.entrada;
-          setModeloOk("Validado — " + (e.id || "(sem id)")
-            + " · " + (e.complexidade || []).length + " nível(is)"
-            + " · " + (e.provider || "?") + "/" + (e.modelo || "?") + " · 0 erros");
+          setModeloOk(T("Validado — ") + (e.id || "(sem id)")
+            + " · " + (e.complexidade || []).length + T(" nível(is)")
+            + " · " + (e.provider || "?") + "/" + (e.modelo || "?") + T(" · 0 erros"));
         })
-        .catch(function (e) { setModeloErro("Erro ao validar: " + textoDoErro(e)); })
+        .catch(function (e) { setModeloErro(T("Erro ao validar: ") + textoDoErro(e)); })
         .then(function () { setModeloAGravar(false); });
     }
 
@@ -2673,7 +3603,7 @@
           const erros = (v && v.erros) || [];
           if (erros.length) {
             setModeloErros(erros);
-            setModeloErro("Configuração inválida: " + erros.join("; "));
+            setModeloErro(T("Configuração inválida: ") + erros.join("; "));
             return null;
           }
           return pedir("/modelo", { method: "POST", body: corpo });
@@ -2684,15 +3614,15 @@
           setModeloAberto(null);
           setModeloForm({});
           setModeloRev("");
-          setValidacaoOk("Modelo " + gravado + " gravado em " + corpo.perfil + " — o gestor já o lê");
+          setValidacaoOk(T("Modelo ") + gravado + T(" gravado em ") + corpo.perfil + T(" — o gestor já o lê"));
           carregar();
         })
         .catch(function (e) {
           const msg = textoDoErro(e);
           setModeloErro(msg.indexOf("409") !== -1
-            ? "A configuração foi alterada noutro sítio desde que abriu esta página. "
-              + "Descartar e abrir outra vez para ver o estado actual."
-            : "Erro ao gravar: " + msg);
+            ? T("A configuração foi alterada noutro sítio desde que abriu esta página. ")
+              + T("Descartar e abrir outra vez para ver o estado actual.")
+            : T("Erro ao gravar: ") + msg);
         })
         .then(function () { setModeloAGravar(false); });
     }
@@ -2735,7 +3665,7 @@
           setPerfilEfectivo((r && r.efectivo) || {});
           setPerfilGlobal((r && r.global) || {});
         })
-        .catch(function (e) { setPerfilErro("Erro ao ler o perfil: " + textoDoErro(e)); })
+        .catch(function (e) { setPerfilErro(T("Erro ao ler o perfil: ") + textoDoErro(e)); })
         .then(function () { setPerfilACarregar(false); });
     }
 
@@ -2799,7 +3729,7 @@
       const r = corpoDoPerfil();
       if (r.erro.length) {
         setPerfilErros(r.erro);
-        setPerfilErro("Formulário incompleto: " + r.erro.join("; "));
+        setPerfilErro(T("Formulário incompleto: ") + r.erro.join("; "));
         return;
       }
       setPerfilAGravar(true);
@@ -2808,16 +3738,16 @@
           const erros = (v && v.erros) || [];
           if (erros.length) {
             setPerfilErros(erros);
-            setPerfilErro("Configuração inválida: " + erros.join("; "));
+            setPerfilErro(T("Configuração inválida: ") + erros.join("; "));
             return;
           }
-          setPerfilOk("Validado — perfil " + perfilAberto
+          setPerfilOk(T("Validado — perfil ") + perfilAberto
             + " · " + Object.keys(r.corpo.tarefas || {}).length + " tarefa(s)"
-            + " · classificador " + (r.corpo.classificador === "herdar" ? "herdado" : "próprio")
-            + " · estratégia " + (r.corpo.estrategia === "herdar" ? "herdada" : "própria")
-            + " · 0 erros");
+            + T(" · classificador ") + (r.corpo.classificador === "herdar" ? "herdado" : "próprio")
+            + T(" · estratégia ") + (r.corpo.estrategia === "herdar" ? "herdada" : "própria")
+            + T(" · 0 erros"));
         })
-        .catch(function (e) { setPerfilErro("Erro ao validar: " + textoDoErro(e)); })
+        .catch(function (e) { setPerfilErro(T("Erro ao validar: ") + textoDoErro(e)); })
         .then(function () { setPerfilAGravar(false); });
     }
 
@@ -2828,7 +3758,7 @@
       const r = corpoDoPerfil();
       if (r.erro.length) {
         setPerfilErros(r.erro);
-        setPerfilErro("Formulário incompleto: " + r.erro.join("; "));
+        setPerfilErro(T("Formulário incompleto: ") + r.erro.join("; "));
         return;
       }
       setPerfilAGravar(true);
@@ -2837,7 +3767,7 @@
           const erros = (v && v.erros) || [];
           if (erros.length) {
             setPerfilErros(erros);
-            setPerfilErro("Configuração inválida: " + erros.join("; "));
+            setPerfilErro(T("Configuração inválida: ") + erros.join("; "));
             return null;
           }
           return pedir("/perfil", { method: "POST", body: r.corpo });
@@ -2847,15 +3777,15 @@
           setPerfilAberto(null);
           setPerfilForm({});
           setPerfilRev("");
-          setValidacaoOk("Perfil " + r.corpo.perfil + " gravado — o gestor já o lê");
+          setValidacaoOk("Perfil " + r.corpo.perfil + T(" gravado — o gestor já o lê"));
           carregar();
         })
         .catch(function (e) {
           const msg = textoDoErro(e);
           setPerfilErro(msg.indexOf("409") !== -1
-            ? "A configuração foi alterada noutro sítio desde que abriu esta página. "
-              + "Descartar e abrir outra vez para ver o estado actual."
-            : "Erro ao gravar: " + msg);
+            ? T("A configuração foi alterada noutro sítio desde que abriu esta página. ")
+              + T("Descartar e abrir outra vez para ver o estado actual.")
+            : T("Erro ao gravar: ") + msg);
         })
         .then(function () { setPerfilAGravar(false); });
     }
@@ -2951,7 +3881,12 @@
         onValidar: validarConfig,
         onGravar: gravarEFechar,
         onDescartar: fecharEditor,
+        onIdioma: mudarIdioma,
+        idiomaAGravar: idiomaAGravar,
         onSuperficie: function (perfil, sup, alvo) { mudarSuperficie(perfil, sup, alvo); },
+        onSombra: function (campos) { mudarSombra(campos); },
+        onBracos: function (a, b) { return mudarBracos(a, b); },
+        avisoSombra: avisoSombra,
         onMudarJSON: function (novo) {
           setConfigJSON(novo);
           setValidacaoOk(null);
@@ -3012,7 +3947,7 @@
       // dentro do editor de configuracao. Fora dele ficam so os cartoes de
       // estado por perfil e o registo do que foi servido.
 
-      erro ? h("div", { className: "vmm-erro" }, "erro: " + erro) : null,
+      erro ? h("div", { className: "vmm-erro" }, T("erro: ") + erro) : null,
 
       // Aviso de sucesso fora do editor: sobrevive ao fecho depois de gravar.
       (validacaoOk && !mostrarEditor) ? h(
@@ -3049,7 +3984,7 @@
             { className: "vmm-linha" },
             h("div", null,
               h("strong", null, "Registo de utilizacao"),
-              h("span", { className: "vmm-mudo" }, "  ultimas " + limite + " respostas — modelo, provider, perfil, nivel e origem")
+              h("span", { className: "vmm-mudo" }, T("  ultimas ") + limite + T(" respostas — modelo, provider, perfil, nivel e origem"))
             ),
             h(
               "div",
@@ -3066,15 +4001,15 @@
           h(TabelaLog, { linhas: log }),
           estado && estado.ledger
             ? h("div", { className: "vmm-mudo vmm-pe" },
-                estado.ledger.caminho + " · " + Math.round((estado.ledger.bytes || 0) / 1024) + " KiB")
+                estado.ledger.caminho + " · " + Math.round((estado.ledger.bytes || 0) / 1024) + T(" KiB"))
             : null
         )
       ),
 
       h("div", { className: "vmm-pe vmm-mudo" },
-        "Catalogo e associacoes de tarefa vivem em plugin-data/vipernet-model-manager/config.json — este painel permite editar a configuração. Versao do plugin: " +
-        meta.versao + " · painel: " + meta.manifest +
-        " · autor: " + meta.autor +
+        T("Catalogo e associacoes de tarefa vivem em plugin-data/vipernet-model-manager/config.json — este painel permite editar a configuração. Versao do plugin: ") +
+        meta.versao + T(" · painel: ") + meta.manifest +
+        T(" · autor: ") + meta.autor +
         (meta.github ? " · " + meta.github : ""))
     );
   }
@@ -3099,6 +4034,7 @@
     window.__VMM_TEST__.estrategiaDe = estrategiaDe;
     window.__VMM_TEST__.comEstrategia = comEstrategia;
     window.__VMM_TEST__.SecaoClassificador = SecaoClassificador;
+    window.__VMM_TEST__.SecaoSombra = SecaoSombra;
     window.__VMM_TEST__.valorDaRegra = valorDaRegra;
     window.__VMM_TEST__.rotuloRegra = rotuloRegra;
     window.__VMM_TEST__.metaPlugin = metaPlugin;
@@ -3135,5 +4071,14 @@
     window.__VMM_TEST__.TAREFA_PERSISTENTE_PADRAO = TAREFA_PERSISTENTE_PADRAO;
     window.__VMM_TEST__.CAMPOS_CLASSIFICADOR = CAMPOS_CLASSIFICADOR;
     window.__VMM_TEST__.CAMPOS_JSON_CLASSIFICADOR = CAMPOS_JSON_CLASSIFICADOR;
+    // i18n: o dicionario e o wrapper sao testados a parte do React — o que se
+    // prova e que nenhuma chave fica sem traducao e que um texto desconhecido
+    // cai no PT em vez de desaparecer do ecra.
+    window.__VMM_TEST__.idioma = {
+      t: T, setIdioma: setIdioma, idiomaActual: idiomaActual,
+      normalizarIdioma: normalizarIdioma, PT_EN: PT_EN, IDIOMAS: IDIOMAS,
+      SeletorIdioma: SeletorIdioma, tQuanto: tQuanto, tHa: tHa,
+      tInstantes: tInstantes, h: h, localeHora: localeHora,
+    };
   }
 })();

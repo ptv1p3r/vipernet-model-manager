@@ -179,6 +179,9 @@ _contadores: dict[str, int] = {}
 _maus: set[tuple[str, str, str]] = set()
 _avisados: set[tuple[str, str, str]] = set()
 _maus_expira: dict[tuple[str, str, str], float] = {}
+# Circuit breaker: rastreio de falhas com timestamps para aplicar regra
+# "X falhas em Y minutos -> cooldown * Z". Chave: (perfil, provider, modelo) -> lista de timestamps (monotonic).
+_falhas_recente: dict[tuple[str, str, str], list[float]] = {}
 _ultimo_perfil: dict[str, str] = {}
 _ultima_decisao: dict[str, dict[str, Any]] = {}
 # Decisao fixada por turno: nivel, tarefa, origem e rota do primeiro pedido.
@@ -406,13 +409,17 @@ def _pre_registo_ensaio() -> dict[str, Any] | None:
         return None
 
 
-def _braco_da_resposta(modelo: str) -> str | None:
-    """Braco do turno, derivado do modelo que respondeu — nunca do desejado."""
+def _braco_da_resposta(modelo: str, provider: str = "") -> str | None:
+    """Braco do turno, derivado do modelo que respondeu — nunca do desejado.
+
+    O provider acompanha o modelo: com dois providers a servir o mesmo slug,
+    casar so pelo nome atribuia o turno ao braco errado.
+    """
     registo = _pre_registo_ensaio()
     if not registo or not modelo:
         return None
     try:
-        return _sombra_mod.braco_do_modelo(registo, modelo)
+        return _sombra_mod.braco_do_modelo(registo, modelo, provider)
     except Exception:  # noqa: BLE001
         return None
 
@@ -450,14 +457,24 @@ def _sombra_vida() -> dict[str, Any]:
         return {}
 
 
-def _entrada_por_modelo(pcfg: dict[str, Any], modelo: Any) -> dict[str, Any] | None:
-    """Entrada do catalogo pelo **modelo**, nao pelo id: o braco nomeia modelos."""
+def _entrada_por_modelo(pcfg: dict[str, Any], modelo: Any,
+                        provider: Any = "") -> dict[str, Any] | None:
+    """Entrada do catalogo pelo **modelo**, nao pelo id: o braco nomeia modelos.
+
+    `provider` desempata quando o mesmo slug existe em dois providers — sem
+    ele, a primeira entrada do catalogo vencia em silencio e o braco servia-se
+    da credencial errada.
+    """
     alvo = str(modelo or "").strip().lower()
     if not alvo:
         return None
+    alvo_prov = str(provider or "").strip().lower()
     for entrada in gestor.catalogo_utilizavel(pcfg):
-        if str(entrada.get("modelo") or "").strip().lower() == alvo:
-            return entrada
+        if str(entrada.get("modelo") or "").strip().lower() != alvo:
+            continue
+        if alvo_prov and str(entrada.get("provider") or "").strip().lower() != alvo_prov:
+            continue
+        return entrada
     return None
 
 
@@ -496,7 +513,12 @@ def _sombra_do_turno(
     except Exception:  # noqa: BLE001
         return {"aplicado": False, "motivo": "sorteio_falhou"}
     modelo = registo.get(f"braco_{braco}")
+    try:
+        provider_braco = _sombra_mod.provider_do_braco(registo, braco)
+    except Exception:  # noqa: BLE001 - o diagnostico nunca parte o turno
+        provider_braco = ""
     diag: dict[str, Any] = {"braco": braco, "modelo": modelo,
+                            "provider": provider_braco,
                             "sha": str(registo.get("sha256") or "")[:16],
                             "aplicado": False}
     if associada:
@@ -529,7 +551,7 @@ def _sombra_do_turno(
                           for b in mortos}
         return diag
 
-    entrada = _entrada_por_modelo(pcfg, modelo)
+    entrada = _entrada_por_modelo(pcfg, modelo, provider_braco)
     if entrada is None:
         diag["motivo"] = "modelo_fora_do_catalogo"
         return diag
@@ -1650,9 +1672,36 @@ def middleware_llm_request(
         try:
             aplicado = _trocar(agente, entrada, rota, perfil, session_id)
         except Exception as exc:
+            agora = time.monotonic()
+            chave_falha = (perfil, entrada["provider"].lower(), entrada["modelo"])
             with _lock:
-                _maus_expira[(perfil, entrada["provider"].lower(), entrada["modelo"])] = \
-                    time.monotonic() + _TTL_MAU
+                # Regista a falha para o circuit breaker
+                _falhas_recente.setdefault(chave_falha, []).append(agora)
+                
+                # Obtem config do circuit breaker para este perfil
+                cfg = _config()
+                pcfg = gestor.perfil_config(cfg, perfil) or {}
+                analise = pcfg.get("analise") or {}
+                cb = analise.get("circuit_breaker") or {}
+                
+                # Usa valores do config ou padrao
+                ativo = cb.get("ativo", True)
+                limite_falhas = cb.get("limite_falhas", 3)
+                janela_minutos = cb.get("janela_minutos", 5)
+                multiplicador = cb.get("multiplicador_cooldown", 1.5)
+                
+                # Calcula cooldown base (TTL_MAU) e aplica multiplicador se threshold atingido
+                cooldown_base = _TTL_MAU
+                if ativo:
+                    # Remove falhas fora da janela
+                    corte = agora - (janela_minutos * 60.0)
+                    falhas_na_janela = [t for t in _falhas_recente[chave_falha] if t >= corte]
+                    _falhas_recente[chave_falha] = falhas_na_janela
+                    
+                    if len(falhas_na_janela) >= limite_falhas:
+                        cooldown_base = cooldown_base * multiplicador
+                
+                _maus_expira[chave_falha] = agora + cooldown_base
             _registar({**resumo_de(base), "evento": "falha_troca", "entrada": entrada["id"],
                        "acesso": entrada.get("acesso", ""),
                        "de": destino, "erro": f"{type(exc).__name__}: {exc}"[:300]},

@@ -32,6 +32,11 @@ if str(_RAIZ_PLUGIN) not in sys.path:
     sys.path.insert(0, str(_RAIZ_PLUGIN))
 
 import gestor  # noqa: E402  (depende do sys.path acima)
+import sombra as _sombra  # noqa: E402  (idem: o modulo vive na raiz do plugin)
+import i18n as _i18n  # noqa: E402  (idem)
+
+# Alias curto: as mensagens de recusa sao todas `t(...)`.
+t = _i18n.t
 
 router = APIRouter()
 
@@ -63,10 +68,12 @@ def _meta_plugin() -> dict[str, str]:
 
     ``github`` e o **repositorio do plugin**, lido do campo ``homepage`` do
     ``plugin.yaml`` — uma so casa para o endereco, senao o painel e o manifesto
-    dizem coisas diferentes. O catalogo exige um repositorio publico, clonavel
-    por https em GitHub ou GitLab [1]; o Gitea interno continua a ser o espelho
-    de trabalho, nao o endereco de submissao. ``autor_github`` fica separado: e
-    o perfil do autor, nao o repositorio que se pinа.
+    dizem coisas diferentes. A chave chama-se ``github`` por compatibilidade com
+    o loader, mas o valor e o repositorio real deste plugin: o Gitea interno
+    (nao ha publicacao em GitHub). A submissao ao catalogo continua bloqueada
+    por outra razao — a regra 2 do catalogo pede um repositorio publico,
+    clonavel por https, que um Gitea em RFC1918 nao satisfaz. ``autor_github``
+    fica separado: e o perfil do autor, nao o repositorio que se pina.
     """
     versao = ""
     autor = ""
@@ -172,6 +179,149 @@ def _config_mtime_iso() -> str:
     except OSError:
         return ""
     return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds")
+
+
+# --------------------------------------------------------------------- sombra
+#
+# O ensaio A/B vive em DOIS sitios diferentes, e o painel so mostrava um deles
+# (nenhum, na verdade): o interruptor e a validade da sonda estao no `config.json`
+# (bloco `sombra`), mas os MODELOS DOS BRACOS estao no pre-registo selado em
+# `aprendiz/sombra/pre-registo-*.json`. Quem procurava a configuracao do teste no
+# painel encontrava um editor de JSON e nada mais — a informacao existia e nao
+# estava onde se edita.
+
+
+def _dir_sombra() -> Path:
+    return gestor.directorio() / "aprendiz" / "sombra"
+
+
+def _pre_registo_actual() -> tuple[Optional[dict[str, Any]], str]:
+    """Pre-registo mais recente e o caminho, ou ``(None, "")``.
+
+    Le o ficheiro mais recente por ordem lexicografica (`pre-registo-AAAAMMDDx`)
+    e verifica o `sha256` que ele proprio carrega. Um selo que nao bate nao e um
+    pre-registo: e um ficheiro que alguem editou a mao depois de os numeros
+    terem sido fixados, e usa-lo seria decidir com uma margem escolhida depois
+    de ver os dados.
+
+    Devolve tambem o caminho para que a escrita saiba que nome tem de superar
+    na ordenacao — um ficheiro novo com nome anterior nunca seria lido.
+    """
+    base = _dir_sombra()
+    try:
+        ficheiros = sorted(base.glob("pre-registo-*.json"))
+    except OSError:
+        return None, ""
+    for caminho in reversed(ficheiros):
+        try:
+            dados = json.loads(caminho.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(dados, dict) and _sombra.verificar(dados):
+            return dados, str(caminho)
+    return None, ""
+
+
+def _providers_disponiveis(cfg: dict[str, Any]) -> list[str]:
+    """Providers que o catalogo conhece — lista fechada para o select.
+
+    Sai do catalogo real de todos os perfis, nunca de uma lista escrita a mao:
+    um provider que nao serve nenhuma entrada nao pode ser escolhido para um
+    braco, porque o braco tem de cair numa entrada existente para o middleware
+    o poder servir.
+    """
+    vistos: set[str] = set()
+    for perfil in (cfg.get("perfis") or {}).values():
+        if not isinstance(perfil, dict):
+            continue
+        for entrada in perfil.get("catalogo") or []:
+            if not isinstance(entrada, dict):
+                continue
+            prov = str(entrada.get("provider") or "").strip().lower()
+            if prov:
+                vistos.add(prov)
+    return sorted(vistos)
+
+
+def _sombra_estado(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Bloco `sombra` para o painel: interruptor, sonda, bracos e selo.
+
+    `selo_valido` e o campo que interessa: diz se o pre-registo ainda e o que
+    foi selado. Um `activo: true` com `selo_valido: false` e um ensaio que corre
+    com numeros que ja nao sao os declarados, e o painel tem de o mostrar em vez
+    de apresentar os bracos como se estivessem aprovados.
+    """
+    bloco = cfg.get("sombra") if isinstance(cfg.get("sombra"), dict) else {}
+    registo, caminho = _pre_registo_actual()
+
+    # O ficheiro mais recente pode estar corrompido: le-se na mesma para que o
+    # painel distinga "nao ha pre-registo" de "ha um e o selo nao bate".
+    recente: Optional[dict[str, Any]] = None
+    caminho_recente = ""
+    try:
+        ficheiros = sorted(_dir_sombra().glob("pre-registo-*.json"))
+        if ficheiros:
+            caminho_recente = str(ficheiros[-1])
+            dados = json.loads(ficheiros[-1].read_text(encoding="utf-8"))
+            recente = dados if isinstance(dados, dict) else None
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+
+    vida: dict[str, Any] = {}
+    try:
+        vida = json.loads((_dir_sombra() / "vida.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        vida = {}
+
+    # Fonte dos numeros do ensaio: o selo valido manda; se nao houver, mostra-se
+    # o recente (para o painel poder dizer que existe um e o selo nao bate).
+    numeros: dict[str, Any] = registo or recente or {}
+
+    return {
+        # Ausente nao e `false` por acidente: e "nao decidido". O middleware so
+        # corre o ensaio com `activo` verdadeiro (mesma regra do `gestor`).
+        "activo": bool(bloco.get("activo", False)),
+        "vida_ttl_h": bloco.get("vida_ttl_h"),
+        "bracos": (
+            {"a": registo.get("braco_a"), "b": registo.get("braco_b")}
+            if registo else {"a": None, "b": None}
+        ),
+        # O provider nao se adivinha: ou o desenho o declara, ou o painel diz
+        # em voz alta que esta inferido. Um slug so nao identifica a rota, e a
+        # heuristica antiga (`/` ou `:` -> openrouter) mandava um slug gratuito
+        # contra a credencial errada.
+        "providers": {
+            "a": _sombra.provider_do_braco(registo, "a") if registo else "",
+            "b": _sombra.provider_do_braco(registo, "b") if registo else "",
+        },
+        "providers_declarados": bool(
+            registo
+            and _sombra.provider_do_braco(registo, "a")
+            and _sombra.provider_do_braco(registo, "b")
+        ),
+        "providers_disponiveis": _providers_disponiveis(cfg),
+        "selo_valido": bool(registo),
+        "selo": (registo or {}).get("sha256"),
+        "pre_registo": caminho,
+        "pre_registo_recente": caminho_recente,
+        "pre_registo_recente_selado": (
+            bool(recente) and _sombra.verificar(recente)
+        ) if recente else None,
+        "ensaio": numeros.get("ensaio"),
+        "p0": numeros.get("p0"),
+        "margem": numeros.get("margem_nao_inferioridade"),
+        "n_por_braco": numeros.get("n_por_braco"),
+        "dias_estimados": numeros.get("dias_estimados"),
+        "vida": {
+            "medida_ts": vida.get("ts") or vida.get("medida_ts") or "",
+            "bracos": {
+                "a": vida.get("braco_a") or {},
+                "b": vida.get("braco_b") or {},
+            },
+            "todos_vivos": vida.get("todos_vivos"),
+            "sha_registo": vida.get("sha_registo"),
+        },
+    }
 
 
 # Um motivo de configuracao sem trafego que o renove envelhece: ao fim de duas
@@ -288,6 +438,21 @@ def _registar_escrita(*, rev_antes: str, rev_depois: str, rev_cliente: str, conf
 
 
 
+def _verdadeiro(valor: Any) -> bool:
+    """Interpreta um booleano vindo do painel, sem o confundir com texto.
+
+    ``bool("false")`` e ``True`` — um painel que envie a string ``"false"``
+    ligaria o ensaio em vez de o desligar. Aqui so ``true``/``1``/``sim`` contam.
+    """
+    if isinstance(valor, bool):
+        return valor
+    if isinstance(valor, (int, float)):
+        return valor != 0
+    if isinstance(valor, str):
+        return valor.strip().lower() in ("true", "1", "sim", "yes", "on")
+    return False
+
+
 def _corpo_objeto(corpo: Any, *, obrigatorio: bool = True) -> Optional[dict[str, Any]]:
     """Normaliza o corpo do pedido para ``dict`` — ou recusa com 400 e a razao.
 
@@ -309,7 +474,7 @@ def _corpo_objeto(corpo: Any, *, obrigatorio: bool = True) -> Optional[dict[str,
             if obrigatorio:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"corpo nao e um objecto JSON (recebido bytes, nao e utf-8)",
+                    detail=t("corpo nao e um objecto JSON (recebido bytes, nao e utf-8)"),
                 )
             return None
     if isinstance(corpo, str):
@@ -324,7 +489,7 @@ def _corpo_objeto(corpo: Any, *, obrigatorio: bool = True) -> Optional[dict[str,
         if obrigatorio:
             raise HTTPException(
                 status_code=400,
-                detail=f"corpo nao e um objecto JSON (recebido {corpo[:60]!r})",
+                detail=t("corpo nao e um objecto JSON (recebido {valor!r})", valor=corpo[:60]),
             )
         return None
     if isinstance(corpo, list) and corpo:
@@ -333,7 +498,7 @@ def _corpo_objeto(corpo: Any, *, obrigatorio: bool = True) -> Optional[dict[str,
         return None
     raise HTTPException(
         status_code=400,
-        detail=f"corpo nao e um objecto JSON (recebido o tipo {type(corpo).__name__})",
+        detail=t("corpo nao e um objecto JSON (recebido o tipo {tipo})", tipo=type(corpo).__name__),
     )
 
 
@@ -619,6 +784,15 @@ def estado() -> dict[str, Any]:
         # a partir daqui: se o backend acrescentar um valor, o painel mostra-o
         # sem alteracao, e nunca aparece um valor que a validacao recusaria.
         "estrategia_global": gestor.estrategia_global(cfg),
+        # Ensaio A/B em sombra: interruptor e validade da sonda (config) e os
+        # MODELOS DOS BRACOS (pre-registo selado). E o que faltava no painel: a
+        # configuracao do teste existia em dois ficheiros e nao aparecia em
+        # nenhum formulario.
+        "sombra": _sombra_estado(cfg),
+        # Lingua do painel, lida do config. O painel aplica-a antes de desenhar
+        # o primeiro componente — sem isto abria em ingles e so mudava depois
+        # de um segundo render, o que se via como um piscar de portugues.
+        "idioma": gestor.idioma_efectivo(cfg),
         "opcoes": {
             "estrategia": gestor.opcoes_estrategia(),
             # Superficies que ja foram vistas neste ambiente. Nao e a lista
@@ -659,11 +833,11 @@ def toggle(corpo: Any = Body(default=None)) -> JSONResponse:
     corpo = _corpo_objeto(corpo)
     activo = corpo.get("activo")
     if not isinstance(activo, bool):
-        raise HTTPException(status_code=400, detail="'activo' tem de ser booleano")
+        raise HTTPException(status_code=400, detail=t("'activo' tem de ser booleano"))
     ambito = (corpo.get("ambito") or "global").strip().lower()
     nome = (corpo.get("perfil") or "").strip()
     if ambito not in ("global", "perfil"):
-        raise HTTPException(status_code=400, detail="'ambito' tem de ser 'global' ou 'perfil'")
+        raise HTTPException(status_code=400, detail=t("'ambito' tem de ser 'global' ou 'perfil'"))
 
     def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
         """Muda so o interruptor — o resto do documento vem fresco do disco."""
@@ -672,7 +846,7 @@ def toggle(corpo: Any = Body(default=None)) -> JSONResponse:
             return cfg
         perfis = cfg.get("perfis") or {}
         if nome not in perfis:
-            raise HTTPException(status_code=404, detail=f"perfil {nome!r} nao existe na configuracao")
+            raise HTTPException(status_code=404, detail=t("perfil {nome!r} nao existe na configuracao", nome=nome))
         perfis[nome]["activo"] = activo
         return cfg
 
@@ -684,7 +858,7 @@ def toggle(corpo: Any = Body(default=None)) -> JSONResponse:
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001 - 500 com a razao real, nao um OK mentiroso
-        raise HTTPException(status_code=500, detail=f"nao gravou: {type(exc).__name__}: {exc}") from exc
+        raise HTTPException(status_code=500, detail=t("nao gravou: {erro}", erro=f"{type(exc).__name__}: {exc}")) from exc
 
     # Releitura independente: o estado devolvido e o que ficou no disco, nao o que se quis escrever.
     confirmado = _cfg()
@@ -695,9 +869,52 @@ def toggle(corpo: Any = Body(default=None)) -> JSONResponse:
     if lido != activo:
         raise HTTPException(
             status_code=500,
-            detail=f"gravacao nao confirmada: pedido {activo}, lido {lido}",
+            detail=t("gravacao nao confirmada: pedido {pedido}, lido {lido}", pedido=activo, lido=lido),
         )
     return JSONResponse({"ok": True, "ambito": ambito, "alvo": alvo, "activo": lido})
+
+
+@router.post("/idioma")
+def idioma_post(corpo: Any = Body(default=None)) -> JSONResponse:
+    """Muda a lingua do painel. Lista fechada (`en`|`pt`), escrita por chave.
+
+    A lingua e uma preferencia de apresentacao, mas vive no config — e o unico
+    sitio que o painel, o CLI e as sessoes do agente leem da mesma maneira. O
+    `rev` e opcional: quem muda a lingua esta a mudar SO a lingua, e um conflito
+    por a config ter mudado noutra chave so lhe pedia para repetir o gesto.
+    """
+    corpo = _corpo_objeto(corpo)
+    codigo, erros = gestor.normalizar_idioma(corpo.get("idioma"))
+    if erros or not codigo:
+        raise HTTPException(status_code=400,
+                            detail="; ".join(erros) or t("'idioma' ausente"))
+
+    def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
+        cfg["idioma"] = codigo
+        return cfg
+
+    try:
+        # Sem `rev`: o `alterar` ja parte do estado fresco do disco e este
+        # mutador toca UMA chave, por isso nao ha nada para repor. Passar o rev
+        # que a pagina tem fazia o gesto falhar com 409 quando a config mudou
+        # noutra chave qualquer — medido no teste: uma mudanca de estrategia
+        # noutra aba impedia o utilizador de mudar a lingua, e ele via 409 a
+        # pedir para repetir um gesto que nao tem nada a ver.
+        gestor.alterar(mutar)
+    except gestor.Conflito as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 500 com a razao real, nao um OK mentiroso
+        raise HTTPException(status_code=500,
+                            detail=t("nao gravou: {erro}", erro=f"{type(exc).__name__}: {exc}")) from exc
+
+    # Releitura independente: vale o que ficou no disco, nao o que se pediu.
+    lido = gestor.idioma_efectivo(_cfg())
+    if lido != codigo:
+        raise HTTPException(status_code=500,
+                            detail=t("gravacao nao confirmada: pedido {pedido}, lido {lido}", pedido=codigo, lido=lido))
+    return JSONResponse({"ok": True, "idioma": lido})
 
 
 @router.post("/estrategia")
@@ -719,10 +936,10 @@ def estrategia_post(corpo: Any = Body(default=None)) -> JSONResponse:
     rev = str(corpo.get("rev") or "")
     campos = {k: corpo[k] for k in ("modo", "por") if k in corpo}
     if not herdar and not campos:
-        raise HTTPException(status_code=400, detail="indique 'modo' e/ou 'por'")
+        raise HTTPException(status_code=400, detail=t("indique 'modo' e/ou 'por'"))
     nome = str(corpo.get("perfil") or "").strip()
     if ambito not in ("global", "perfil"):
-        raise HTTPException(status_code=400, detail="'ambito' tem de ser 'global' ou 'perfil'")
+        raise HTTPException(status_code=400, detail=t("'ambito' tem de ser 'global' ou 'perfil'"))
 
     def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
         """Aplica o delta da estrategia sobre a config que esta no disco agora."""
@@ -738,7 +955,7 @@ def estrategia_post(corpo: Any = Body(default=None)) -> JSONResponse:
         perfis = cfg.get("perfis") or {}
         if nome not in perfis:
             raise HTTPException(status_code=404,
-                                detail=f"perfil {nome!r} nao existe na configuracao")
+                                detail=t("perfil {nome!r} nao existe na configuracao", nome=nome))
         perfil = perfis[nome]
         if herdar:
             perfil.pop("estrategia", None)
@@ -760,14 +977,14 @@ def estrategia_post(corpo: Any = Body(default=None)) -> JSONResponse:
     except gestor.Conflito:
         raise HTTPException(
             status_code=409,
-            detail="a configuração mudou desde que este painel leu o estado",
+            detail=t("a configuração mudou desde que este painel leu o estado"),
         )
     except HTTPException:
         raise
     except ValueError as exc:
         # Erro de validacao (valor fora da lista, config inconsistente) e 400
         # com a razao, nao 500: o pedido e que estava errado, o servidor nao.
-        raise HTTPException(status_code=400, detail=f"nao gravou: {exc}") from exc
+        raise HTTPException(status_code=400, detail=t("nao gravou: {erro}", erro=exc)) from exc
 
     # Releitura independente: o que se devolve e o que ficou no disco.
     confirmado = _cfg()
@@ -806,16 +1023,16 @@ def superficies_post(corpo: Any = Body(default=None)) -> JSONResponse:
     superficie = str(corpo.get("superficie") or "").strip().lower()
     alvo = str(corpo.get("alvo") or "").strip()
     if not superficie:
-        raise HTTPException(status_code=400, detail="indique 'superficie'")
+        raise HTTPException(status_code=400, detail=t("indique 'superficie'"))
     if ambito not in ("global", "perfil"):
-        raise HTTPException(status_code=400, detail="'ambito' tem de ser 'global' ou 'perfil'")
+        raise HTTPException(status_code=400, detail=t("'ambito' tem de ser 'global' ou 'perfil'"))
 
     cfg = _cfg()
     rev = str(corpo.get("rev") or "")
     if rev and _conflito(rev, _rev(cfg)):
         raise HTTPException(
             status_code=409,
-            detail="a configuração mudou desde que este painel leu o estado",
+            detail=t("a configuração mudou desde que este painel leu o estado"),
         )
 
     if alvo == "":
@@ -832,8 +1049,7 @@ def superficies_post(corpo: Any = Body(default=None)) -> JSONResponse:
     else:
         raise HTTPException(
             status_code=400,
-            detail="'alvo' tem de ser entrada:<id>, nivel:<nivel>, provider/modelo, "
-                   "'nunca' ou vazio (apagar)",
+            detail=t("'alvo' tem de ser entrada:<id>, nivel:<nivel>, provider/modelo, 'nunca' ou vazio (apagar)"),
         )
 
     nome = "global" if ambito == "global" else str(corpo.get("perfil") or "").strip()
@@ -846,7 +1062,7 @@ def superficies_post(corpo: Any = Body(default=None)) -> JSONResponse:
             perfis = cfg.get("perfis") or {}
             if nome not in perfis:
                 raise HTTPException(status_code=404,
-                                    detail=f"perfil {nome!r} nao existe na configuracao")
+                                    detail=t("perfil {nome!r} nao existe na configuracao", nome=nome))
             destino = (perfis[nome].setdefault("analise", {})
                        .setdefault("superficies", {}))
         if regra is None:
@@ -860,12 +1076,12 @@ def superficies_post(corpo: Any = Body(default=None)) -> JSONResponse:
     except gestor.Conflito:
         raise HTTPException(
             status_code=409,
-            detail="a configuração mudou desde que este painel leu o estado",
+            detail=t("a configuração mudou desde que este painel leu o estado"),
         )
     except HTTPException:
         raise
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"nao gravou: {exc}") from exc
+        raise HTTPException(status_code=400, detail=t("nao gravou: {erro}", erro=exc)) from exc
 
     # Releitura independente: devolve-se o que ficou no disco, nao o que se quis.
     # Le o bloco **efectivo** (global + delta do perfil), nao `regra_de_superficie`:
@@ -882,6 +1098,225 @@ def superficies_post(corpo: Any = Body(default=None)) -> JSONResponse:
         "ok": (bool(lido) if regra is not None else not lido),
         "ambito": ambito, "perfil": None if ambito == "global" else nome,
         "superficie": superficie, "regra": lido,
+        "rev": _rev(confirmado),
+    })
+
+
+@router.post("/sombra")
+def sombra_post(corpo: Any = Body(default=None)) -> JSONResponse:
+    """Liga/desliga o ensaio em sombra e fixa a validade da sonda de vida.
+
+    Escreve so o bloco `sombra` do config — o mesmo que o CLI
+    (`vmm sombra on|off`) e que o middleware le. Os MODELOS dos bracos nao se
+    mudam aqui: vivem no pre-registo selado, e re-sela-lo e outro gesto (ver
+    `POST /sombra/bracos`), porque mudar os bracos a meio invalida a comparacao
+    que ja foi acumulada.
+    """
+    corpo = _corpo_objeto(corpo)
+    rev = str(corpo.get("rev") or "")
+    tem_activo = "activo" in corpo
+    tem_ttl = "vida_ttl_h" in corpo
+    if not tem_activo and not tem_ttl:
+        raise HTTPException(status_code=400, detail=t("indique 'activo' e/ou 'vida_ttl_h'"))
+
+    def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
+        bloco = cfg.get("sombra")
+        bloco = dict(bloco) if isinstance(bloco, dict) else {}
+        if tem_activo:
+            bloco["activo"] = bool(corpo.get("activo"))
+        if tem_ttl:
+            bloco["vida_ttl_h"] = corpo.get("vida_ttl_h")
+        cfg["sombra"] = bloco
+        return cfg
+
+    try:
+        gestor.alterar(mutar, rev_esperado=rev or None)
+    except gestor.Conflito:
+        raise HTTPException(
+            status_code=409,
+            detail=t("a configuração mudou desde que este painel leu o estado"),
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=t("nao gravou: {erro}", erro=exc)) from exc
+
+    confirmado = _cfg()
+    return JSONResponse({"ok": True, "sombra": _sombra_estado(confirmado),
+                         "rev": _rev(confirmado)})
+
+
+def _proximo_nome_pre_registo() -> str:
+    """Nome do proximo pre-registo, garantidamente posterior na ordenacao.
+
+    A leitura usa ``sorted(glob(...))[-1]``, logo o nome nao e decorativo: um
+    ficheiro novo com nome que ordene ANTES do actual nunca seria lido e o
+    painel gravaria com sucesso um ensaio que ninguem corre. Os nomes seguem
+    ``pre-registo-AAAAMMDD`` e depois letras (``...b``); a proxima letra livre
+    e a escolha. Uma data com sufixo vazio conta como anterior a ``a``.
+    """
+    hoje = datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%Y%m%d")
+    prefixo = f"pre-registo-{hoje}"
+    usado = ""
+    try:
+        for caminho in _dir_sombra().glob("pre-registo-*.json"):
+            nome = caminho.stem
+            if not nome.startswith(prefixo):
+                continue
+            sufixo = nome[len(prefixo):]
+            if sufixo > usado:
+                usado = sufixo
+    except OSError:
+        usado = ""
+    if not usado:
+        return f"{prefixo}a"
+    # Incrementa a ultima letra; `z` passa a `za` (mantem a ordenacao).
+    ultima = usado[-1]
+    if ultima < "z":
+        return f"{prefixo}{usado[:-1]}{chr(ord(ultima) + 1)}"
+    return f"{prefixo}{usado}a"
+
+
+@router.post("/sombra/bracos")
+def sombra_bracos_post(corpo: Any = Body(default=None)) -> JSONResponse:
+    """Re-sela o pre-registo com outros bracos (modelos) para o ensaio A/B.
+
+    Este gesto reabre o ensaio: os numeros que ja estavam selados deixam de
+    valer, e os turnos recolhidos com os bracos antigos nao sao comparaveis com
+    os novos. Por isso exige ``confirmar_reabertura: true`` — sem ele recusa,
+    em vez de apagar em silencio o desenho que o dono aprovou.
+
+    ``p0``, ``design_effect`` e ``chamadas_por_dia`` sao herdados do pre-registo
+    actual quando nao vierem no corpo: sao valores MEDIDOS (48582 chamadas de
+    ferramenta), e reescreve-los a mao mudaria o tamanho da amostra sem que
+    ninguem tivesse medido nada.
+    """
+    corpo = _corpo_objeto(corpo)
+    if not _verdadeiro(corpo.get("confirmar_reabertura")):
+        raise HTTPException(
+            status_code=409,
+            detail=t("reabrir o ensaio invalida a amostra ja recolhida; reenvie com 'confirmar_reabertura: true'"),
+        )
+
+    actual, caminho_actual = _pre_registo_actual()
+    if actual is None:
+        actual = {}
+
+    braco_a = str(corpo.get("braco_a") or "").strip()
+    braco_b = str(corpo.get("braco_b") or "").strip()
+    if not braco_a or not braco_b:
+        raise HTTPException(status_code=400,
+                            detail=t("indique 'braco_a' (pago) e 'braco_b' (gratuito)"))
+    if braco_a == braco_b:
+        raise HTTPException(status_code=400,
+                            detail=t("os dois bracos nao podem ser o mesmo modelo"))
+
+    # Um slug so nao identifica a rota. O provider entra no selo: ou vem dito,
+    # ou sai do catalogo por consulta exacta (zero ou duas entradas recusam em
+    # vez de escolher uma em silencio). O que nao se faz e adivinhar pelo nome
+    # — foi assim que um slug gratuito foi sondado contra a credencial errada.
+    cfg, _ = gestor.carregar()
+    catalogo: dict[str, set[str]] = {}
+    for perfil in (cfg.get("perfis") or {}).values():
+        if not isinstance(perfil, dict):
+            continue
+        for entrada in perfil.get("catalogo") or []:
+            if not isinstance(entrada, dict):
+                continue
+            modelo_e = str(entrada.get("modelo") or "").strip().lower()
+            prov_e = str(entrada.get("provider") or "").strip().lower()
+            if modelo_e and prov_e:
+                catalogo.setdefault(modelo_e, set()).add(prov_e)
+    disponiveis = _providers_disponiveis(cfg)
+
+    def _provider(campo_modelo: str, campo_provider: str,
+                  modelo: str) -> tuple[str, str]:
+        declarado = str(corpo.get(campo_provider) or "").strip().lower()
+        candidatos = sorted(catalogo.get(modelo.strip().lower()) or set())
+        if declarado:
+            if declarado not in disponiveis:
+                raise HTTPException(
+                    status_code=400,
+                    detail=t("'{campo_provider}' = '{declarado}' nao serve nenhuma entrada do catalogo; disponiveis: {disponiveis}",
+                                campo_provider=campo_provider, declarado=declarado,
+                                disponiveis=disponiveis or ['(nenhum)']))
+            if declarado not in candidatos:
+                raise HTTPException(
+                    status_code=400,
+                    detail=t("'{campo_provider}': o par {declarado}/{modelo} nao existe no catalogo{sufixo}",
+                                campo_provider=campo_provider, declarado=declarado, modelo=modelo,
+                                sufixo=(f" (esse modelo esta em {candidatos})" if candidatos else "")))
+            return declarado, "declarado"
+        if len(candidatos) == 1:
+            return candidatos[0], "catalogo"
+        if not candidatos:
+            raise HTTPException(
+                status_code=400,
+                detail=t("'{campo_modelo}': o modelo '{modelo}' nao esta em nenhum catalogo; sem entrada o middleware nao o pode servir",
+                        campo_modelo=campo_modelo, modelo=modelo))
+        raise HTTPException(
+            status_code=400,
+            detail=t("'{campo_modelo}': '{modelo}' existe em {candidatos}; indique '{campo_provider}' para desempatar",
+                    campo_modelo=campo_modelo, modelo=modelo, candidatos=candidatos,
+                    campo_provider=campo_provider))
+
+    provider_a, origem_a = _provider("braco_a", "braco_a_provider", braco_a)
+    provider_b, origem_b = _provider("braco_b", "braco_b_provider", braco_b)
+
+    def num(campo: str, omissao: Any) -> Any:
+        valor = corpo.get(campo, omissao)
+        try:
+            return float(valor)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                                detail=t("'{campo}' tem de ser um numero", campo=campo)) from None
+
+    p0 = num("p0", actual.get("p0", 0.0463))
+    margem = num("margem", actual.get("margem_nao_inferioridade", 0.01))
+    deff = num("design_effect", actual.get("design_effect", 3.08))
+    por_dia = num("chamadas_por_dia", actual.get("chamadas_por_dia", 16194.0))
+    if not (0.0 <= p0 <= 1.0):
+        raise HTTPException(status_code=400, detail=t("'p0' tem de estar em [0, 1]"))
+    if not (0.0 < margem <= 1.0):
+        raise HTTPException(status_code=400,
+                            detail=t("'margem' tem de estar em ]0, 1]"))
+    if deff <= 0:
+        raise HTTPException(status_code=400,
+                            detail=t("'design_effect' tem de ser positivo"))
+
+    registo = _sombra.desenhar(
+        caro=braco_a,
+        barato=braco_b,
+        provider_caro=provider_a,
+        provider_barato=provider_b,
+        p0=p0,
+        margem=margem,
+        deff=deff,
+        chamadas_por_dia=por_dia,
+        medida=str(corpo.get("medida") or actual.get("medida_primaria")
+                   or "taxa de falha por chamada de ferramenta medida por exit_code"),
+        nota=str(corpo.get("nota") or (
+            f"re-selado pelo painel; substitui {Path(caminho_actual).name}"
+            if caminho_actual else "selado pelo painel")),
+    )
+    if not _sombra.verificar(registo):
+        raise HTTPException(status_code=500,
+                            detail=t("o pre-registo nao ficou selado; nada gravado"))
+
+    destino = _dir_sombra() / f"{_proximo_nome_pre_registo()}.json"
+    escrito = _sombra.escrever(registo, destino)
+
+    # Releitura independente: o que se devolve e o que ficou no disco.
+    confirmado = _cfg()
+    estado = _sombra_estado(confirmado)
+    return JSONResponse({
+        "ok": True,
+        "pre_registo": escrito,
+        "anterior": caminho_actual or None,
+        "sombra": estado,
+        # De onde veio o provider de cada braco: dito no corpo ou lido do
+        # catalogo. Nunca "adivinhado pelo nome do modelo".
+        "providers_origem": {"a": origem_a, "b": origem_b},
         "rev": _rev(confirmado),
     })
 
@@ -919,14 +1354,14 @@ def config_post(request: Request, corpo: Any = Body(default=None)) -> JSONRespon
     """
     corpo = _corpo_objeto(corpo)
     if not corpo:
-        raise HTTPException(status_code=400, detail="JSON inválido: não é um objecto")
+        raise HTTPException(status_code=400, detail=t("JSON inválido: não é um objecto"))
     envelope = isinstance(corpo.get("config"), dict)
     novo = corpo["config"] if envelope else corpo
     rev_cliente = str(corpo.get("rev") or "") if envelope else ""
     if not (novo.get("perfis") or {}):
         raise HTTPException(
             status_code=400,
-            detail="config sem nenhum perfil: recusado (o plugin ficaria sem rotas)",
+            detail=t("config sem nenhum perfil: recusado (o plugin ficaria sem rotas)"),
         )
     if envelope and not rev_cliente:
         # Documento inteiro sem versao de origem e uma escrita as cegas: reporia
@@ -934,8 +1369,7 @@ def config_post(request: Request, corpo: Any = Body(default=None)) -> JSONRespon
         # sempre o `rev` que leu; quem escreve por API tem de o mandar tambem.
         raise HTTPException(
             status_code=400,
-            detail="falta 'rev': substituir a config inteira exige a versão que foi lida "
-                   "(POST /config devolve-a em 'rev')",
+            detail=t("falta 'rev': substituir a config inteira exige a versão que foi lida (POST /config devolve-a em 'rev')"),
         )
     actual, _ = gestor.carregar()
     rev_actual = _rev(actual)
@@ -983,6 +1417,122 @@ def config_post(request: Request, corpo: Any = Body(default=None)) -> JSONRespon
     return JSONResponse(
         status_code=200,
         content={"ok": True, "rev": rev_novo, "config": cfg, "sem_rev": not bool(rev_cliente)},
+    )
+
+
+@router.get("/circuit-breaker")
+def circuit_breaker_get(perfil: str = Query(default="")) -> dict[str, Any]:
+    """Config do circuit breaker efetiva para um perfil (com heranca do global)."""
+    cfg, _ = gestor.carregar()
+    if perfil:
+        pcfg = gestor.perfil_config(cfg, perfil)
+        if pcfg:
+            analise = pcfg.get("analise") or {}
+            cb = analise.get("circuit_breaker") or {}
+            # Mostra a origem de cada valor
+            global_analise = cfg.get("analise") or {}
+            global_cb = global_analise.get("circuit_breaker") or {}
+            result = {}
+            for key in ["ativo", "limite_falhas", "janela_minutos", "multiplicador_cooldown"]:
+                result[key] = {
+                    "valor": cb.get(key, global_cb.get(key, gestor.CIRCUIT_BREAKER_PADRAO[key])),
+                    "origem": "perfil" if key in cb else ("global" if key in global_cb else "padrao")
+                }
+            return {"perfil": perfil, "circuit_breaker": result}
+    # Se nao tem perfil ou perfil nao gerido, devolve o global
+    global_analise = cfg.get("analise") or {}
+    global_cb = global_analise.get("circuit_breaker") or {}
+    result = {}
+    for key in ["ativo", "limite_falhas", "janela_minutos", "multiplicador_cooldown"]:
+        result[key] = {
+            "valor": global_cb.get(key, gestor.CIRCUIT_BREAKER_PADRAO[key]),
+            "origem": "global" if key in global_cb else "padrao"
+        }
+    return {"perfil": "global", "circuit_breaker": result}
+
+
+@router.post("/circuit-breaker")
+async def circuit_breaker_post(request: Request, corpo: Any = Body(default=None)) -> JSONResponse:
+    """Atualiza o bloco circuit_breaker (global ou de um perfil).
+
+    Corpo esperado:
+    - `perfil` (opcional): string. Se ausente ou vazio, edita o global.
+    - `circuit_breaker`: object com as chaves a atualizar (todas opcionais).
+    - `rev`: string (obrigatorio se edita config completa via envelope, mas aqui
+      fazemos merge parcial entao usamos o rev atual da config).
+    """
+    corpo = _corpo_objeto(corpo)
+    if not corpo:
+        raise HTTPException(status_code=400, detail=t("JSON invalido: nao e um objecto"))
+    
+    perfil = str(corpo.get("perfil") or "").strip()
+    cb_novo = corpo.get("circuit_breaker")
+    if not isinstance(cb_novo, dict):
+        raise HTTPException(status_code=400, detail=t("campo 'circuit_breaker' deve ser um objecto"))
+    
+    # Valida chaves
+    chaves_validas = {"ativo", "limite_falhas", "janela_minutos", "multiplicador_cooldown"}
+    chaves_invalidas = set(cb_novo.keys()) - chaves_validas
+    if chaves_invalidas:
+        raise HTTPException(status_code=400, detail=t("chaves invalidas em circuit_breaker: {chaves}", chaves=sorted(chaves_invalidas)))
+    
+    # Carrega config atual
+    cfg, _ = gestor.carregar()
+    rev_atual = _rev(cfg)
+    
+    if perfil:
+        # Edita perfil
+        perfis = cfg.get("perfis") or {}
+        if perfil not in perfis:
+            raise HTTPException(status_code=404, detail=t("perfil {nome!r} nao existe", nome=perfil))
+        pcfg = perfis[perfil]
+        analise = pcfg.get("analise")
+        if not isinstance(analise, dict):
+            analise = {}
+        cb_atual = analise.get("circuit_breaker")
+        if not isinstance(cb_atual, dict):
+            cb_atual = {}
+        # Merge: so atualiza chaves fornecidas
+        cb_atual.update(cb_novo)
+        analise["circuit_breaker"] = cb_atual
+        pcfg["analise"] = analise
+        perfis[perfil] = pcfg
+        cfg["perfis"] = perfis
+    else:
+        # Edita global
+        global_analise = cfg.get("analise") or {}
+        cb_atual = global_analise.get("circuit_breaker")
+        if not isinstance(cb_atual, dict):
+            cb_atual = {}
+        cb_atual.update(cb_novo)
+        global_analise["circuit_breaker"] = cb_atual
+        cfg["analise"] = global_analise
+    
+    # Grava via gestor.gravar (validacao + backup + atomic)
+    try:
+        origem = "%s %s" % (request.client.host if request and request.client else "-",
+                            (request.headers.get("user-agent") if request else "") or "-")
+    except Exception:
+        origem = "-"
+    try:
+        gestor.gravar(cfg, rev_esperado=rev_atual)
+    except gestor.Conflito as exc:
+        return JSONResponse(
+            status_code=409,
+            content={"erro": "config mudou durante a gravacao", "rev": exc.rev_actual},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    
+    cfg_novo, _ = gestor.carregar()
+    rev_novo = _rev(cfg_novo)
+    _registar_escrita(
+        rev_antes=rev_atual, rev_depois=rev_novo, rev_cliente=rev_atual,
+        conflito=False, origem=origem,
+    )
+    return JSONResponse(
+        status_code=200,
+        content={"ok": True, "rev": rev_novo, "config": cfg_novo},
     )
 
 @router.post("/validar")
@@ -1066,7 +1616,7 @@ def _perfil_da_config(cfg: dict[str, Any], perfil: str) -> tuple[dict[str, Any],
     if not isinstance(dados, dict):
         conhecidos = ", ".join(sorted((cfg.get("perfis") or {}).keys())) or "nenhum"
         raise HTTPException(status_code=404,
-                            detail=f"perfil {perfil!r} nao existe na configuracao (tem: {conhecidos})")
+                            detail=t("perfil {nome!r} nao existe na configuracao (tem: {conhecidos})", nome=perfil, conhecidos=conhecidos))
     catalogo = dados.get("catalogo")
     return dados, (catalogo if isinstance(catalogo, list) else [])
 
@@ -1101,7 +1651,7 @@ def modelo_get(perfil: str = Query(...), id: Optional[str] = Query(None)) -> dic
         indice = _entrada_por_id(catalogo, id)
         if indice is None:
             raise HTTPException(status_code=404,
-                                detail=f"modelo {id!r} nao existe no catalogo de {perfil!r}")
+                                detail=t("modelo {id!r} nao existe no catalogo de {perfil!r}", id=id, perfil=perfil))
         return {"perfil": perfil, "id": id, "novo": False,
                 "entrada": catalogo[indice], "opcoes": opcoes, "rev": _rev(cfg)}
 
@@ -1126,15 +1676,15 @@ def modelo_post(corpo: Any = Body(default=None)) -> JSONResponse:
     perfil = str(corpo.get("perfil") or "").strip()
     entrada = corpo.get("entrada")
     if not perfil:
-        raise HTTPException(status_code=400, detail="falta 'perfil'")
+        raise HTTPException(status_code=400, detail=t("falta 'perfil'"))
     if not isinstance(entrada, dict):
-        raise HTTPException(status_code=400, detail="'entrada' tem de ser um objecto")
+        raise HTTPException(status_code=400, detail=t("'entrada' tem de ser um objecto"))
     apenas_validar = bool(corpo.get("validar"))
     id_original = str(corpo.get("id") or "").strip() or None
     novo_id = str(entrada.get("id") or "").strip()
     if not novo_id:
         raise HTTPException(status_code=400,
-                            detail="o modelo precisa de um id (e por ele que as superficies e as tarefas lhe chamam)")
+                            detail=t("o modelo precisa de um id (e por ele que as superficies e as tarefas lhe chamam)"))
 
     rev = str(corpo.get("rev") or "")
 
@@ -1149,11 +1699,11 @@ def modelo_post(corpo: Any = Body(default=None)) -> JSONResponse:
         posicao = _entrada_por_id(catalogo, id_original) if id_original else None
         if id_original and posicao is None:
             raise HTTPException(status_code=404,
-                                detail=f"modelo {id_original!r} ja nao existe no catalogo de {perfil!r}")
+                                detail=t("modelo {id!r} ja nao existe no catalogo de {perfil!r}", id=id_original, perfil=perfil))
         colisao = _entrada_por_id(catalogo, novo_id)
         if colisao is not None and colisao != posicao:
             raise HTTPException(status_code=400,
-                                detail=f"ja existe um modelo com o id {novo_id!r} no perfil {perfil!r}")
+                                detail=t("ja existe um modelo com o id {id!r} no perfil {perfil!r}", id=novo_id, perfil=perfil))
         nova_lista = list(catalogo)
         limpa = dict(entrada)
         if posicao is None:
@@ -1202,7 +1752,7 @@ def modelo_post(corpo: Any = Body(default=None)) -> JSONResponse:
     _, catalogo_lido = _perfil_da_config(confirmado, perfil)
     indice = _entrada_por_id(catalogo_lido, novo_id)
     if indice is None:  # pragma: no cover - so se o `gravar` mentir
-        raise HTTPException(status_code=500, detail="gravou mas a rota não aparece na releitura")
+        raise HTTPException(status_code=500, detail=t("gravou mas a rota não aparece na releitura"))
     return JSONResponse(content={
         "ok": True, "perfil": perfil, "id": novo_id,
         "entrada": catalogo_lido[indice], "rev": _rev(confirmado),
@@ -1286,7 +1836,7 @@ def perfil_get(nome: str = Query(...)) -> dict[str, Any]:
     cfg = _cfg()
     perfis = cfg.get("perfis") or {}
     if nome not in perfis:
-        raise HTTPException(status_code=404, detail=f"perfil {nome!r} nao existe")
+        raise HTTPException(status_code=404, detail=t("perfil {nome!r} nao existe", nome=nome))
     cru = perfis.get(nome) or {}
     _analise_cru = cru.get("analise")
     analise: dict[str, Any] = _analise_cru if isinstance(_analise_cru, dict) else {}

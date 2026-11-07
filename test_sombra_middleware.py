@@ -289,7 +289,7 @@ class SondaDeVida(unittest.TestCase):
                                        margem=0.01, deff=3.08, chamadas_por_dia=16194)
 
     def test_marca_404_como_morto(self):
-        def chamar(modelo):
+        def chamar(provider, modelo):
             if modelo == BARATO:
                 return {"ok": False, "http": 404,
                         "motivo": "This model is unavailable for free."}
@@ -304,17 +304,71 @@ class SondaDeVida(unittest.TestCase):
 
     def test_dois_vivos_autoriza(self):
         v = sombra.sondar_vida(self.registo,
-                               lambda m: {"ok": True, "http": 200, "motivo": ""})
+                               lambda p, m: {"ok": True, "http": 200, "motivo": ""})
         self.assertTrue(v["todos_vivos"])
         self.assertEqual(v["sha_registo"], self.registo["sha256"])
 
     def test_excepcao_nao_parte_a_sonda(self):
-        def chamar(modelo):
+        def chamar(provider, modelo):
             raise TimeoutError("sem rede")
 
         v = sombra.sondar_vida(self.registo, chamar)
         self.assertFalse(v["braco_a"]["ok"])
         self.assertIn("TimeoutError", v["braco_a"]["motivo"])
+
+    # --- provider declarado -------------------------------------------------
+
+    def test_provider_declarado_chega_a_sonda(self):
+        """O provider do braco viaja explicito: sem ele a sonda adivinha."""
+        registo = sombra.desenhar(caro=CARO, barato=BARATO, p0=0.0463,
+                                  margem=0.01, deff=3.08,
+                                  chamadas_por_dia=16194,
+                                  provider_caro="deepseek",
+                                  provider_barato="openrouter")
+        vistos = []
+
+        def chamar(provider, modelo):
+            vistos.append((provider, modelo))
+            return {"ok": True, "http": 200, "motivo": ""}
+
+        v = sombra.sondar_vida(registo, chamar)
+        self.assertEqual(v["braco_a"]["provider"], "deepseek")
+        self.assertEqual(v["braco_b"]["provider"], "openrouter")
+        self.assertIn(("deepseek", CARO), vistos)
+        self.assertIn(("openrouter", BARATO), vistos)
+
+    def test_provider_nao_declarado_fica_vazio(self):
+        """Vazio nao e um provider: e "nao declarado", e quem le sabe-o."""
+        self.assertEqual(sombra.provider_do_braco(self.registo, "a"), "")
+        v = sombra.sondar_vida(self.registo,
+                               lambda p, m: {"ok": True, "http": 200, "motivo": ""})
+        self.assertEqual(v["braco_a"]["provider"], "")
+
+    def test_provider_entra_no_selo(self):
+        """Declarar o provider muda o selo — e a sonda deixa de valer a antiga."""
+        sem = sombra.desenhar(caro=CARO, barato=BARATO, p0=0.0463, margem=0.01,
+                              deff=3.08, chamadas_por_dia=16194)
+        com = sombra.desenhar(caro=CARO, barato=BARATO, p0=0.0463, margem=0.01,
+                              deff=3.08, chamadas_por_dia=16194,
+                              provider_caro="deepseek",
+                              provider_barato="openrouter")
+        self.assertNotEqual(sem["sha256"], com["sha256"])
+        self.assertTrue(sombra.verificar(com))
+        self.assertNotIn("braco_a_provider", sem)
+
+    def test_braco_do_modelo_desempata_por_provider(self):
+        """Mesmo slug em dois providers: so casa o par exacto."""
+        registo = sombra.desenhar(caro="shared/model", barato=BARATO, p0=0.0463,
+                                  margem=0.01, deff=3.08, chamadas_por_dia=16194,
+                                  provider_caro="openrouter",
+                                  provider_barato="deepseek")
+        self.assertEqual(
+            sombra.braco_do_modelo(registo, "shared/model", "openrouter"), "a")
+        # O mesmo nome servido por outro provider nao e o braco a.
+        self.assertIsNone(
+            sombra.braco_do_modelo(registo, "shared/model", "deepseek"))
+        # Sem provider informado mantem-se a comparacao por nome (compat).
+        self.assertEqual(sombra.braco_do_modelo(registo, "shared/model"), "a")
 
 
 if __name__ == "__main__":

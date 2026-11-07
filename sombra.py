@@ -94,8 +94,17 @@ def desenhar(
     chamadas_por_dia: float,
     medida: str = "taxa de falha por chamada de ferramenta medida por exit_code",
     nota: str = "",
+    provider_caro: str = "",
+    provider_barato: str = "",
 ) -> dict[str, Any]:
-    """Constroi o pre-registo; o `sha256` sela os numeros antes dos dados."""
+    """Constroi o pre-registo; o `sha256` sela os numeros antes dos dados.
+
+    O provider de cada braco entra no selo **quando declarado**. Um slug so
+    nao identifica a rota: `deepseek-flash` e `nvidia/nemotron-3-ultra-550b-a55b:free`
+    vivem em providers diferentes, e sem o provider a sonda e o middleware
+    tinham de adivinhar qual credencial usar. Adivinhar por `/` ou `:` foi o
+    que levou um slug gratuito a ser sondado contra a rota errada.
+    """
     n = n_por_braco(p0, margem, deff)
     dias = (2 * n) / chamadas_por_dia if chamadas_por_dia > 0 else None
     registo: dict[str, Any] = {
@@ -122,9 +131,25 @@ def desenhar(
         ),
         "nota": nota,
     }
+    # So entram no selo quando declarados: um desenho antigo nao ganha chaves
+    # que nao tinha, para o `verificar()` continuar a bater no que foi selado.
+    if provider_caro.strip():
+        registo["braco_a_provider"] = provider_caro.strip().lower()
+    if provider_barato.strip():
+        registo["braco_b_provider"] = provider_barato.strip().lower()
     canonico = json.dumps(registo, sort_keys=True, ensure_ascii=False).encode("utf-8")
     registo["sha256"] = hashlib.sha256(canonico).hexdigest()
     return registo
+
+
+def provider_do_braco(registo: dict[str, Any], braco: str) -> str:
+    """Provider declarado do braco; vazio quando o desenho nao o declara.
+
+    Vazio nao e `openrouter` nem `deepseek`: e "nao declarado", e quem chama
+    tem de o dizer em voz alta em vez de escolher um por omissao. Foi uma
+    omissao destas que fez um slug gratuito ser sondado contra a rota errada.
+    """
+    return str(registo.get(f"braco_{braco}_provider") or "").strip().lower()
 
 
 def verificar(registo: dict[str, Any]) -> bool:
@@ -201,13 +226,18 @@ def braco_do_turno(registo: dict[str, Any], perfil: str, sessao: str,
     return "a" if int(h[:8], 16) < 0x80000000 else "b"
 
 
-def braco_do_modelo(registo: dict[str, Any], modelo: str) -> str | None:
+def braco_do_modelo(registo: dict[str, Any], modelo: str,
+                    provider: str = "") -> str | None:
     """Braco a que pertence o modelo que respondeu, ou None se for outro.
 
     O braco gravado e um facto, nao uma intencao: deriva-se do modelo que
     efectivamente serviu o turno e so vale se esse modelo for um dos dois do
     desenho. Marcar um turno com um braco que nao serviu era pior do que nao
     marcar nada — a analise contava como ensaio um turno que nunca o foi.
+
+    Com provider dos dois lados, so casa o par exacto: o mesmo slug pode ser
+    servido por dois providers, e atribuir ao braco errado contaminava a
+    amostra sem deixar rasto.
     """
     if not verificar(registo):
         raise ValueError("pre-registo alterado: o sha256 não bate")
@@ -218,9 +248,13 @@ def braco_do_modelo(registo: dict[str, Any], modelo: str) -> str | None:
     alvo = _chave(modelo)
     if not alvo:
         return None
+    alvo_prov = _chave(provider)
     for braco in ("a", "b"):
         declarado = _chave(registo.get(f"braco_{braco}"))
         if not declarado:
+            continue
+        prov_braco = _chave(registo.get(f"braco_{braco}_provider"))
+        if alvo_prov and prov_braco and alvo_prov != prov_braco:
             continue
         if alvo == declarado or alvo.split("/")[-1] == declarado.split("/")[-1]:
             return braco
@@ -303,10 +337,13 @@ def sondar_vida(registo: dict[str, Any], chamar: Any, *,
                 agora: Any = None) -> dict[str, Any]:
     """Mede se cada braco do pre-registo responde; devolve o veredicto.
 
-    `chamar(modelo)` devolve `{"ok": bool, "http": int, "motivo": str}`. A sonda
-    corre **fora** do turno de proposito: dentro do middleware pagava-se em
-    latencia em todos os turnos, e um 404 descoberto ai queimava o turno — foi
-    exactamente o que aconteceu com um slug gratuito que a OpenRouter retirou.
+    `chamar(provider, modelo)` devolve `{"ok": bool, "http": int, "motivo": str}`.
+    O provider vai explicito porque o braco o declara: inferi-lo do slug (tem
+    `/` ou `:` logo e openrouter) e uma adivinhacao que falha em qualquer
+    modelo cujo nome nao denuncie o provider. A sonda corre **fora** do turno
+    de proposito: dentro do middleware pagava-se em latencia em todos os
+    turnos, e um 404 descoberto ai queimava o turno — foi exactamente o que
+    aconteceu com um slug gratuito que a OpenRouter retirou.
 
     Um braco cujo slug morreu nao e um braco com mais falhas: e um braco sem
     resultado. Por isso a sonda e o que autoriza (ou nao) o ensaio a arrancar.
@@ -319,14 +356,17 @@ def sondar_vida(registo: dict[str, Any], chamar: Any, *,
         "ts_epoch": float(instante.timestamp()),
         "sha_registo": str(registo.get("sha256") or ""),
         "ensaio": registo.get("ensaio"),
-        "braco_a": {"modelo": registo.get("braco_a")},
-        "braco_b": {"modelo": registo.get("braco_b")},
+        "braco_a": {"modelo": registo.get("braco_a"),
+                    "provider": provider_do_braco(registo, "a")},
+        "braco_b": {"modelo": registo.get("braco_b"),
+                    "provider": provider_do_braco(registo, "b")},
         "todos_vivos": False,
     }
     for braco in ("a", "b"):
         modelo = registo.get(f"braco_{braco}")
+        provider = provider_do_braco(registo, braco)
         try:
-            resposta = chamar(modelo) or {}
+            resposta = chamar(provider, modelo) or {}
         except Exception as exc:  # noqa: BLE001 - a sonda nunca parte
             resposta = {"ok": False, "http": 0,
                         "motivo": f"{type(exc).__name__}: {str(exc)[:140]}"}

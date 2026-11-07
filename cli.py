@@ -27,6 +27,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Traducao do i18n na mesma raiz do plugin. Import directo (o `cli.py` corre com
+# a raiz do plugin no `sys.path`, tal como o `gestor`), sem caminho magico.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import i18n as _i18n  # noqa: E402
+
 _AQUI = Path(__file__).resolve().parent
 
 
@@ -176,8 +181,13 @@ def _sombra_mod():
     return mod
 
 
-def _chamar_modelo(modelo: str) -> dict[str, Any]:
+def _chamar_modelo(provider: str, modelo: str) -> dict[str, Any]:
     """Uma chamada minima ao modelo, so para provar que responde.
+
+    `provider` vem declarado no pre-registo. Vazio significa "nao declarado" e
+    cai-se na inferencia antiga (`/` ou `:` -> openrouter), que e um palpite:
+    fica registado como tal na resposta para a sonda nao se fazer passar por
+    medida quando foi adivinhacao.
 
     Nunca imprime a credencial nem o corpo completo de um erro: o que sai daqui
     vai para o ledger e para a conversa.
@@ -188,11 +198,14 @@ def _chamar_modelo(modelo: str) -> dict[str, Any]:
     spec = importlib.util.spec_from_file_location("vmm_seams", _AQUI / "seams.py")
     seams = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
     spec.loader.exec_module(seams)  # type: ignore[union-attr]
-    provider = "openrouter" if ("/" in modelo or ":" in modelo) else "deepseek"
+    inferido = not str(provider or "").strip()
+    if inferido:
+        provider = "openrouter" if ("/" in modelo or ":" in modelo) else "deepseek"
     try:
         rota = seams.resolver_provider(provider, modelo)
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "http": 0,
+        return {"ok": False, "http": 0, "provider": provider,
+                "provider_inferido": inferido,
                 "motivo": f"rota: {type(exc).__name__}: {str(exc)[:110]}"}
     corpo = json.dumps({
         "model": modelo,
@@ -210,7 +223,8 @@ def _chamar_modelo(modelo: str) -> dict[str, Any]:
         with urllib.request.urlopen(pedido, timeout=45) as resposta:
             dados = json.loads(resposta.read().decode())
         ok = bool(dados.get("choices"))
-        return {"ok": ok, "http": resposta.status,
+        return {"ok": ok, "http": resposta.status, "provider": provider,
+                "provider_inferido": inferido,
                 "motivo": "" if ok else "sem choices"}
     except urllib.error.HTTPError as exc:
         texto = exc.read().decode(errors="replace")
@@ -218,9 +232,12 @@ def _chamar_modelo(modelo: str) -> dict[str, Any]:
             msg = json.loads(texto).get("error", {}).get("message", texto)
         except (ValueError, AttributeError):
             msg = texto
-        return {"ok": False, "http": exc.code, "motivo": str(msg)[:160]}
+        return {"ok": False, "http": exc.code, "provider": provider,
+                "provider_inferido": inferido, "motivo": str(msg)[:160]}
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "http": 0, "motivo": f"{type(exc).__name__}: {str(exc)[:120]}"}
+        return {"ok": False, "http": 0, "provider": provider,
+                "provider_inferido": inferido,
+                "motivo": f"{type(exc).__name__}: {str(exc)[:120]}"}
 
 
 def cmd_sombra(args) -> int:
@@ -1261,7 +1278,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_status)
 
     for nome in ("on", "off"):
-        s = sub.add_parser(nome, help=f"{nome} o plugin")
+        s = sub.add_parser(nome, help=_i18n.t("{nome} o plugin", nome=nome))
         s.add_argument("--perfil")
         s.set_defaults(func=cmd_on_off)
 
@@ -1437,7 +1454,29 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--caminho", help="ficheiro de config alternativo (testes)")
     s.set_defaults(func=cmd_auditoria)
 
+    _traduzir_ajuda(p)
     return p
+
+
+def _traduzir_ajuda(parser: argparse.ArgumentParser) -> None:
+    """Traduz a ajuda do argparse para a lingua em vigor, numa passagem.
+
+    A ajuda e texto auto-contido: nao se cruza com as mensagens do validador nem
+    com valores da config, por isso e a parte do CLI que se traduz sem deixar
+    metade de uma frase numa lingua. Roda na construcao do parser, uma vez.
+    """
+    for acao in parser._actions:
+        if isinstance(acao, argparse._SubParsersAction):
+            for escolha in acao._choices_actions:
+                ajuda = getattr(escolha, "help", None)
+                if ajuda:
+                    escolha.help = _i18n.t(str(ajuda))
+            for sub in acao.choices.values():
+                _traduzir_ajuda(sub)
+        else:
+            ajuda = getattr(acao, "help", None)
+            if ajuda:
+                acao.help = _i18n.t(str(ajuda))
 
 
 def main(argv: list[str] | None = None) -> int:
