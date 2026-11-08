@@ -386,6 +386,20 @@
     "sem tarefas declaradas neste perfil": "no tasks declared in this profile",
     "sem turnos registados neste perfil": "no turns recorded in this profile",
     "sonda de vida ": "liveness probe ",
+    // Sonda de ligação da página de um modelo: o botão chama o provider com o
+    // par provider/modelo que está no formulário, antes de gravar.
+    "ligação": "connection",
+    "liga ao provider com este provider/modelo — gasta uns 8 tokens":
+      "calls the provider with this provider/model — costs about 8 tokens",
+    "⚡ Testar ligação": "⚡ Test connection",
+    "a testar a ligação…": "testing the connection…",
+    "Faz uma chamada mínima ao provider e diz se responde":
+      "Makes one minimal call to the provider and says whether it answers",
+    "✓ respondeu em {ms} ms · HTTP {http} · {p}/{m}":
+      "✓ replied in {ms} ms · HTTP {http} · {p}/{m}",
+    "✗ falhou · HTTP {http} · {motivo}": "✗ failed · HTTP {http} · {motivo}",
+    "✗ falhou · {motivo}": "✗ failed · {motivo}",
+    "resposta vazia": "empty response",
     "subscrição exige provider openai-codex": "subscription requires the openai-codex provider",
     "superfície ": "surface ",
     "superfície (ex.: cron)": "surface (e.g. cron)",
@@ -603,6 +617,27 @@
 
   function tInstantes() {
     return T("instantes");
+  }
+
+  // Texto do resultado da sonda de ligação (botão da página de um modelo).
+  // Pura e exportada porque é o que o dono lê para saber se a rota responde: um
+  // "falhou" sem motivo obriga-o a abrir o log do provider, que ele não tem.
+  // Sem `http` (falha antes do pedido, ex.: sem rede) o texto não inventa um 0.
+  function textoSonda(r) {
+    const s = r || {};
+    const ms = s.ms == null ? 0 : Number(s.ms) || 0;
+    const http = s.http == null ? 0 : Number(s.http) || 0;
+    const motivo = String(s.motivo == null ? "" : s.motivo).trim();
+    if (s.ok) {
+      return tCom("✓ respondeu em {ms} ms · HTTP {http} · {p}/{m}", {
+        ms: ms, http: http,
+        p: s.provider || "?", m: s.modelo || "?",
+      });
+    }
+    if (http) {
+      return tCom("✗ falhou · HTTP {http} · {motivo}", { http: http, motivo: motivo || "?" });
+    }
+    return tCom("✗ falhou · {motivo}", { motivo: motivo || "?" });
   }
 
   // Locale das datas. Em ingles usa-se `en-GB` de proposito: mantem dia/mes e
@@ -1549,7 +1584,31 @@
                     onChange: mudar("provider"),
                   })),
                 h(Campo, { rotulo: "modelo", ajuda: "o id exacto do modelo no provider" },
-                  h(EntradaTexto, { valor: form.modelo, rotulo: "modelo", placeholder: "nvidia/nemotron-3.5-lightning:free", onChange: mudar("modelo") }))
+                  h(EntradaTexto, { valor: form.modelo, rotulo: "modelo", placeholder: "nvidia/nemotron-3.5-lightning:free", onChange: mudar("modelo") })),
+                // Sonda de ligação: o icon chama o provider com o par acima e
+                // diz se responde, sem gravar nada. Fica aqui, junto dos dois
+                // campos que testa, e não na fila de acções do topo — uma acção
+                // que não grava não pertence ao lado de "Gravar".
+                h(Campo, { rotulo: "ligação", ajuda: "liga ao provider com este provider/modelo — gasta uns 8 tokens" },
+                  h("div", { className: "vmm-sonda" },
+                    h(Button, {
+                      type: "button",
+                      size: "sm",
+                      variant: "outline",
+                      className: "vmm-sonda-btn",
+                      title: "Faz uma chamada mínima ao provider e diz se responde",
+                      onClick: props.onTestar,
+                      disabled: !!props.aSondar
+                        || !String(form.provider || "").trim()
+                        || !String(form.modelo || "").trim(),
+                    }, props.aSondar ? "a testar a ligação…" : "⚡ Testar ligação"),
+                    props.sonda
+                      ? h("span", {
+                          className: (props.sonda.ok ? "vmm-ok" : "vmm-erro") + " vmm-sonda-res",
+                          role: "status",
+                          "aria-live": "polite",
+                        }, textoSonda(props.sonda))
+                      : null))
               )
             ),
 
@@ -3478,6 +3537,12 @@
     const [modeloOk, setModeloOk] = useState(null);
     const [modeloAGravar, setModeloAGravar] = useState(false);
     const [modeloACarregar, setModeloACarregar] = useState(false);
+    // Sonda de ligação (botão da página de um modelo): o último resultado e se
+    // há um pedido em curso. Vive à parte do formulário porque não é um campo —
+    // não vai para o ficheiro — e é limpo a cada tecla, para não ficar um verde
+    // de um par provider/modelo que já não é o que está no ecrã.
+    const [modeloSonda, setModeloSonda] = useState(null);
+    const [modeloASondar, setModeloASondar] = useState(false);
     // Um perfil aberto na sua propria pagina. Estado separado do da pagina de
     // um modelo porque as duas nao se sobrepoem: cada uma tem o seu early
     // return e os seus proprios buffers — partilhar `form` obrigaria a limpar
@@ -3790,6 +3855,7 @@
       setModeloErro(null);
       setModeloErros([]);
       setModeloOk(null);
+      setModeloSonda(null);
       // O aviso verde do painel fala da gravacao anterior; deixa-lo de pe atras
       // desta pagina faz parecer que o que se esta a editar ja foi gravado.
       setValidacaoOk(null);
@@ -3813,6 +3879,34 @@
       setModeloOk(null);
       setModeloErros([]);
       setModeloErro(null);
+      // Um resultado de sonda deixou de valer: o par mudou. Manter o verde ao
+      // lado de outro provider/modelo é a mentira mais fácil de escrever aqui.
+      setModeloSonda(null);
+    }
+
+    // Sonda de ligação: uma chamada minima ao provider com o par que esta no
+    // formulario, sem gravar nada. A resposta traz sempre `ok` — falhar a
+    // ligacao nao e um erro do painel, e por isso o .then corre nos dois casos;
+    // so um erro do proprio pedido cai no .catch.
+    function testarModelo() {
+      const aberto = modeloAberto || {};
+      const provider = String(modeloForm.provider || "").trim();
+      const modelo = String(modeloForm.modelo || "").trim();
+      setModeloSonda(null);
+      setModeloASondar(true);
+      pedir("/modelo/testar", {
+        method: "POST",
+        body: { perfil: aberto.perfil, provider: provider, modelo: modelo },
+      })
+        .then(function (r) {
+          setModeloSonda(r && typeof r === "object"
+            ? r
+            : { ok: false, provider: provider, modelo: modelo, motivo: T("resposta vazia") });
+        })
+        .catch(function (e) {
+          setModeloSonda({ ok: false, http: 0, ms: 0, provider: provider, modelo: modelo, motivo: textoDoErro(e) });
+        })
+        .then(function () { setModeloASondar(false); });
     }
 
     function corpoDoModelo() {
@@ -4119,6 +4213,9 @@
         validacaoOk: modeloOk,
         aGravar: modeloAGravar,
         aCarregar: modeloACarregar,
+        sonda: modeloSonda,
+        aSondar: modeloASondar,
+        onTestar: testarModelo,
         onCampo: mudarCampoModelo,
         onCampoComplexidade: function (v) { mudarCampoModelo("complexidade", v); },
         onCampoTarefas: function (v) { mudarCampoModelo("tarefas", v); },
@@ -4320,6 +4417,10 @@
     window.__VMM_TEST__.emOrdem = emOrdem;
     window.__VMM_TEST__.BotoesOpcao = BotoesOpcao;
     window.__VMM_TEST__.PaginaModelo = PaginaModelo;
+    // O que o botao de sonda escreve no ecra. Puro: o texto diz se a rota
+    // responde e por que nao, e um teste sem browser e a unica forma de provar
+    // as tres formas (ok, falha com http, falha antes do pedido).
+    window.__VMM_TEST__.textoSonda = textoSonda;
     // O campo do provider: texto livre com sugestoes. Exporta-se o componente
     // para se poder provar, sem browser, que o `<input>` nao fecha a lista e que
     // o `datalist` leva as sugestoes — foi uma lista fechada que impediu o dono

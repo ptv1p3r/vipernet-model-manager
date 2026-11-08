@@ -1012,6 +1012,17 @@ A página tem três blocos: **Identidade** (`id`, `provider`, `modelo`),
 **Roteamento** (complexidade, tarefas, acesso, esforço, estado) e **Limites
 declarados** (`contexto_max`, `latencia_p95_ms`, modalidades, JSON nativo, nota).
 
+Sob o `modelo` há um botão **⚡ Testar ligação** (3.47.12). Faz uma chamada mínima
+ao provider com o par `provider`/`modelo` que está escrito (`max_tokens: 8`,
+mensagem `ping`) e escreve o resultado ao lado do botão — `✓ respondeu em N ms ·
+HTTP 200 · provider/modelo` ou `✗ falhou · HTTP 401 · <a mensagem do provider>`.
+Não grava nada, não lê o catálogo e não exige que a rota já exista: serve
+exactamente para antes de gravar. A credencial é resolvida pela via pública do
+Hermes (`seams.resolver_provider`), nunca pelo ambiente, e a chave não aparece na
+resposta. Mudar qualquer dos dois campos apaga o resultado anterior, e o botão
+fica desligado enquanto não houver ambos — um ✓ verde ao lado de outro par é a
+mentira mais fácil de escrever neste painel.
+
 | opção | forma | fechada em |
 |---|---|---|
 | `complexidade` | vários níveis | `gestor.NIVEIS` |

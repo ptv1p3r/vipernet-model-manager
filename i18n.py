@@ -758,4 +758,11 @@ _EN: dict[str, str] = {
         "config changed while saving",
     "config sem nenhum perfil: o plugin ficaria sem rotas":
         "config with no profile: the plugin would be left without routes",
+    # Sonda de ligação da página de um modelo (3.47.12).
+    "faltam 'provider' e 'modelo' para testar a ligação":
+        "missing 'provider' and 'model' to test the connection",
+    "sem credencial para {provider} neste processo: {motivo}":
+        "no credential for {provider} in this process: {motivo}",
+    "o provider {provider} não declara endpoint HTTP (é servido por subprocesso)":
+        "provider {provider} declares no HTTP endpoint (it is served by a subprocess)",
 }

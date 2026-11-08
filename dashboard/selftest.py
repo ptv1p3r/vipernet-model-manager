@@ -947,6 +947,106 @@ def main() -> int:
                                               "complexidade": ["leve"]}, "rev": velho})
     check("/modelo com rev antigo da 409", r.status_code == 409, str(r.status_code))
 
+    # --- /modelo/testar (sonda de ligação) ----------------------------------
+    # Uma chamada real custaria tokens e faria a bateria depender da rede; o
+    # endpoint aceita `resolver` e `transporte` injectados exactamente para isto.
+    # Prova-se: o par vazio não chama nada, a resposta traz ok/http/ms, a chave
+    # nunca sai no corpo, e um erro do provider vem como ok:false com motivo —
+    # não como 5xx do painel, que faria o ecrã mentir sobre quem falhou.
+    #
+    # Troca-se por `setattr`: o módulo do painel é carregado por caminho, e um
+    # atributo privado de um módulo dinâmico não é do conhecimento do analisador.
+    chamadas = []
+    original_transporte = getattr(mod, "_http_sonda")
+    original_resolver = getattr(mod, "_resolver_credencial")
+
+    def _transporte_ok(url, chave, modelo, timeout):
+        chamadas.append((url, chave, modelo, timeout))
+        return {"ok": True, "http": 200, "ms": 137, "motivo": ""}
+
+    def _transporte_fixo(resultado):
+        def _t(url, chave, modelo, timeout):
+            return dict(resultado)
+        return _t
+
+    def _resolver_fixo(provider, modelo):
+        # A chave é inventada: o valor real nunca entra em teste, nem em log.
+        return {"api_key": "chave-secreta-de-teste",
+                "base_url": "https://exemplo.invalid/v1", "source": "teste"}
+
+    def _resolver_sem_credencial(provider, modelo):
+        raise RuntimeError("sem chave para o provider")
+
+    def _resolver_subprocesso(provider, modelo):
+        return {"api_key": "", "base_url": "", "source": "subprocesso"}
+
+    setattr(mod, "_resolver_credencial", _resolver_fixo)
+    setattr(mod, "_http_sonda", _transporte_ok)
+    try:
+        r = cli.post("/modelo/testar", json={"perfil": "trabalho",
+                                             "provider": "exemplo", "modelo": "m-1"})
+        corpo = r.json() if r.status_code == 200 else {}
+        check("/modelo/testar 200", r.status_code == 200, r.text[:200])
+        check("/modelo/testar ok e ms",
+              corpo.get("ok") is True and corpo.get("ms") == 137, str(corpo))
+        check("/modelo/testar devolve o par",
+              corpo.get("provider") == "exemplo" and corpo.get("modelo") == "m-1", str(corpo))
+        check("/modelo/testar url de chat",
+              bool(chamadas) and chamadas[0][0] == "https://exemplo.invalid/v1/chat/completions",
+              str(chamadas[:1]))
+        check("/modelo/testar leva o modelo e o tecto",
+              bool(chamadas) and chamadas[0][2] == "m-1" and chamadas[0][3] == mod._TIMEOUT_SONDA,
+              str(chamadas[:1]))
+        check("/modelo/testar nao devolve a chave", "chave-secreta-de-teste" not in r.text,
+              r.text[:200])
+
+        setattr(mod, "_http_sonda", _transporte_fixo(
+            {"ok": False, "http": 401, "ms": 42, "motivo": "Incorrect API key provided"}))
+        r = cli.post("/modelo/testar", json={"provider": "exemplo", "modelo": "m-1"})
+        corpo = r.json() if r.status_code == 200 else {}
+        check("/modelo/testar falha continua 200", r.status_code == 200, str(r.status_code))
+        check("/modelo/testar falha traz http e motivo",
+              corpo.get("ok") is False and corpo.get("http") == 401
+              and "Incorrect API key" in str(corpo.get("motivo")), str(corpo))
+
+        # Um provider que ecoe a chave na mensagem de erro nao a pode publicar.
+        def _transporte_eco(url, chave, modelo, timeout):
+            return {"ok": False, "http": 400, "ms": 1,
+                    "motivo": "key " + chave + " invalida"}
+
+        setattr(mod, "_http_sonda", _transporte_eco)
+        r = cli.post("/modelo/testar", json={"provider": "exemplo", "modelo": "m-1"})
+        check("/modelo/testar nao ecoa a chave", "chave-secreta-de-teste" not in r.text,
+              r.text[:200])
+
+        setattr(mod, "_http_sonda", _transporte_ok)
+        antes = len(chamadas)
+        r = cli.post("/modelo/testar", json={"provider": "  ", "modelo": ""})
+        corpo = r.json() if r.status_code == 200 else {}
+        check("/modelo/testar vazio diz o que falta",
+              corpo.get("ok") is False and "provider" in str(corpo.get("motivo")), str(corpo))
+        check("/modelo/testar vazio nao chama o provider", len(chamadas) == antes,
+              str(len(chamadas)))
+
+        setattr(mod, "_resolver_credencial", _resolver_sem_credencial)
+        r = cli.post("/modelo/testar", json={"provider": "exemplo", "modelo": "m-1"})
+        corpo = r.json() if r.status_code == 200 else {}
+        check("/modelo/testar sem credencial e ok:false",
+              r.status_code == 200 and corpo.get("ok") is False, r.text[:200])
+        check("/modelo/testar sem credencial diz porquê",
+              "sem chave" in str(corpo.get("motivo")), str(corpo))
+
+        # Provider servido por subprocesso: nao ha endpoint HTTP para sondar, e
+        # isso tem de ser dito — nao um «falhou» mudo.
+        setattr(mod, "_resolver_credencial", _resolver_subprocesso)
+        r = cli.post("/modelo/testar", json={"provider": "openai-codex", "modelo": "gpt-6"})
+        corpo = r.json() if r.status_code == 200 else {}
+        check("/modelo/testar subprocesso e dito",
+              corpo.get("ok") is False and "subprocesso" in str(corpo.get("motivo")), str(corpo))
+    finally:
+        setattr(mod, "_http_sonda", original_transporte)
+        setattr(mod, "_resolver_credencial", original_resolver)
+
     # --- /superficies ------------------------------------------------------
     # A superficie e o unico criterio que o core entrega de forma
     # deterministica; a regra tem de ser gravavel por perfil, ter as tres

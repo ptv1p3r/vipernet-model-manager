@@ -359,6 +359,27 @@
   color: hsl(var(--destructive, 0 84% 60%));
 }
 
+/* Sonda de ligação (página de um modelo): o botão com o icon e o resultado ao
+   lado. `align-items: center` porque o resultado é texto de uma linha e o botão
+   é um controlo — em `baseline` o ✓ ficava abaixo da linha do rótulo. */
+.vmm-sonda {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.vmm-sonda-res {
+  margin-top: 0;
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.vmm-sonda-btn {
+  white-space: nowrap;
+}
+
 /* Confirmacao verde: validacao ou gravacao bem sucedida.
    Verde fixo (nao ha --success garantido no tema do host), com contraste AA. */
 .vmm-ok,

@@ -1012,6 +1012,18 @@ The page has three blocks: **Identity** (`id`, `provider`, `model`),
 **Routing** (complexity, tasks, access, effort, state) and **Declared
 Limits** (`context_max`, `latency_p95_ms`, modalities, native JSON, note).
 
+Under `model` there is a **⚡ Test connection** button (3.47.12). It makes one
+minimal call to the provider with the `provider`/`model` pair currently typed
+(`max_tokens: 8`, message `ping`) and prints the result beside the button —
+`✓ replied in N ms · HTTP 200 · provider/model` or `✗ failed · HTTP 401 ·
+<provider's own message>`. It writes nothing, does not read the catalogue and
+does not require the route to exist yet: it exists precisely for before you
+save. The credential is resolved through Hermes' public route
+(`seams.resolver_provider`), never from the environment, and the key never
+appears in the answer. Changing either field clears the previous result, and the
+button stays disabled until both are filled — a green ✓ next to a different pair
+is the easiest lie to write in this panel.
+
 | option | form | closed in |
 |---|---|---|
 | `complexity` | multiple levels | `manager.LEVELS` |
