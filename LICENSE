@@ -1,0 +1,14 @@
+vipernet-model-manager is licensed under either of
+
+  * Apache License, Version 2.0 (the "LICENSE-APACHE" file), or
+  * MIT License (the "LICENSE-MIT" file)
+
+at your option. This is the usual Rust-style dual licence: you pick the one
+that fits your project, and you do not have to comply with both.
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in this plugin by you, as defined in the Apache-2.0
+licence, shall be dual licensed as above, without any additional terms or
+conditions.
+
+SPDX-License-Identifier: MIT OR Apache-2.0

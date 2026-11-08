@@ -2033,6 +2033,44 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   I.setIdioma("pt");
 })();
 
+// Deteccao do 409: o `fetchJSON` do dashboard entrega um ApiError com `.status`
+// e uma frase humana sem "409" — detectar pelo texto dava sempre falso e o
+// painel mostrava a frase generica em ingles, sem recarregar a versao.
+(function () {
+  const C = T.ehConflito;
+  check("conflito: ApiError 409 e reconhecido pelo codigo",
+        C({ status: 409, message: "That change conflicts with the current state on the server." }) === true);
+  check("conflito: ApiError 400 nao e conflito",
+        C({ status: 400, message: "Some of the entered values are not valid." }) === false);
+  check("conflito: caminho de recurso (texto com 409) continua reconhecido",
+        C(new Error("409: Conflict")) === true);
+  check("conflito: erro sem status nem 409 nao e conflito",
+        C(new Error("Failed to fetch")) === false);
+  check("conflito: nada e nao conflito", C(null) === false && C(undefined) === false);
+})();
+
+// A lingua vive no config: mudar o seletor grava no servidor e o texto que o
+// editor tem em maos tem de acompanhar. Sem isto, o "Gravar" seguinte repunha a
+// lingua antiga ou era recusado por `rev` velho — o erro que o dono viu a
+// 2026-11-08 08:28:43 ao mudar a lingua e gravar.
+(function () {
+  const A = T.idioma.aplicarIdiomaNoTexto;
+  const cfg = JSON.stringify({ versao: 3, idioma: "pt", perfis: { default: { activo: true } } }, null, 2);
+  const r = A(cfg, "en");
+  const obj = JSON.parse(r.texto);
+  check("idioma no texto: aplica o codigo novo", r.aplicado === true && obj.idioma === "en");
+  check("idioma no texto: preserva o resto do documento",
+        obj.versao === 3 && obj.perfis.default.activo === true && Object.keys(obj).length === 3);
+  check("idioma no texto: normaliza a forma recebida",
+        JSON.parse(A(cfg, "PT-BR").texto).idioma === "pt");
+  check("idioma no texto: JSON invalido fica como esta",
+        A("{nao e json", "en").aplicado === false
+        && A("{nao e json", "en").texto === "{nao e json");
+  check("idioma no texto: array nao e documento de config", A("[1,2]", "en").aplicado === false);
+  check("idioma no texto: vazio e null nao rebentam",
+        A(null, "en").aplicado === false && A("", "en").aplicado === false);
+})();
+
 console.log("");
 if (falhas) {
   console.log(falhas + " de " + total + " verificacoes FALHARAM");

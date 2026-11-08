@@ -556,6 +556,27 @@
     return IDIOMA;
   }
 
+  // A lingua vive no config, e o editor de config tem o documento inteiro em
+  // texto. Mudar a lingua por um `select` grava no servidor mas deixa o texto do
+  // editor com o valor antigo: um "Gravar" a seguir ou repunha a lingua que se
+  // acabou de escolher, ou era recusado por `rev` desactualizado. Aqui o texto do
+  // editor acompanha a escrita, sem tocar em mais nada do que o utilizador la
+  // tem. Devolve o texto inalterado quando nao e JSON de objecto — nesse caso
+  // quem manda e o erro que o editor ja mostra.
+  function aplicarIdiomaNoTexto(texto, codigo) {
+    let obj;
+    try {
+      obj = JSON.parse(String(texto == null ? "" : texto));
+    } catch (e) {
+      return { texto: texto, aplicado: false };
+    }
+    if (obj === null || typeof obj !== "object" || Array.isArray(obj)) {
+      return { texto: texto, aplicado: false };
+    }
+    obj.idioma = normalizarIdioma(codigo);
+    return { texto: JSON.stringify(obj, null, 2), aplicado: true };
+  }
+
   function T(texto) {
     if (IDIOMA === "pt") return texto;
     const traducao = PT_EN[texto];
@@ -754,6 +775,21 @@
         if (!r.ok) throw new Error(r.status + ": " + r.statusText);
         return r.json();
       });
+  }
+
+  // Conflito de versao (409): decide-se pelo CODIGO, nao pelo texto.
+  //
+  // O `fetchJSON` do dashboard entrega um `ApiError` com `.status` e com uma
+  // frase humana — "That change conflicts with the current state on the
+  // server." — que NAO contem "409". A deteccao antiga, pelo texto, dava
+  // sempre falso por essa via: o painel mostrava a frase generica em ingles
+  // depois de "Erro ao salvar:" e nunca corria o ramo que recarrega a versao,
+  // deixando o editor preso a repetir um gesto que nao podia passar. O codigo
+  // do estado serve nos dois caminhos (SDK e o fetch de recurso).
+  function ehConflito(e) {
+    if (e && typeof e.status === "number") return e.status === 409;
+    var msg = String(e && e.message ? e.message : e);
+    return msg.indexOf("409") !== -1;
   }
 
   function hora(ts) {
@@ -3422,7 +3458,17 @@
         body: { idioma: codigo, rev: (estado && estado.rev) || "" },
       })
         .then(function (r) {
-          setIdioma(r && r.idioma ? r.idioma : codigo);
+          const lido = r && r.idioma ? r.idioma : codigo;
+          setIdioma(lido);
+          // O servidor devolve o `rev` novo porque a lingua e config: adoptá-lo
+          // aqui evita que o "Gravar" do editor aberto acuse conflito por uma
+          // escrita que o proprio painel fez; e o texto do editor acompanha,
+          // para nao repor a lingua antiga ao gravar.
+          if (r && r.rev) setConfigRev(String(r.rev));
+          setConfigJSON(function (prev) {
+            const aplicado = aplicarIdiomaNoTexto(prev, lido);
+            return aplicado.aplicado ? aplicado.texto : prev;
+          });
           return carregar();
         })
         .catch(function (e) {
@@ -3446,7 +3492,7 @@
         .then(function () { return carregar(); })
         .catch(function (e) {
           const msg = String(e && e.message ? e.message : e);
-          setErro(msg.indexOf("409") !== -1
+          setErro(ehConflito(e)
             ? "A estratégia mudou noutro sítio — recarreguei o estado. Escolha outra vez."
             : T("Erro ao gravar a estratégia: ") + msg);
           return carregar();
@@ -3469,7 +3515,7 @@
         .then(function () { return carregar(); })
         .catch(function (e) {
           const msg = String(e && e.message ? e.message : e);
-          setErro(msg.indexOf("409") !== -1
+          setErro(ehConflito(e)
             ? "As superfícies mudaram noutro sítio — recarreguei o estado. Escolha outra vez."
             : T("Erro ao gravar a superfície: ") + msg);
           return carregar();
@@ -3523,7 +3569,7 @@
         })
         .catch(function (e) {
           const msg = String(e && e.message ? e.message : e);
-          setErro(msg.indexOf("409") !== -1
+          setErro(ehConflito(e)
             ? "O ensaio mudou noutro sítio — recarreguei o estado. Repita a re-selagem."
             : T("Erro ao re-selar os braços: ") + msg);
           return carregar();
@@ -3616,7 +3662,7 @@
           })
           .catch(function (e) {
             const msg = String(e && e.message ? e.message : e);
-            if (msg.indexOf("409") !== -1) {
+            if (ehConflito(e)) {
               setValidacaoOk(null);
               setErro(T("A configuração foi alterada noutro sítio desde que abriu este editor ")
                 + T("— recarreguei a versão actual. Reveja o que quer mudar e grave outra vez."));
@@ -3754,7 +3800,7 @@
         })
         .catch(function (e) {
           const msg = textoDoErro(e);
-          setModeloErro(msg.indexOf("409") !== -1
+          setModeloErro(ehConflito(e)
             ? T("A configuração foi alterada noutro sítio desde que abriu esta página. ")
               + T("Descartar e abrir outra vez para ver o estado actual.")
             : T("Erro ao gravar: ") + msg);
@@ -3917,7 +3963,7 @@
         })
         .catch(function (e) {
           const msg = textoDoErro(e);
-          setPerfilErro(msg.indexOf("409") !== -1
+          setPerfilErro(ehConflito(e)
             ? T("A configuração foi alterada noutro sítio desde que abriu esta página. ")
               + T("Descartar e abrir outra vez para ver o estado actual.")
             : T("Erro ao gravar: ") + msg);
@@ -4156,6 +4202,7 @@
   // — escrevem no bloco que o middleware le. Testadas em node, sem browser.
   if (typeof window !== "undefined" && window.__VMM_TEST__) {
     window.__VMM_TEST__.lerJSON = lerJSON;
+    window.__VMM_TEST__.ehConflito = ehConflito;
     window.__VMM_TEST__.blocoDe = blocoDe;
     window.__VMM_TEST__.baseDoBloco = baseDoBloco;
     window.__VMM_TEST__.comBloco = comBloco;
@@ -4198,6 +4245,9 @@
     window.__VMM_TEST__.PaginaPerfil = PaginaPerfil;
     window.__VMM_TEST__.perfilParaForm = perfilParaForm;
     window.__VMM_TEST__.formParaPerfil = formParaPerfil;
+    // Mudar a lingua grava no config; o texto do editor tem de acompanhar, senao
+    // o "Gravar" seguinte repoe a lingua antiga ou leva 409 por rev velho.
+    window.__VMM_TEST__.aplicarIdiomaNoTexto = aplicarIdiomaNoTexto;
     // A tarefa persistente tem dois donos (global na configuracao, delta no
     // perfil): testar as quatro funcoes e o que impede o painel de escrever um
     // valor que a validacao descarta em silencio.
@@ -4214,6 +4264,7 @@
       normalizarIdioma: normalizarIdioma, PT_EN: PT_EN, IDIOMAS: IDIOMAS,
       SeletorIdioma: SeletorIdioma, tQuanto: tQuanto, tHa: tHa,
       tInstantes: tInstantes, h: h, localeHora: localeHora, fmtNum: fmtNum,
+      aplicarIdiomaNoTexto: aplicarIdiomaNoTexto,
     };
   }
 })();

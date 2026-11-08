@@ -26,7 +26,7 @@ Três frases que resumem o contrato:
 
 ## Capturas
 
-O separador **Model Manager** do painel, na `v3.47.6`, capturado de uma instalação viva:
+O separador **Model Manager** do painel, na `v3.47.8`, capturado de uma instalação viva configurada em português (o painel é bilingue; a entrada de catálogo e este README estão em inglês):
 
 | Captura | O que mostra |
 |---|---|
@@ -1546,3 +1546,18 @@ em quatro holdouts rotulados à mão, 266 no painel — incluindo a lógica pura
 editor corrida em node —, 51 na triagem por necessidades, 22 na
 amostragem/rotulagem, 55 no ciclo de aprendizagem, 23 no nível fixado por turno
 e 16 de tarefas.
+
+## Licença e CI
+
+Licença dupla **MIT OR Apache-2.0** — escolhe a que serve o teu projecto, e não
+tens de cumprir as duas. Os textos estão em `LICENSE-MIT` e `LICENSE-APACHE`, a
+escolha está declarada em `LICENSE`, e o `plugin.yaml` diz
+`license: "MIT OR Apache-2.0"`. Até à 3.47.8 o repositório era público sem
+ficheiro de licença: clonável, mas sem ninguém poder usá-lo — que não é o que a
+regra 2 do catálogo pede.
+
+Cada push corre o `.github/workflows/tests.yml`: as guardas do manifesto, a
+bateria de testes deste repositório em Python 3.11 e 3.13, o auto-teste do painel
+e a lógica JavaScript em node. O CI do catálogo corre à parte o
+`hermes plugins validate` contra o commit pinado; essa verificação é do catálogo,
+não deste repositório.
