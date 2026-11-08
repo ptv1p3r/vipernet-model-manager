@@ -1624,13 +1624,35 @@ def _perfil_servido() -> Optional[str]:
 # modelo aberta ha dez minutos repunha tudo o que outra sessao escreveu, que e
 # exactamente o defeito que o `rev` existe para travar.
 
-#: Listas FECHADAS de cada campo de uma rota. Vem do `gestor` (a autoridade da
+#: Listas de cada campo de uma rota. Vem do `gestor` (a autoridade da
 #: validacao), nao de uma copia escrita aqui nem no JS: o que o painel mostra
-#: como escolha e o que o `gravar` aceita.
+#: como escolha e o que o `gravar` aceita. A excepcao e o `provider`, que passou
+#: a texto livre com sugestoes — ver `_providers_do_nucleo`.
+def _providers_do_nucleo() -> list[str]:
+    """Nomes de provider que o nucleo do Hermes serve (fail-open).
+
+    O painel sugere-os: um provider que o nucleo ja conhece — com credencial
+    propria — pode receber uma rota mesmo que nenhuma entrada da configuracao o
+    use ainda. E o caso que a lista fechada bloqueava. Sem nucleo importavel
+    (teste isolado, outro processo) devolve vazio: a sugestao e uma ajuda, nunca
+    um requisito, e nada aqui pode impedir o painel de abrir.
+    """
+    try:
+        import providers  # noqa: PLC0415 — import tardio: o painel corre tambem sem nucleo
+
+        nomes = {str(getattr(p, "name", "") or "").strip().lower()
+                 for p in providers.list_providers()}
+        return sorted(n for n in nomes if n)
+    except Exception:  # pragma: no cover — ambiente sem nucleo importavel
+        return []
+
+
 def _opcoes_modelo() -> dict[str, Any]:
-    # Providers oferecidos ao painel: os que ja existem no ficheiro — em
-    # qualquer perfil e nos classificadores. Lista fechada, mas derivada da
-    # config: o plugin nao inventa providers que o dono nao usa.
+    # Providers oferecidos ao painel. `providers` sao os que a configuracao ja
+    # usa; `providers_conhecidos` junta-lhes os que o nucleo serve. O campo do
+    # painel passou a ser texto livre com estas sugestoes (2026-11-08): a lista
+    # fechada impedia criar a primeira rota para um provider que o Hermes ja
+    # serve mas a configuracao ainda nao usa. Sugerir nao e proibir.
     provs: set[str] = set()
     try:
         cfg = _cfg()
@@ -1655,6 +1677,10 @@ def _opcoes_modelo() -> dict[str, Any]:
         "esforcos": list(gestor.ESFORCOS),
         "modalidades": list(gestor.MODALIDADES),
         "providers": sorted(provs),
+        # Sugestoes mais largas: os da configuracao primeiro, depois os que o
+        # nucleo serve. O painel escreve-os num `datalist`, que sugere sem
+        # fechar — um provider novo entra ao gravar.
+        "providers_conhecidos": sorted(provs | set(_providers_do_nucleo())),
     }
 
 

@@ -375,6 +375,43 @@ def test_endpoint(tmp: Path) -> None:
         verificar("GET estado com chaves de adaptacao: 200", r.status_code == 200,
                   str(r.status_code))
 
+        # Um provider que a configuracao ainda nao usa tem de poder receber
+        # rota. Medido a 2026-11-08: o painel so deixava escolher entre os
+        # providers ja usados (lista fechada no formulario), e um provider que
+        # o Hermes serve — com credencial propria — nao podia entrar no
+        # catalogo por ali. O backend nunca o recusou; o que faltava era o
+        # campo aceitar texto. Aqui prova-se a ponta a ponta: opcoes, validar
+        # (sem escrever) e gravar.
+        r = cliente.get(base + "/modelo", params={"perfil": "default"})
+        verificar("GET modelo novo: 200", r.status_code == 200, str(r.status_code))
+        opcoes_modelo = r.json()["opcoes"]
+        verificar("GET modelo: opcoes trazem providers_conhecidos",
+                  "providers_conhecidos" in opcoes_modelo, str(sorted(opcoes_modelo)))
+        verificar("GET modelo: os providers da configuracao estao entre os sugeridos",
+                  set(opcoes_modelo.get("providers") or []) <= set(opcoes_modelo.get("providers_conhecidos") or []),
+                  str(opcoes_modelo.get("providers")))
+        novo_provider = "provider-que-ainda-nao-existe"
+        entrada_nova = {"id": "rota-provider-novo", "provider": novo_provider,
+                        "modelo": "modelo-1", "complexidade": ["leve"],
+                        "acesso": "api", "tarefas": []}
+        r = cliente.post(base + "/modelo",
+                         json={"perfil": "default", "entrada": entrada_nova, "validar": True})
+        verificar("POST modelo validar: provider fora das listas e aceite",
+                  r.status_code == 200 and r.json().get("ok") is True,
+                  str(r.status_code) + " " + r.text[:200])
+        verificar("POST modelo validar: nao escreveu",
+                  "rota-provider-novo" not in tmp.read_text())
+        rev_m = cliente.get(base + "/config").json()["rev"]
+        r = cliente.post(base + "/modelo",
+                         json={"perfil": "default", "entrada": entrada_nova, "rev": rev_m})
+        verificar("POST modelo gravar: provider fora das listas gravado",
+                  r.status_code == 200, str(r.status_code) + " " + r.text[:200])
+        catalogo_gravado = json.loads(tmp.read_text())["perfis"]["default"]["catalogo"]
+        verificar("POST modelo gravar: o provider escrito ficou no catalogo",
+                  any(e.get("id") == "rota-provider-novo" and e.get("provider") == novo_provider
+                      for e in catalogo_gravado),
+                  str([e.get("provider") for e in catalogo_gravado]))
+
         # O registo de escritas existe e nao guarda valores do config
         log = tmp.parent / "escritas.log"
         verificar("escritas.log: criado", log.exists())

@@ -1155,6 +1155,8 @@ const OPCOES = {
   modalidades: ["texto", "imagem", "audio", "ferramentas"],
   tarefas: [{ valor: "arquitetura", rotulo: "arquitetura · prioridade 10" }],
   providers: ["deepseek", "openrouter"],
+  // Sugestoes do campo do provider: os da configuracao e os que o nucleo serve.
+  providers_conhecidos: ["deepseek", "openrouter", "inception"],
   superficies: ["cron", "api_server", "cli", "whatsapp"],
 };
 
@@ -1376,11 +1378,12 @@ check("grupo de opcao: o escolhido anuncia-se com aria-pressed",
       }).map(function (b) { return textoPlano(b.filhos).trim(); }).join(",") === "alta");
 
 const seletores = comTag(arvoreModelo, "Seletor");
-// Cinco selectores fixos (provider, acesso, esforço, estado, JSON) e, mais
-// recente, um por superficie declarada + o das nao nomeadas. Conta-se pela
-// lista, nao por um numero magico: acrescentar uma superficie nao parte isto.
-const ESPERADOS_SELETORES = 5 + OPCOES.superficies.length + 1;
-check("pagina do modelo: cinco listas fechadas + uma por superficie",
+// Quatro selectores fixos (acesso, esforço, estado, JSON), um por superficie
+// declarada e o das nao nomeadas. O do `provider` saiu daqui a 2026-11-08: e
+// texto livre com sugestoes, porque um provider novo nao pode ser bloqueado por
+// uma lista fechada. Conta-se pela lista, nao por um numero magico.
+const ESPERADOS_SELETORES = 4 + OPCOES.superficies.length + 1;
+check("pagina do modelo: quatro listas fechadas + uma por superficie",
       seletores.length === ESPERADOS_SELETORES,
       String(seletores.length) + " != " + ESPERADOS_SELETORES);
 check("pagina do modelo: cada superficie tem o seu selector tri-estado",
@@ -1391,14 +1394,53 @@ check("pagina do modelo: cada superficie tem o seu selector tri-estado",
         });
         return tri.length === OPCOES.superficies.length + 1;
       })(), String(seletores.length));
-check("pagina do modelo: o provider e lista fechada vinda de opcoes.providers",
-      (function () {
-        const doProv = seletores.filter(function (s) {
-          const vals = ((s.props && s.props.opcoes) || []).map(function (o) { return o.valor; });
-          return vals.length && vals.every(function (v) { return OPCOES.providers.indexOf(v) !== -1; });
-        });
-        return doProv.length === 1;
-      })(), seletores.map(function (s) { return JSON.stringify(((s.props || {}).opcoes || []).map(function (o) { return o.valor; })); }).join(" ; "));
+// O provider deixou de ser lista fechada a 2026-11-08, por um defeito medido: o
+// dono tentou criar uma rota para um provider que o Hermes ja serve e o painel
+// so deixava escolher entre os que a configuracao ja usava. Passou a texto livre
+// com `datalist` de sugestoes; quem recusa um valor e o backend, nao o campo.
+const campoProvider = comTag(arvoreModelo, "Campo").filter(function (c) {
+  return String((c.props && c.props.rotulo) || "").toLowerCase() === "provider";
+})[0];
+const filhosProvider = (campoProvider && campoProvider.filhos) || [];
+const noProvider = filhosProvider.filter(function (f) {
+  return f && f.tag === "EntradaComSugestoes";
+})[0];
+check("pagina do modelo: o provider e texto livre, nao um select",
+      !!campoProvider && !!noProvider
+        && !filhosProvider.some(function (f) { return f && f.tag === "Seletor"; }),
+      filhosProvider.map(function (f) { return f && f.tag; }).join(","));
+check("pagina do modelo: as sugestoes do provider juntam configuracao e nucleo, sem repetir",
+      !!noProvider && (noProvider.props.sugestoes || []).join(",")
+        === "deepseek,openrouter,inception",
+      JSON.stringify((noProvider && noProvider.props && noProvider.props.sugestoes) || []));
+check("pagina do modelo: o provider em vigor aparece escrito no campo",
+      !!noProvider && noProvider.props.valor === String(rotaCompleta.provider),
+      (noProvider && noProvider.props.valor) + " != " + rotaCompleta.provider);
+
+// Prova directa do componente: um nome que nao esta em nenhuma lista chega ao
+// `onChange` tal e qual — e o que o backend grava na entrada do catalogo.
+const escritosProvider = [];
+const arvoreProvider = T.EntradaComSugestoes({
+  valor: "", rotulo: "provider", idLista: "vmm-provider-sugestoes",
+  placeholder: "ex.: inception", sugestoes: ["deepseek", "openrouter"],
+  onChange: function (v) { escritosProvider.push(v); },
+});
+const inputProvider = comTag(arvoreProvider, "input")[0];
+const dlProvider = comTag(arvoreProvider, "datalist")[0];
+check("provider livre: e um input com datalist, sem select ao lado",
+      !!inputProvider && !!dlProvider
+        && !comTag(arvoreProvider, "select").length
+        && inputProvider.props.list === "vmm-provider-sugestoes",
+      inputProvider ? JSON.stringify(inputProvider.props) : "sem input");
+check("provider livre: o datalist leva as sugestoes como opcoes",
+      !!dlProvider && comTag(dlProvider, "option")
+        .map(function (o) { return o.props.value; }).join(",") === "deepseek,openrouter");
+if (inputProvider) inputProvider.props.onChange({ target: { value: "inception" } });
+check("provider livre: um nome fora das sugestoes chega ao onChange",
+      escritosProvider.join(",") === "inception", JSON.stringify(escritosProvider));
+check("provider livre: o nome escrito sobrevive ao formParaEntrada",
+      T.formParaEntrada({ id: "x", provider: "inception", modelo: "m",
+                          complexidade: ["alta"], acesso: "api" }, OPCOES).provider === "inception");
 check("pagina do modelo: os Seletor so recebem valores das listas",
       seletores.every(function (s) {
         const vals = ((s.props && s.props.opcoes) || []).map(function (o) { return o.valor; });
