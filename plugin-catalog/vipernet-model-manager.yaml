@@ -17,22 +17,28 @@
 # descartadas em silencio.
 #
 # ---------------------------------------------------------------------------
-# ESTADO MEDIDO 2026-11-08 12:15 WET
+# ESTADO MEDIDO 2026-11-08 20:36 WET
 # ---------------------------------------------------------------------------
-# Pin: `main` do repositorio do plugin depois do merge do PR #25, que leva a
-#   3.47.13. Desde o pin anterior (d28494b4 / 3.47.11):
-#   - 3.47.12 — botao «Testar ligacao» no formulario de um modelo: sonda real ao
-#     provider com o par escrito (pedido minimo, max_tokens 8), devolve latencia
-#     e estado HTTP, e nunca devolve a chave (mascarada por `***`). Nao grava
-#     nada e nao exige que a rota exista.
-#   - 3.47.13 — a sonda passa a resolver providers custom declarados em
-#     `providers.custom` do perfil (`base_url` + `api_mode` + chave por
-#     `key_env` via `agent.secret_scope.get_secret`), nao so os do pool. Antes,
-#     um provider custom falhava com «sem credencial neste processo».
-#   Medido com chamadas reais, nao simuladas: `inception/mercury-3` responde
-#   200 em ~485 ms pela via `providers.inception/key_env`; `deepseek/
-#   deepseek-flash` continua 200; modelo inexistente devolve 400 com a lista
-#   que o provider aceita; provider desconhecido falha limpo.
+# Pin: `main` do repositorio do plugin depois do merge do PR #29, que leva a
+#   3.47.15. Desde o pin anterior (437304cf / 3.47.13):
+#   - 3.47.14 — o ensaio em sombra deixa de roubar a superficie fixada: quando
+#     a regra de superficie escolheu a entrada (`origem == "superficie"`), o
+#     ensaio recusa com motivo `superficie_fixada` em vez de substituir o
+#     modelo. Antes, a superficie cron fixava `inception-mercury-3` e o ensaio
+#     aplicava por cima.
+#   - 3.47.15 — o pin do turno deixava de honrar a ordem nos pedidos seguintes:
+#     o bloco da superficie estava atras de `if entrada is None or rota is None`,
+#     e num turno de varios pedidos o pin reutilizado preenchia entrada e rota
+#     antes de se chegar la'. Nesses passos a origem ficava em `modelo` e o
+#     ensaio aplicava. Agora a regra corre sempre (salvo marcador explicito na
+#     mensagem) e, quando substitui o pin, marca `pin: substituido_pela_superficie`.
+#   Medido no ledger, mesmo job de cron `1b79fd3ea275`, antes e depois:
+#     antes — 13 passos, 1 em `origem=superficie` (mercury-3), 12 em
+#       `origem=sombra` (nemotron-ultra-free) com `pin=reutilizado`;
+#     depois — 20 passos, 20 em `origem=superficie` com `modelo=mercury-3`
+#       (1 `pin=novo`, 19 `pin=substituido_pela_superficie`), motor 3.47.15.
+#   Nao ha mudanca de comportamento quando nenhuma superficie esta fixada e
+#   nenhuma tarefa esta associada: o ensaio aplica como antes.
 #   Regra 2 e regra 9 como abaixo; `hermes plugins validate` no pin responde
 #   `Validation passed` (16 verificacoes, `no core override`, security scan
 #   `safe`).
@@ -67,11 +73,11 @@
 #   As imagens sao as da 3.47.8: abrem no sha novo (os bytes sao os mesmos,
 #   `assets/` nao mudou desde entao) mas nao mostram o botao «Testar ligacao»
 #   nem o campo de provider em texto livre. Fica declarado — recapturar exige
-#   uma sessao com o painel a 3.47.13 em carga.
+#   uma sessao com o painel a 3.47.15 em carga.
 #
 # NOTA DE CONSTRUCAO: o `sha` abaixo nao pode apontar para o commit que contem
 #   esta versao do ficheiro (um ficheiro nao se cita a si mesmo). Aponta para o
-#   `main` que ja' traz a 3.47.13; o commit que acrescenta esta versao da entrada
+#   `main` que ja' traz a 3.47.15; o commit que acrescenta esta versao da entrada
 #   difere desse pin apenas neste ficheiro.
 # ---------------------------------------------------------------------------
 
@@ -79,8 +85,8 @@ name: vipernet-model-manager
 repo: https://github.com/ptv1p3r/vipernet-model-manager.git
 
 # Commit EXATO do catalogo, 40 hex — resolvido por `git ls-remote` no GitHub,
-# nunca completado de memoria. `main` do GitHub relido a 2026-11-08: 437304cf.
-sha: "437304cfbc87f03b23f15e5b8b680aa1dfa9819a"
+# nunca completado de memoria. `main` do GitHub relido a 2026-11-08: 6884fb77.
+sha: "6884fb77058521c1e3320bfb4da90dd01215ce03"
 
 description: >-
   Picks the provider and model for each turn from the profile's own catalog,
@@ -93,16 +99,16 @@ maintainer: proldan
 tier: community
 category: models
 requires_hermes: ">=0.22.0"
-version: "3.47.13"
+version: "3.47.15"
 title: Vipernet Model Manager
 readme: true
 
 # Galeria de /docs/plugins/vipernet-model-manager. URLs no sha do pin: um bump
 # de pin obriga a re-pinar as imagens (regra 4).
 screenshots:
-  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/437304cfbc87f03b23f15e5b8b680aa1dfa9819a/assets/01-visao-geral.png
-  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/437304cfbc87f03b23f15e5b8b680aa1dfa9819a/assets/02-configuracao.png
-  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/437304cfbc87f03b23f15e5b8b680aa1dfa9819a/assets/03-registo.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/6884fb77058521c1e3320bfb4da90dd01215ce03/assets/01-visao-geral.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/6884fb77058521c1e3320bfb4da90dd01215ce03/assets/02-configuracao.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/6884fb77058521c1e3320bfb4da90dd01215ce03/assets/03-registo.png
 
 # Capacidades = o que o plugin regista de facto em `__init__.py`. O validador
 # confirma-as no pin (`declared hooks/middleware — matches registrations`).
