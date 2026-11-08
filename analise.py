@@ -659,10 +659,12 @@ def nivel_de_score(score: int, limiares: dict[str, Any] | None = None) -> str:
     return "leve"
 
 
-#: Termos que **sozinhos** nao identificam uma tarefa. `sensor`, `entidade` e
-#: `automação` aparecem tambem em trabalho de plugin, de código e de
+#: Termos que, por si, não identificam uma tarefa. `sensor`, `entidade` e
+#: `automação` aparecem também em trabalho de plugin, de código e de
 #: documentação — e uma detecção que ninguém consegue auditar vira rota errada.
-#: Um destes termos só conta quando outro termo da mesma tarefa o acompanha.
+#: Nenhum destes termos associa: nem sozinho, nem acompanhado de outro genérico
+#: (`a entidade e o sensor do quadro` não prova que o pedido é desta tarefa).
+#: Exige-se sempre um termo específico da tarefa.
 TERMOS_GENERICOS = frozenset({
     "sensor", "sensores", "entidade", "entidades",
     "automacao", "automacoes",
@@ -696,10 +698,11 @@ def detectar_tarefa_detalhe(mensagens: list[Any],
     por_tarefa: dict[str, list[tuple]] = {}
     for achado in achados:
         por_tarefa.setdefault(achado[2], []).append(achado)
-    # Tarefa reconhecida por termo genérico exige companhia: ou um termo
-    # específico da mesma tarefa, ou um segundo termo qualquer dela.
-    validos = [a for a in achados
-               if any(not x[5] for x in por_tarefa[a[2]]) or len(por_tarefa[a[2]]) >= 2]
+    # Genérico nunca associa — nem sozinho, nem com outro genérico ao lado.
+    # Dois genéricos somam substantivos do mesmo domínio, não evidência de que
+    # o pedido seja desta tarefa. Exige-se um termo específico; os genéricos
+    # ficam na lista `termos` como contexto, nunca como prova.
+    validos = [a for a in achados if not a[5]]
     if not validos:
         return None
     prioridade, _, tid, termo, original, generico = max(validos)
@@ -707,7 +710,7 @@ def detectar_tarefa_detalhe(mensagens: list[Any],
         "tarefa": tid,
         "termo": original,
         "termo_normalizado": termo,
-        "generico": generico,
+        "generico": generico,  # sempre False: só termos específicos chegam aqui
         "termos": sorted({a[4] for a in por_tarefa[tid]}),
         "texto_chars": len(texto),
         "texto_sha": hashlib.sha256(texto.encode("utf-8")).hexdigest()[:16],

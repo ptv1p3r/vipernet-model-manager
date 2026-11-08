@@ -9,6 +9,22 @@ what that reviewer reads first.
 Older history (before 3.45.0) lives in `git log` — the repository was published
 with one automatic commit per change, each with a per-file summary.
 
+## 3.47.11 — 2026-11-08
+
+- **Dois termos genéricos juntos deixaram de associar a tarefa.** A 3.47.10
+  exigia companhia e aceitava-a na forma de um segundo termo qualquer da mesma
+  tarefa, o que deixava passar `a entidade e o sensor do quadro` e `explica as
+  automações e as entidades deste documento`. Agora a regra é uma só: sem um
+  termo **específico** da tarefa não há atribuição; os genéricos ficam na lista
+  `termos` como contexto e nunca como prova. Medido a 2026-11-08 sobre 838
+  mensagens de utilizador de 48 h em `state.db` com a config viva do perfil
+  `default`: 36 atribuições antes, 36 depois, **0 perdidas** — nenhuma mensagem
+  real dos últimos dois dias se apoiava em dois genéricos; a regra fecha um
+  buraco que a amostra não estava a exercer.
+- **Guardas**: `test_tarefa_prova.py` ganha `test_dois_genericos_nao_detectam`
+  (com o caso reportado) e `test_especifico_com_generico_detecta`; a asserção
+  antiga, que exigia detecção com dois genéricos, foi invertida.
+
 ## 3.47.10 — 2026-11-08
 
 - **A atribuição de tarefa ficou auditável — e o termo genérico deixou de
