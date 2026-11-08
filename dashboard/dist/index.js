@@ -299,7 +299,7 @@
     "latência p95 (ms)": "p95 latency (ms)",
     "leu ": "read ",
     "limite de falhas": "failure threshold",
-    "lista fechada: os providers que a configuração já usa": "closed list: the providers the configuration already uses",
+    "escreve o nome — a lista sugere os da configuração e os que o Hermes conhece": "type the name — the list suggests the ones in the configuration and those Hermes knows",
     "margem ": "margin ",
     "marque a confirmação de reabertura": "tick the reopening confirmation",
     "max tokens": "max tokens",
@@ -1324,6 +1324,41 @@
     });
   }
 
+  // Texto livre COM sugestoes (`datalist`). Existe porque ha campos em que o
+  // valor legitimo pode ainda nao estar em lado nenhum — o provider de uma
+  // rota nova e o caso medido (2026-11-08): a lista fechada obrigava a escolher
+  // um dos que a configuracao ja usava, e um provider que o Hermes serve mas a
+  // configuracao ainda nao usa nao podia receber rota nenhuma. A lista ajuda a
+  // escrever, nao fecha: quem valida o valor e o backend.
+  function EntradaComSugestoes(props) {
+    const sugestoes = props.sugestoes || [];
+    const idLista = props.idLista || undefined;
+    return h(
+      "span",
+      { className: "vmm-com-lista" },
+      h("input", {
+        className: "vmm-input",
+        type: "text",
+        value: props.valor == null ? "" : String(props.valor),
+        placeholder: props.placeholder || "",
+        list: idLista,
+        autoComplete: "off",
+        "aria-label": props.rotulo || "",
+        onChange: function (e) { props.onChange(e.target.value); },
+      }),
+      idLista
+        ? h(
+            "datalist",
+            { id: idLista },
+            sugestoes.map(function (s) {
+              const v = s && typeof s === "object" ? String(s.valor == null ? "" : s.valor) : String(s);
+              return h("option", { key: v, value: v });
+            })
+          )
+        : null
+    );
+  }
+
   // Lista fechada de escolha multipla: botoes com o estado a vista (aria-pressed)
   // em vez de um `<select multiple>`, que em teclado e rato e um mau negocio.
   function BotoesOpcao(props) {
@@ -1364,6 +1399,20 @@
     const novo = !!props.novo;
     const perfil = props.perfil || "";
     const titulo = novo ? "Novo modelo" : "Modelo";
+    // Sugestoes do provider: primeiro os que a configuracao ja usa, depois os
+    // que o nucleo do Hermes conhece. Sao sugestoes, nao um limite — o campo
+    // aceita um nome que nao esteja em nenhuma das duas listas.
+    const sugestoesProvider = (function () {
+      const out = [];
+      const juntar = function (v) {
+        const bruto = v && typeof v === "object" ? v.valor : v;
+        const nome = String(bruto == null ? "" : bruto).trim();
+        if (nome && out.indexOf(nome) === -1) out.push(nome);
+      };
+      (opcoes.providers || []).forEach(juntar);
+      (opcoes.providers_conhecidos || []).forEach(juntar);
+      return out;
+    })();
     const mudar = function (campo) {
       return function (valor) { props.onCampo(campo, valor); };
     };
@@ -1462,11 +1511,12 @@
                 { className: "vmm-modelo-campos" },
                 h(Campo, { rotulo: "id", ajuda: novo ? "obrigatório; único dentro do perfil" : "renomear parte as regras de superfície que lhe chamam pelo nome" },
                   h(EntradaTexto, { valor: form.id, rotulo: "id da rota", placeholder: "ex.: deepseek-flash", onChange: mudar("id") })),
-                h(Campo, { rotulo: "provider", ajuda: "lista fechada: os providers que a configuração já usa" },
-                  h(Seletor, {
+                h(Campo, { rotulo: "provider", ajuda: "escreve o nome — a lista sugere os da configuração e os que o Hermes conhece" },
+                  h(EntradaComSugestoes, {
                     valor: form.provider,
                     rotulo: "provider",
-                    opcoes: (opcoes.providers || []).map(function (p) { return { valor: p, rotulo: p }; }),
+                    idLista: "vmm-provider-sugestoes",
+                    sugestoes: sugestoesProvider,
                     onChange: mudar("provider"),
                   })),
                 h(Campo, { rotulo: "modelo", ajuda: "o id exacto do modelo no provider" },
@@ -4239,6 +4289,11 @@
     window.__VMM_TEST__.emOrdem = emOrdem;
     window.__VMM_TEST__.BotoesOpcao = BotoesOpcao;
     window.__VMM_TEST__.PaginaModelo = PaginaModelo;
+    // O campo do provider: texto livre com sugestoes. Exporta-se o componente
+    // para se poder provar, sem browser, que o `<input>` nao fecha a lista e que
+    // o `datalist` leva as sugestoes — foi uma lista fechada que impediu o dono
+    // de criar uma rota para um provider que a configuracao ainda nao usava.
+    window.__VMM_TEST__.EntradaComSugestoes = EntradaComSugestoes;
     // A pagina de um perfil: as funcoes puras que decidem o que vai para o
     // ficheiro sao testadas em node, sem browser — sao o sitio onde um erro se
     // paga caro (escrevem no bloco que o middleware le).

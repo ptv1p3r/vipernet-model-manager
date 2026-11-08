@@ -329,6 +329,15 @@ Live file: `/opt/data/plugin-data/vipernet-model-manager/config.json`
   validation + record, and never rewrites `provider`/`modelo`. Incompatibilities
   (`subscricao` with a provider other than openai-codex, or `api` with openai-codex)
   are refused.
+- `provider` per entry: **free text with suggestions**, not a closed list
+  (since 3.47.9). The form offers the providers the configuration already uses
+  plus the ones the Hermes core serves (`opcoes.providers_conhecidos`,
+  measured 49 on 2026-11-08), but a name outside both lists is written as typed
+  and saved. Before that the field was a closed list and there was no way to
+  create the **first** route for a provider the profile did not use yet — the
+  backend never refused it. The name still has to be served **in that profile**
+  (`providers.<name>` declared there, or a subscription provider), otherwise
+  the turn fails with `Unknown provider` — same rule as the classifier.
 - the profile's `analise` overrides the global key by key (thresholds, window,
   `descer_apos`).
 - Profile `"*"` serves as the default for unlisted profiles; an exact profile wins

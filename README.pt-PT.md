@@ -329,6 +329,15 @@ Ficheiro vivo: `/opt/data/plugin-data/vipernet-model-manager/config.json`
   validação + registo, nunca reescreve `provider`/`modelo`. Incompatibilidades
   (`subscricao` com provider que não openai-codex, ou `api` com openai-codex)
   são recusadas.
+- `provider` por entrada: **texto livre com sugestões**, não uma lista fechada
+  (desde a 3.47.9). O formulário oferece os providers que a configuração já usa
+  e os que o núcleo do Hermes serve (`opcoes.providers_conhecidos`, 49 medidos a
+  2026-11-08), mas um nome fora das duas listas é escrito como está e gravado.
+  Antes disso o campo era lista fechada e não havia caminho para criar a
+  **primeira** rota de um provider que o perfil ainda não usava — o backend
+  nunca a recusou. O nome continua a ter de ser servido **naquele perfil**
+  (`providers.<nome>` declarado lá, ou um provider de subscrição), senão o turno
+  falha com `Unknown provider` — a mesma regra do classificador.
 - `analise` do perfil sobrepõe-se ao global chave a chave (limiares, janela,
   `descer_apos`).
 - Perfil `"*"` serve de omissão para perfis não listados; um perfil exacto ganha
