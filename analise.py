@@ -30,6 +30,7 @@ Regras de desenho (v2):
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import unicodedata
 from typing import Any
@@ -319,6 +320,16 @@ def limpar_contexto_injectado(texto: str) -> str:
             fim_corte = (nl + 1) if nl != -1 else len(limpo)
             limpo = limpo[:i] + limpo[fim_corte:]
     corte = len(limpo)
+    # O wrapper de pesquisa do core cola o **pedido** depois do contexto que
+    # recolheu (`</context>` e, a seguir, a pergunta do utilizador). Esse
+    # contexto nao e texto do utilizador, e um documento anexado nao deve
+    # classificar o pedido. Medido a 2026-11-08 sobre 588 mensagens de 24 h:
+    # neutro (0 mudancas) — fica como defesa, nao como a cura do caso.
+    for fecho in ("</context>", "</documents>", "</document>"):
+        pos = limpo.rfind(fecho)
+        if pos != -1:
+            limpo = limpo[pos + len(fecho):]
+            break
     for marca in _CORTES:
         pos = limpo.find(marca)
         if pos != -1:
@@ -648,11 +659,25 @@ def nivel_de_score(score: int, limiares: dict[str, Any] | None = None) -> str:
     return "leve"
 
 
-def detectar_tarefa(mensagens: list[Any], regras: dict[str, Any]) -> str | None:
-    """Classificacao heuristica do pedido actual, nunca do historico ou contexto injectado.
+#: Termos que **sozinhos** nao identificam uma tarefa. `sensor`, `entidade` e
+#: `automação` aparecem tambem em trabalho de plugin, de código e de
+#: documentação — e uma detecção que ninguém consegue auditar vira rota errada.
+#: Um destes termos só conta quando outro termo da mesma tarefa o acompanha.
+TERMOS_GENERICOS = frozenset({
+    "sensor", "sensores", "entidade", "entidades",
+    "automacao", "automacoes",
+})
 
-    Termos sao frases literais sem acentos e com fronteiras de palavra. Em
-    sobreposicao ganha prioridade maior, depois frase mais especifica e id.
+
+def detectar_tarefa_detalhe(mensagens: list[Any],
+                            regras: dict[str, Any]) -> dict[str, Any] | None:
+    """Como `detectar_tarefa`, mas devolve também a **prova** da detecção.
+
+    O registo de utilização mostrava `origem: tarefa` sem dizer qual termo
+    disparou nem sobre que texto — uma atribuição que ninguém consegue auditar.
+    Aqui ficam o termo (como está na config), a lista de termos encontrados, o
+    número de caracteres analisados e o `sha256` desse texto (já sem contexto
+    injectado), para o turno seguinte ser reproduzível a partir do ledger.
     """
     users = [m for m in mensagens if isinstance(m, dict) and m.get("role") == "user"]
     if not users:
@@ -661,11 +686,42 @@ def detectar_tarefa(mensagens: list[Any], regras: dict[str, Any]) -> str | None:
     texto = " ".join(texto.split())
     achados = []
     for tid, regra in regras.items():
-        for termo in regra.get("termos", []):
-            termo = " ".join(_sem_acentos(termo).lower().split())
+        for original in regra.get("termos", []):
+            termo = " ".join(_sem_acentos(original).lower().split())
             if termo and re.search(r"(?<!\w)" + re.escape(termo) + r"(?!\w)", texto):
-                achados.append((regra.get("prioridade", 0), len(termo), tid))
-    return max(achados)[2] if achados else None
+                achados.append((regra.get("prioridade", 0), len(termo), str(tid),
+                                termo, str(original), termo in TERMOS_GENERICOS))
+    if not achados:
+        return None
+    por_tarefa: dict[str, list[tuple]] = {}
+    for achado in achados:
+        por_tarefa.setdefault(achado[2], []).append(achado)
+    # Tarefa reconhecida por termo genérico exige companhia: ou um termo
+    # específico da mesma tarefa, ou um segundo termo qualquer dela.
+    validos = [a for a in achados
+               if any(not x[5] for x in por_tarefa[a[2]]) or len(por_tarefa[a[2]]) >= 2]
+    if not validos:
+        return None
+    prioridade, _, tid, termo, original, generico = max(validos)
+    return {
+        "tarefa": tid,
+        "termo": original,
+        "termo_normalizado": termo,
+        "generico": generico,
+        "termos": sorted({a[4] for a in por_tarefa[tid]}),
+        "texto_chars": len(texto),
+        "texto_sha": hashlib.sha256(texto.encode("utf-8")).hexdigest()[:16],
+    }
+
+
+def detectar_tarefa(mensagens: list[Any], regras: dict[str, Any]) -> str | None:
+    """Classificacao heuristica do pedido actual, nunca do historico ou contexto injectado.
+
+    Termos sao frases literais sem acentos e com fronteiras de palavra. Em
+    sobreposicao ganha prioridade maior, depois frase mais especifica e id.
+    """
+    detalhe = detectar_tarefa_detalhe(mensagens, regras)
+    return detalhe["tarefa"] if detalhe else None
 
 
 def decidir(mensagens: list[Any], *, limiares: dict[str, Any] | None = None,

@@ -683,13 +683,31 @@ _tarefa_sessao: dict[str, dict[str, Any]] = {}
 _TAREFA_MAX = 500
 
 
-def _tarefa_fixar(chave: str, tarefa: str) -> None:
-    """Detectada neste turno: substitui a anterior e reinicia o prazo."""
+def _tarefa_fixar(chave: str, tarefa: str,
+                  evidencia: dict[str, Any] | None = None) -> None:
+    """Detectada neste turno: substitui a anterior e reinicia o prazo.
+
+    A prova da deteccao (termo, digest do texto analisado) viaja com a tarefa,
+    para que um turno que apenas a **herda** continue a dizer por que razao ela
+    ali esta — sem isso o ledger dizia `origem: tarefa` e nada mais.
+    """
+    prova = dict(evidencia or {})
     with _lock:
         _tarefa_sessao[chave] = {"tarefa": tarefa, "ts": time.time(),
-                                 "idade_turnos": 0}
+                                 "idade_turnos": 0,
+                                 "termo": prova.get("termo"),
+                                 "termos": prova.get("termos"),
+                                 "texto_sha": prova.get("texto_sha"),
+                                 "texto_chars": prova.get("texto_chars")}
         if len(_tarefa_sessao) > _TAREFA_MAX:
             _tarefa_sessao.clear()
+
+
+def _tarefa_evidencia(chave: str) -> dict[str, Any]:
+    """A prova guardada com a tarefa viva da sessao (vazia se nao houver)."""
+    with _lock:
+        guardado = dict(_tarefa_sessao.get(chave) or {})
+    return {k: guardado.get(k) for k in ("termo", "termos", "texto_sha", "texto_chars")}
 
 
 def _tarefa_herdar(chave: str, expira_min: int,
@@ -1283,6 +1301,11 @@ def middleware_llm_request(
                     "tarefa": tarefa, "score": None, "sinais": None,
                     "tarefa_origem": pin.get("tarefa_origem") or None,
                     "tarefa_idade_turnos": pin.get("tarefa_idade_turnos") or None,
+                    "nivel_origem": pin.get("nivel_origem") or None,
+                    "tarefa_termo": pin.get("tarefa_termo"),
+                    "tarefa_termos": pin.get("tarefa_termos"),
+                    "tarefa_texto_sha": pin.get("tarefa_texto_sha"),
+                    "tarefa_texto_chars": pin.get("tarefa_texto_chars"),
                     "turno": identificador_turno, "passo": passo,
                     "pin": "reutilizado", "fonte_turno": fonte_turno,
                     "superficie": superficie or None,
@@ -1315,7 +1338,11 @@ def middleware_llm_request(
                 maximo=int(analise.get("varredura_max_mensagens", 60) or 60),
                 pesos=analise.get("pesos"),
             )
-            tarefa = _analise_mod.detectar_tarefa(mensagens, pcfg.get("tarefas") or {})
+            det = _analise_mod.detectar_tarefa_detalhe(mensagens, pcfg.get("tarefas") or {})
+            tarefa = det["tarefa"] if det else None
+            # A prova da deteccao viaja com a tarefa: um turno que so a herda
+            # continua a dizer qual termo a fixou e sobre que texto.
+            prova_tarefa: dict[str, Any] = dict(det or {})
             # (3.32.0) A tarefa vive na sessao, nao no turno. O detector le so a
             # ultima mensagem — um "continua" ou "agora escreve o parecer" nao
             # tem nenhum dos termos — e o pin morre com o turno: a associacao
@@ -1329,7 +1356,7 @@ def middleware_llm_request(
                 persist = gestor.TAREFA_PERSISTENTE_PADRAO
             persistente = bool(persist.get("activo", True)) and bool(chave_tarefa)
             if tarefa and persistente:
-                _tarefa_fixar(chave_tarefa, str(tarefa))
+                _tarefa_fixar(chave_tarefa, str(tarefa), evidencia=det)
             elif persistente and decisao.get("origem") != "reset":
                 # `complexidade: auto` sem tarefa no texto e o fim explicito: nao
                 # se herda nada. Sem esta guarda a heranca repunha a tarefa antes
@@ -1341,6 +1368,7 @@ def middleware_llm_request(
                 if herdada:
                     tarefa = herdada
                     tarefa_origem = "herdada"
+                    prova_tarefa = _tarefa_evidencia(chave_tarefa)
             associada = tarefa if any(tarefa in e.get("tarefas", [])
                                      for e in gestor.catalogo_utilizavel(pcfg)) else None
             # A superficie manda sobre a tarefa e sobre a analise, mas nunca
@@ -1386,10 +1414,19 @@ def middleware_llm_request(
             base = {"perfil": perfil, "sessao": session_id, "nivel": nivel,
                     "motor": _VERSAO_MOTOR, "inst": _INSTANCIA,
                     "origem": "tarefa" if associada else decisao["origem"],
+                    # `origem` diz de onde veio o **modelo** (a tarefa pode
+                    # manda-lo); `nivel_origem` diz de onde veio o **nivel**.
+                    # Sem os dois, uma linha `origem: tarefa` escondia que o
+                    # nivel tinha sido decidido pela analise.
+                    "nivel_origem": decisao["origem"],
                     "tarefa": tarefa, "score": decisao.get("score"),
                     "sinais": decisao.get("sinais"),
                     "tarefa_origem": tarefa_origem or None,
                     "tarefa_idade_turnos": tarefa_idade or None,
+                    "tarefa_termo": (prova_tarefa.get("termo") if tarefa else None),
+                    "tarefa_termos": (prova_tarefa.get("termos") if tarefa else None),
+                    "tarefa_texto_sha": (prova_tarefa.get("texto_sha") if tarefa else None),
+                    "tarefa_texto_chars": (prova_tarefa.get("texto_chars") if tarefa else None),
                     "turno": identificador_turno, "passo": passo,
                     "pin": "novo", "fonte_turno": fonte_turno,
                     "superficie": superficie or None,
@@ -1455,6 +1492,11 @@ def middleware_llm_request(
                     "classificador_erro": base.get("classificador_erro"),
                     "tarefa_origem": base.get("tarefa_origem"),
                     "tarefa_idade_turnos": base.get("tarefa_idade_turnos"),
+                    "nivel_origem": base.get("nivel_origem"),
+                    "tarefa_termo": base.get("tarefa_termo"),
+                    "tarefa_termos": base.get("tarefa_termos"),
+                    "tarefa_texto_sha": base.get("tarefa_texto_sha"),
+                    "tarefa_texto_chars": base.get("tarefa_texto_chars"),
                 })
         _lembrar_decisao(session_id, perfil=perfil, nivel=nivel, tarefa=tarefa,
                          origem=base["origem"], acesso="", entrada="",
@@ -1841,6 +1883,13 @@ def pos_resposta(
             entrada["tarefa_idade_turnos"] = rasto["tarefa_idade_turnos"]
         if rasto.get("tarefa_limpa"):
             entrada["tarefa_limpa"] = True
+        # A prova da deteccao viaja no rasto ate a linha da resposta. Sem ela o
+        # registo mostrava `origem: tarefa` e o dono nao tinha como saber qual
+        # termo a fixou, sobre que texto, nem de onde veio o nivel.
+        for chave_rasto in ("tarefa_termo", "tarefa_termos", "tarefa_texto_sha",
+                            "tarefa_texto_chars", "nivel_origem"):
+            if rasto.get(chave_rasto) not in (None, "", []):
+                entrada[chave_rasto] = rasto[chave_rasto]
         if isinstance(usage, dict):
             entrada["tokens"] = {k: usage.get(k) for k in
                                  ("input_tokens", "output_tokens", "prompt_tokens",

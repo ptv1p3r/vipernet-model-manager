@@ -792,6 +792,35 @@
     return msg.indexOf("409") !== -1;
   }
 
+  // Uma linha do registo dizia `origem: tarefa` e nada mais: nao se sabia qual
+  // tarefa, se veio deste turno ou de um anterior, nem que termo a fixou. O
+  // rotulo devolve isso na propria celula, e o `title` leva o digest do texto
+  // analisado — sem esta prova a deteccao nao era reproduzivel a partir do
+  // ledger, e uma atribuicao que ninguem audita passa por verdade.
+  function rotuloOrigem(l) {
+    var origem = l && l.origem ? String(l.origem) : "";
+    if (!origem) return "—";
+    if (origem !== "tarefa") return origem;
+    var partes = ["tarefa"];
+    if (l.tarefa) partes.push(String(l.tarefa));
+    if (l.tarefa_termo) partes.push("«" + String(l.tarefa_termo) + "»");
+    if (l.tarefa_origem === "herdada") {
+      var n = Number(l.tarefa_idade_turnos);
+      partes.push("herdada" + (n > 0 ? " " + n + "t" : ""));
+    }
+    return partes.join(" · ");
+  }
+
+  function detalheOrigem(l) {
+    var d = [];
+    if (l && l.nivel_origem) d.push("nivel: " + l.nivel_origem);
+    if (l && l.tarefa_texto_sha) {
+      d.push("texto: " + l.tarefa_texto_sha + " (" +
+             (l.tarefa_texto_chars || 0) + " car.)");
+    }
+    return d.length ? d.join(" · ") : null;
+  }
+
   function hora(ts) {
     if (!ts) return "—";
     const d = new Date(ts);
@@ -2465,7 +2494,7 @@
             h("td", { className: "vmm-mono" }, l.modelo || "—"),
             h("td", { className: "vmm-mono vmm-mudo" }, l.provider || "—"),
             h("td", null, l.nivel || "—"),
-            h("td", null, l.origem || "—"),
+            h("td", { title: detalheOrigem(l) }, rotuloOrigem(l)),
             h("td", { className: "vmm-mudo" }, l.superficie || "—"),
             h("td", { className: "vmm-mono vmm-mudo vmm-curto" }, l.sessao || "—")
           );
@@ -4253,6 +4282,8 @@
   if (typeof window !== "undefined" && window.__VMM_TEST__) {
     window.__VMM_TEST__.lerJSON = lerJSON;
     window.__VMM_TEST__.ehConflito = ehConflito;
+    window.__VMM_TEST__.rotuloOrigem = rotuloOrigem;
+    window.__VMM_TEST__.detalheOrigem = detalheOrigem;
     window.__VMM_TEST__.blocoDe = blocoDe;
     window.__VMM_TEST__.baseDoBloco = baseDoBloco;
     window.__VMM_TEST__.comBloco = comBloco;

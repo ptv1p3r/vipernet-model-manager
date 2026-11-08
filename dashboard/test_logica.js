@@ -2091,6 +2091,30 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   check("conflito: nada e nao conflito", C(null) === false && C(undefined) === false);
 })();
 
+// O registo de utilizacao dizia `origem: tarefa` e nada mais: nem qual tarefa,
+// nem se vinha deste turno, nem que termo a fixou. O dono leu isso como "o
+// plugin acha que estou no Home Assistant" num turno de trabalho no model
+// manager. A celula passa a dizer tudo, e o `title` leva o digest do texto.
+(function () {
+  const R = T.rotuloOrigem, D = T.detalheOrigem;
+  check("origem: analise fica como esta", R({ origem: "analise" }) === "analise");
+  check("origem: sem origem da travessao", R({}) === "—" && R(null) === "—");
+  check("origem: tarefa detectada mostra tarefa e termo",
+        R({ origem: "tarefa", tarefa: "home-assistant", tarefa_termo: "sensor" })
+        === "tarefa · home-assistant · «sensor»");
+  check("origem: tarefa herdada mostra a idade em turnos",
+        R({ origem: "tarefa", tarefa: "home-assistant",
+            tarefa_origem: "herdada", tarefa_idade_turnos: 3 })
+        === "tarefa · home-assistant · herdada 3t");
+  check("origem: tarefa sem termo continua legivel",
+        R({ origem: "tarefa", tarefa: "arquitetura" }) === "tarefa · arquitetura");
+  check("origem: detalhe traz o nivel e o digest do texto",
+        D({ nivel_origem: "analise", tarefa_texto_sha: "abc123",
+            tarefa_texto_chars: 412 })
+        === "nivel: analise · texto: abc123 (412 car.)");
+  check("origem: sem prova nao inventa detalhe", D({ origem: "modelo" }) === null);
+})();
+
 // A lingua vive no config: mudar o seletor grava no servidor e o texto que o
 // editor tem em maos tem de acompanhar. Sem isto, o "Gravar" seguinte repunha a
 // lingua antiga ou era recusado por `rev` velho — o erro que o dono viu a
