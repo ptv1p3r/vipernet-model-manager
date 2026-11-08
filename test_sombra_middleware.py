@@ -161,11 +161,13 @@ class Base(unittest.TestCase):
         return self.events[-1]
 
     def decidir(self, *, nivel="media", needs=None, superficie="api_server",
-                associada=False, marcador=False, config=None, registo=None):
+                associada=False, marcador=False, superficie_fixada=False,
+                config=None, registo=None):
         return p._sombra_do_turno(
             p.gestor.perfil_config(config or self.cfg, PERFIL),
             config or self.cfg, PERFIL, SESSAO, self.turno_do_braco("b"),
             nivel=nivel, needs=needs, superficie=superficie,
+            superficie_fixada=superficie_fixada,
             associada=associada, marcador=marcador)
 
 
@@ -230,7 +232,55 @@ class LigacaoAoMiddleware(Base):
         self.assertEqual(self.agent.model, BARATO)
 
 
+class SuperficieFixadaNoMiddleware(Base):
+    def test_superficie_fixada_nao_e_trocada_pelo_braco(self):
+        """O sintoma do cron, no middleware: o braco b nao rouba a superficie.
+
+        A rota normal escolheria o barato (ordem 1) e o braco b tambem e o
+        barato; a regra de superficie fixa o caro. Sem a recusa, `origem` saia
+        `sombra` e o caro nunca era servido.
+        """
+        cfg = config()
+        cfg["perfis"][PERFIL]["analise"] = {
+            "superficies": {"api_server": {"entrada": "caro"}}}
+        self.cfg = cfg
+        self.escrever_vida()
+        e = self.run_turn(self.turno_do_braco("b"))
+        self.assertEqual(e["origem"], "superficie")
+        self.assertFalse(e["sombra"]["aplicado"])
+        self.assertEqual(e["sombra"]["motivo"], "superficie_fixada")
+        self.assertEqual(e["sombra"]["braco"], "b")
+        self.assertEqual(self.agent.model, CARO)
+
+    def test_sem_regra_de_superficie_o_braco_continua_a_servir(self):
+        """O caso negativo: sem regra, o ensaio aplica como antes."""
+        self.escrever_vida()
+        e = self.run_turn(self.turno_do_braco("b"))
+        self.assertEqual(e["origem"], "sombra")
+        self.assertTrue(e["sombra"]["aplicado"])
+        self.assertEqual(self.agent.model, BARATO)
+
+
 class PrioridadesDoDono(Base):
+    def test_superficie_fixada_ganha_ao_sorteio(self):
+        """A regra de superficie e uma ordem: o sorteio nao a troca.
+
+        Medido a 2026-11-08: o perfil `default` fixou o cron no mercury-3 e 42
+        de 43 turnos de cron sairam no braco, com `origem: sombra`. A config
+        estava certa; faltava esta recusa.
+        """
+        self.escrever_vida()
+        diag = self.decidir(superficie_fixada=True)
+        self.assertFalse(diag["aplicado"])
+        self.assertEqual(diag["motivo"], "superficie_fixada")
+        self.assertNotIn("entrada", diag)
+
+    def test_superficie_fixada_ganha_a_tarefa_e_ao_marcador(self):
+        """Ordem das prioridades: a superficie vem antes das outras duas."""
+        self.escrever_vida()
+        diag = self.decidir(superficie_fixada=True, associada=True, marcador=True)
+        self.assertEqual(diag["motivo"], "superficie_fixada")
+
     def test_tarefa_associada_ganha_ao_sorteio(self):
         self.escrever_vida()
         diag = self.decidir(associada=True)

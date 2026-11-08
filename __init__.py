@@ -490,6 +490,7 @@ def _sombra_do_turno(
     nivel: str,
     needs: dict[str, Any] | None,
     superficie: str,
+    superficie_fixada: bool = False,
     associada: bool = False,
     marcador: bool = False,
 ) -> dict[str, Any] | None:
@@ -500,9 +501,11 @@ def _sombra_do_turno(
     sorteou" de "sorteou e nao pode aplicar". Nunca levanta: medicao nao parte
     um turno.
 
-    A prioridade do dono mantem-se: tarefa associada e marcador explicito ganham
-    ao sorteio. Um ensaio que trocasse o modelo de um pedido de arquitetura
-    estaria a medir outro trabalho.
+    A prioridade do dono mantem-se, e por esta ordem: superficie fixada, tarefa
+    associada, marcador explicito. Os tres ganham ao sorteio. Um ensaio que
+    trocasse o modelo de um pedido de arquitetura estaria a medir outro trabalho;
+    e um que trocasse o modelo que a regra de superficie fixou estaria a apagar
+    uma ordem explicita com um sorteio.
     """
     bloco = _sombra_config(config)
     if not bloco.get("activo"):
@@ -523,6 +526,14 @@ def _sombra_do_turno(
                             "provider": provider_braco,
                             "sha": str(registo.get("sha256") or "")[:16],
                             "aplicado": False}
+    if superficie_fixada:
+        # A regra de superficie e uma ordem do dono ("o cron serve este modelo").
+        # O ensaio mede onde o routing e livre; trocar aqui media outro trabalho
+        # e, pior, apagava em silencio a unica entrada que o dono fixou. O
+        # sintoma medido a 2026-11-08: 42 de 43 turnos de cron servidos pelo
+        # braco, com a superficie a escolher o mercury-3 e a nunca aparecer.
+        diag["motivo"] = "superficie_fixada"
+        return diag
     if associada:
         diag["motivo"] = "tarefa_associada"
         return diag
@@ -1649,6 +1660,7 @@ def middleware_llm_request(
         _diag_sombra = _sombra_do_turno(
             pcfg, config, perfil, session_id, base.get("turno"),
             nivel=str(nivel or ""), needs=needs, superficie=superficie,
+            superficie_fixada=(base.get("origem") == "superficie"),
             associada=bool(associada), marcador=bool(marcador_manda))
         if _diag_sombra is not None:
             if _diag_sombra.get("aplicado"):

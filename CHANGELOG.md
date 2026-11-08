@@ -9,6 +9,22 @@ what that reviewer reads first.
 Older history (before 3.45.0) lives in `git log` — the repository was published
 with one automatic commit per change, each with a per-file summary.
 
+## 3.47.14 — 2026-11-08
+
+- **A superfície fixada ganha ao ensaio em sombra.** O perfil `default` fixou a
+  superfície `cron` na entrada `inception-mercury-3` e, de 43 respostas de cron
+  depois disso, **42 saíram no braço** (`origem: sombra`) e uma só no mercury —
+  a que apanhou o ensaio parado por `braco_sem_vida`. A config estava certa: o
+  ensaio corria **depois** da superfície e substituía-a em silêncio. `_sombra_do_turno`
+  passa a receber `superficie_fixada` (do `base["origem"] == "superficie"`, o
+  sinal que a regra do perfil já deixava) e recusa com o motivo novo
+  `superficie_fixada`, antes das prioridades já existentes (tarefa associada,
+  marcador explícito). O ensaio continua a correr em todo o routing livre — só
+  deixa de trocar o modelo que o dono mandou fixar. Quatro testes novos:
+  recusa unitária, ordem das prioridades (superfície antes de tarefa e marcador),
+  o sintoma no middleware (braço b não rouba a superfície, modelo fica no caro) e
+  o caso negativo (sem regra, o ensaio aplica como antes).
+
 ## 3.47.13 — 2026-11-08
 
 - **Provider custom resolve credencial.** O botão ⚡ Testar ligação respondia «sem
