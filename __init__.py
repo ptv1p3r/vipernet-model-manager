@@ -490,6 +490,7 @@ def _sombra_do_turno(
     nivel: str,
     needs: dict[str, Any] | None,
     superficie: str,
+    superficie_fixada: bool = False,
     associada: bool = False,
     marcador: bool = False,
 ) -> dict[str, Any] | None:
@@ -500,9 +501,11 @@ def _sombra_do_turno(
     sorteou" de "sorteou e nao pode aplicar". Nunca levanta: medicao nao parte
     um turno.
 
-    A prioridade do dono mantem-se: tarefa associada e marcador explicito ganham
-    ao sorteio. Um ensaio que trocasse o modelo de um pedido de arquitetura
-    estaria a medir outro trabalho.
+    A prioridade do dono mantem-se, e por esta ordem: superficie fixada, tarefa
+    associada, marcador explicito. Os tres ganham ao sorteio. Um ensaio que
+    trocasse o modelo de um pedido de arquitetura estaria a medir outro trabalho;
+    e um que trocasse o modelo que a regra de superficie fixou estaria a apagar
+    uma ordem explicita com um sorteio.
     """
     bloco = _sombra_config(config)
     if not bloco.get("activo"):
@@ -523,6 +526,14 @@ def _sombra_do_turno(
                             "provider": provider_braco,
                             "sha": str(registo.get("sha256") or "")[:16],
                             "aplicado": False}
+    if superficie_fixada:
+        # A regra de superficie e uma ordem do dono ("o cron serve este modelo").
+        # O ensaio mede onde o routing e livre; trocar aqui media outro trabalho
+        # e, pior, apagava em silencio a unica entrada que o dono fixou. O
+        # sintoma medido a 2026-11-08: 42 de 43 turnos de cron servidos pelo
+        # braco, com a superficie a escolher o mercury-3 e a nunca aparecer.
+        diag["motivo"] = "superficie_fixada"
+        return diag
     if associada:
         diag["motivo"] = "tarefa_associada"
         return diag
@@ -1565,13 +1576,19 @@ def middleware_llm_request(
                         base["excecao"] = "rota"
                         base["excecao_motivo"] = f"rota_pinada:{type(exc).__name__}"
                         entrada = rota = None
-        if (entrada is None or rota is None) and not marcador_manda \
+        # Superficie com entrada fixada: e uma ordem, nao uma preferencia — e
+        # por isso corre tambem quando o pin do turno ja trouxe uma rota.
+        # Antes exigia `entrada is None`, e num turno de varios pedidos o
+        # segundo em diante reutilizava o pin (medido 2026-11-08 20:14,
+        # passo_api 2) e a ordem nunca disparava. O pin e do turno, a regra e
+        # do perfil: quem manda e o perfil. So cede a capacidade (o pedido nao
+        # cabe no modelo), a uma rota que falhou ha pouco, ou ao marcador
+        # explicito do utilizador — e nos tres casos fica marcado com
+        # `excecao`, senao parecia que a regra nunca disparou.
+        if not marcador_manda \
                 and regra_sup is not None \
                 and regra_sup.get("entrada") is not None:
-            # Superficie com entrada fixada: e uma ordem, nao uma preferencia.
-            # So cede a capacidade (o pedido nao cabe no modelo) ou a uma rota
-            # que falhou ha pouco — e nos dois casos fica marcado com
-            # `excecao`, senao parecia que a regra nunca disparou.
+            substitui_pin = entrada is not None or rota is not None
             candidata = regra_sup["entrada"]
             motivo_cap = gestor.rota_serve(candidata, needs) if needs else ""
             chave_rota = (perfil, str(candidata["provider"]).lower(),
@@ -1598,6 +1615,11 @@ def middleware_llm_request(
                                          candidata["modelo"])
                     base["origem"] = "superficie"
                     base["superficie_regra"] = regra_sup["motivo"]
+                    if substitui_pin:
+                        # Rasto: a rota do turno existia e foi substituida pela
+                        # ordem do perfil. Sem isto, uma reutilizacao de pin
+                        # parecia identica a uma escolha da regra.
+                        base["pin"] = "substituido_pela_superficie"
                 except Exception as exc:  # noqa: BLE001
                     base["excecao"] = "rota"
                     base["excecao_motivo"] = f"superficie:{type(exc).__name__}"
@@ -1649,6 +1671,7 @@ def middleware_llm_request(
         _diag_sombra = _sombra_do_turno(
             pcfg, config, perfil, session_id, base.get("turno"),
             nivel=str(nivel or ""), needs=needs, superficie=superficie,
+            superficie_fixada=(base.get("origem") == "superficie"),
             associada=bool(associada), marcador=bool(marcador_manda))
         if _diag_sombra is not None:
             if _diag_sombra.get("aplicado"):
