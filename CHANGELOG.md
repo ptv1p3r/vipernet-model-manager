@@ -9,6 +9,27 @@ what that reviewer reads first.
 Older history (before 3.45.0) lives in `git log` — the repository was published
 with one automatic commit per change, each with a per-file summary.
 
+## 3.47.9 — 2026-11-08
+
+- **O campo `provider` de uma rota passou a texto livre com sugestões.** Era uma
+  lista fechada com os providers que a configuração já usava: para criar a
+  primeira rota de um provider que o Hermes serve — com credencial própria —
+  não havia caminho nenhum no painel, e o dono ficou bloqueado ao adicionar um
+  modelo. O backend nunca recusou um provider novo (`_normalizar_entrada` só
+  exige que não venha vazio), logo o defeito era só do formulário. Agora é um
+  `<input>` com `datalist`, alimentado por `opcoes.providers` (os da
+  configuração) e por `opcoes.providers_conhecidos` (os do registo do núcleo,
+  juntados por `_providers_do_nucleo()`, fail-open). Sugerir não é proibir: o
+  nome escrito entra na entrada do catálogo tal e qual.
+- **Guardas**: `test_logica.js` 331 → 337 verificações (o campo deixou de ser
+  `Seletor`, as sugestões juntam as duas fontes sem repetir, e um nome fora das
+  sugestões chega ao `onChange` e sobrevive ao `formParaEntrada`);
+  `test_painel_estado.py` 93 → 100 (validar e gravar aceitam um provider fora
+  das listas, e o valor fica no catálogo). Painel `204/204`. O `index.js` troca
+  a chave de ajuda «lista fechada: os providers que a configuração já usa» por
+  «escreve o nome — a lista sugere os da configuração e os que o Hermes
+  conhece», nas duas línguas (dicionário mantém as 479 chaves).
+
 ## 3.47.8 — 2026-11-08
 
 - **Licence**: dual `MIT OR Apache-2.0` (`LICENSE`, `LICENSE-MIT`,

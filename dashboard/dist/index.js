@@ -1516,7 +1516,6 @@
                     valor: form.provider,
                     rotulo: "provider",
                     idLista: "vmm-provider-sugestoes",
-                    placeholder: "ex.: inception",
                     sugestoes: sugestoesProvider,
                     onChange: mudar("provider"),
                   })),
