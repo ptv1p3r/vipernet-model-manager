@@ -47,12 +47,14 @@ def _mod(nome: str, caminho: Path):
     return mod
 
 
-def _cfg(*, fixar: bool = True) -> dict:
+def _cfg(*, fixar: bool = True, superficies: dict | None = None,
+         catalogo_extra: list | None = None) -> dict:
     return {
         "activo": True,
         "registar": True,
         "analise": {"limiares": {"media": 3, "alta": 6}, "descer_apos": 2,
-                    "fixar_nivel_por_turno": fixar},
+                    "fixar_nivel_por_turno": fixar,
+                    "superficies": superficies or {}},
         "perfis": {
             "pessoal": {
                 "activo": True, "estrategia": "prioridade",
@@ -64,7 +66,7 @@ def _cfg(*, fixar: bool = True) -> dict:
                      "contexto_max": 1000000},
                     {"id": "pro", "provider": "deepseek",
                      "modelo": "deepseek-v4-pro", "complexidade": ["alta"]},
-                ],
+                ] + list(catalogo_extra or []),
             },
         },
     }
@@ -86,10 +88,14 @@ class FakeAgent:
 class Cenario:
     """Um plugin fresco (modulo proprio), um VMM_DIR proprio, um ledger proprio."""
 
-    def __init__(self, nome: str, *, fixar: bool = True):
+    def __init__(self, nome: str, *, fixar: bool = True,
+                 superficies: dict | None = None,
+                 catalogo_extra: list | None = None):
         self.dir = Path(tempfile.mkdtemp(prefix="vmm-turno-"))
-        (self.dir / "config.json").write_text(json.dumps(_cfg(fixar=fixar)),
-                                              encoding="utf-8")
+        (self.dir / "config.json").write_text(
+            json.dumps(_cfg(fixar=fixar, superficies=superficies,
+                            catalogo_extra=catalogo_extra)),
+            encoding="utf-8")
         os.environ["VMM_DIR"] = str(self.dir)
         self.plugin = _mod(f"vmm_turno_{nome}", AQUI / "__init__.py")
         self.plugin.resolver_rota = lambda perfil, prov, mod: {
@@ -122,11 +128,12 @@ class Cenario:
                          f"do servico {i}; systemd unit inactive"})
         return {"model": "deepseek-flash", "messages": msgs}
 
-    def passo(self, texto: str, indice: int, *, turn_id: Any, api: int) -> dict:
+    def passo(self, texto: str, indice: int, *, turn_id: Any, api: int,
+              plataforma: str = "api_server") -> dict:
         pedido = self.plugin.middleware_llm_request(
             request=self.pedido_turno(texto, indice), session_id="s1",
             model="deepseek-flash", provider="deepseek",
-            turn_id=turn_id, api_call_count=api)
+            turn_id=turn_id, api_call_count=api, platform=plataforma)
         # O ciclo completo, como o core o faz: depois da chamada escreve-se a
         # `resposta`. Sem isto o harness media metade do caminho — e, desde que o
         # `sem_troca` saiu, e na `resposta` que vivem o rasto e o `pin` de cada
@@ -135,7 +142,7 @@ class Cenario:
             session_id="s1", model="deepseek-flash", provider="deepseek",
             response_model=self.agente.model, finish_reason="stop",
             usage={"input_tokens": 1000, "output_tokens": 40},
-            platform="api_server", turn_id=turn_id, api_call_count=api,
+            platform=plataforma, turn_id=turn_id, api_call_count=api,
             api_duration=0.4, context_length=128000)
         return pedido
 
@@ -359,6 +366,56 @@ def testes() -> None:
     niveis8 = {e.get("nivel") for e in resp8}
     check("a falha nao desestabiliza o nivel: heuristica pinada nos seis",
           len(niveis8) == 1, str(niveis8))
+
+    # ------------------------------------------------------------------ 9
+    # O sintoma medido no cron a 2026-11-08 20:13:58 -> 20:14:02 (passo_api 1
+    # -> 2): o primeiro pedido do turno honrava a superficie, o segundo
+    # reutilizava o pin e a ordem do perfil nunca mais disparava. A guarda
+    # `entrada is None or rota is None` fazia da regra um recurso de ultimo
+    # caso; ela e uma ordem e tem de ganhar ao pin do turno.
+    print("\n== superficie fixada contra o pin do turno ==")
+    c9 = Cenario("superficie-pin", superficies={"cron": {"entrada": "grande"}})
+    for i in range(3):
+        c9.passo("corrige isto", i, turn_id="sessao:sessao:f9e8d7c6", api=i,
+                 plataforma="cron")
+    resp9 = c9.respostas()
+    check("tres respostas no ledger", len(resp9) == 3, f"{len(resp9)}")
+    entradas9 = [e.get("entrada") for e in resp9]
+    check("os tres pedidos usam a entrada da superficie",
+          entradas9 == ["grande", "grande", "grande"], str(entradas9))
+    origens9 = [e.get("origem") for e in resp9]
+    check("a origem e `superficie` nos tres", origens9 == ["superficie"] * 3,
+          str(origens9))
+    pins9 = [e.get("pin") for e in resp9]
+    check("o pin e novo no primeiro e substituido nos seguintes",
+          pins9 == ["novo", "substituido_pela_superficie",
+                    "substituido_pela_superficie"], str(pins9))
+    check("a rota pinada existia e foi reutilizada antes de ceder",
+          [e.get("rota_pin") for e in resp9[1:]] == ["reutilizada"] * 2,
+          str([e.get("rota_pin") for e in resp9]))
+
+    # ----------------------------------------------------------------- 10
+    # A excepcao legitima: o modelo da regra declara que nao serve `cron`.
+    # A ordem cede, mas deixa rasto — sem `excecao` parecia que a regra
+    # nunca disparou (foi o que confundiu o diagnostico de ontem).
+    print("\n== superficie cede quando o modelo nao serve ==")
+    c10 = Cenario("superficie-cede", superficies={"cron": {"entrada": "so-api"}},
+                  catalogo_extra=[{"id": "so-api", "provider": "deepseek",
+                                   "modelo": "deepseek-v4", "complexidade": ["leve"],
+                                   "superficies": {"cron": False}}])
+    c10.passo("corrige isto", 0, turn_id="sessao:sessao:0a0b0c0d", api=0,
+              plataforma="cron")
+    resp10 = c10.respostas()
+    check("uma resposta no ledger", len(resp10) == 1, f"{len(resp10)}")
+    check("a entrada da superficie nao foi usada",
+          (resp10[0].get("entrada") if resp10 else "so-api") != "so-api",
+          str([e.get("entrada") for e in resp10]))
+    check("a recusa esta registada em `excecao`",
+          (resp10[0].get("excecao") if resp10 else "") == "superficie",
+          str([(e.get("excecao"), e.get("excecao_motivo")) for e in resp10]))
+    check("e o turno nao fica sem modelo",
+          bool(resp10 and resp10[0].get("entrada")),
+          str([e.get("entrada") for e in resp10]))
 
 
 def main() -> int:

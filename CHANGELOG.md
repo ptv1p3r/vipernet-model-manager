@@ -9,6 +9,26 @@ what that reviewer reads first.
 Older history (before 3.45.0) lives in `git log` — the repository was published
 with one automatic commit per change, each with a per-file summary.
 
+## 3.47.15 — 2026-11-08
+
+- **A superfície fixada ganha também ao *pin* do turno.** O 3.47.14 fechou a
+  porta do ensaio em sombra mas deixou a da frente aberta: a regra da superfície
+  estava atrás de `if (entrada is None or rota is None)`, ou seja só corria
+  quando não havia rota nenhuma. Num turno de vários pedidos, o primeiro
+  decidia, gravava o `pin` e — medido no ledger de 2026-11-08 20:13:58 →
+  20:14:02, `passo_api` 1 → 2 — os seguintes reutilizavam-no: `entrada` já não
+  era `None`, a ordem do perfil nunca disparava, `origem` ficava em `modelo` e
+  o ensaio aplicava por cima (12 de 13 respostas de cron ainda no braço depois
+  do reload). A guarda cai: a regra corre sempre, exceto com marcador explícito
+  do utilizador, e continua a ceder à capacidade, à rota morta há pouco e ao
+  modelo que declara não servir a superfície — nos três casos com `excecao`
+  registada. Quando substitui uma rota que já vinha do `pin`, o `pin` passa a
+  `substituido_pela_superficie`, para o rasto não confundir uma reutilização com
+  uma escolha da regra. Nove verificações novas em `test_turno.py`: três
+  pedidos no mesmo turno com superfície `cron` fixada (entrada, origem e `pin`
+  nos três) e a exceção legítima de um modelo que declara `superficies:
+  {cron: false}`.
+
 ## 3.47.14 — 2026-11-08
 
 - **A superfície fixada ganha ao ensaio em sombra.** O perfil `default` fixou a

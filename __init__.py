@@ -1576,13 +1576,19 @@ def middleware_llm_request(
                         base["excecao"] = "rota"
                         base["excecao_motivo"] = f"rota_pinada:{type(exc).__name__}"
                         entrada = rota = None
-        if (entrada is None or rota is None) and not marcador_manda \
+        # Superficie com entrada fixada: e uma ordem, nao uma preferencia — e
+        # por isso corre tambem quando o pin do turno ja trouxe uma rota.
+        # Antes exigia `entrada is None`, e num turno de varios pedidos o
+        # segundo em diante reutilizava o pin (medido 2026-11-08 20:14,
+        # passo_api 2) e a ordem nunca disparava. O pin e do turno, a regra e
+        # do perfil: quem manda e o perfil. So cede a capacidade (o pedido nao
+        # cabe no modelo), a uma rota que falhou ha pouco, ou ao marcador
+        # explicito do utilizador — e nos tres casos fica marcado com
+        # `excecao`, senao parecia que a regra nunca disparou.
+        if not marcador_manda \
                 and regra_sup is not None \
                 and regra_sup.get("entrada") is not None:
-            # Superficie com entrada fixada: e uma ordem, nao uma preferencia.
-            # So cede a capacidade (o pedido nao cabe no modelo) ou a uma rota
-            # que falhou ha pouco — e nos dois casos fica marcado com
-            # `excecao`, senao parecia que a regra nunca disparou.
+            substitui_pin = entrada is not None or rota is not None
             candidata = regra_sup["entrada"]
             motivo_cap = gestor.rota_serve(candidata, needs) if needs else ""
             chave_rota = (perfil, str(candidata["provider"]).lower(),
@@ -1609,6 +1615,11 @@ def middleware_llm_request(
                                          candidata["modelo"])
                     base["origem"] = "superficie"
                     base["superficie_regra"] = regra_sup["motivo"]
+                    if substitui_pin:
+                        # Rasto: a rota do turno existia e foi substituida pela
+                        # ordem do perfil. Sem isto, uma reutilizacao de pin
+                        # parecia identica a uma escolha da regra.
+                        base["pin"] = "substituido_pela_superficie"
                 except Exception as exc:  # noqa: BLE001
                     base["excecao"] = "rota"
                     base["excecao_motivo"] = f"superficie:{type(exc).__name__}"
