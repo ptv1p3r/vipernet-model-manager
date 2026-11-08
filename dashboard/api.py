@@ -181,6 +181,21 @@ def _conflito(rev_cliente: str, rev_actual: str) -> bool:
     return bool(rev_cliente) and rev_cliente != rev_actual
 
 
+def _corpo_conflito(mensagem: str, rev_actual: str, **extra: Any) -> dict[str, Any]:
+    """Corpo de um 409 com a razao legivel, e nao so um codigo.
+
+    O painel corre sobre o ``fetchJSON`` do dashboard, que procura a frase em
+    ``detail``, ``message`` ou ``error`` e, sem nenhuma delas, cai na copia do
+    estado HTTP ("That change conflicts with the current state on the server.",
+    em ingles). Um corpo so com ``erro`` nao e lido por ninguem e o utilizador
+    ficava sem saber que a config tinha mudado noutro sitio nem o que fazer.
+    ``detail`` e a convencao do FastAPI; ``erro`` fica para quem ja o lia.
+    """
+    corpo: dict[str, Any] = {"detail": mensagem, "erro": mensagem, "rev": rev_actual}
+    corpo.update(extra)
+    return corpo
+
+
 def _idade_s(ts: Any) -> Optional[float]:
     """Segundos desde `ts` (ISO com ou sem offset), ou ``None`` se ilegivel."""
     if not ts:
@@ -1415,11 +1430,11 @@ def config_post(request: Request, corpo: Any = Body(default=None)) -> JSONRespon
         )
         return JSONResponse(
             status_code=409,
-            content={
-                "erro": t("config desactualizado: o editor foi aberto noutra versao"),
-                "rev": rev_actual,
-                "config": actual,
-            },
+            content=_corpo_conflito(
+                t("config desactualizado: o editor foi aberto noutra versao, e a config já mudou no disco"),
+                rev_actual,
+                config=actual,
+            ),
         )
     try:
         # `rev_esperado` repete a verificacao DENTRO da trava: entre a leitura
@@ -1433,7 +1448,7 @@ def config_post(request: Request, corpo: Any = Body(default=None)) -> JSONRespon
         )
         return JSONResponse(
             status_code=409,
-            content={"erro": t("config mudou durante a gravação"), "rev": exc.rev_actual},
+            content=_corpo_conflito(t("config mudou durante a gravação"), exc.rev_actual),
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -1548,7 +1563,7 @@ async def circuit_breaker_post(request: Request, corpo: Any = Body(default=None)
     except gestor.Conflito as exc:
         return JSONResponse(
             status_code=409,
-            content={"erro": t("config mudou durante a gravação"), "rev": exc.rev_actual},
+            content=_corpo_conflito(t("config mudou durante a gravação"), exc.rev_actual),
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))

@@ -259,6 +259,23 @@ def test_endpoint(tmp: Path) -> None:
         verificar("POST com rev antigo: 409", r.status_code == 409, str(r.status_code))
         verificar("POST com rev antigo: corpo traz a config actual",
                   r.json().get("rev") == rev and "config" in r.json())
+        # A razao tem de chegar ao utilizador. O painel corre sobre o `fetchJSON`
+        # do dashboard, que le a frase de `detail`/`message`/`error` e, sem
+        # nenhuma delas, mostra a copia do estado HTTP ("That change conflicts
+        # with the current state on the server.", em ingles). O corpo deste 409
+        # trazia-a so em `erro` — chave que ninguem le — e o utilizador ficava
+        # sem saber o que aconteceu. Medido a 2026-11-08 08:28:43 num conflito
+        # real: a lingua foi gravada pelo seletor e o editor, aberto com a
+        # versao anterior, recebeu essa frase generica ao "Gravar".
+        corpo409 = r.json()
+        legivel = [k for k in ("detail", "message", "error")
+                   if isinstance(corpo409.get(k), str) and corpo409[k].strip()]
+        verificar("POST com rev antigo: a razao vem numa chave que o painel le",
+                  bool(legivel), str(sorted(corpo409)))
+        verificar("POST com rev antigo: a razao nao e o codigo nu",
+                  bool(legivel) and str(r.status_code) not in corpo409[legivel[0]]
+                  and "config" in corpo409[legivel[0]].lower(),
+                  corpo409.get(legivel[0] if legivel else "detail", ""))
         sha_depois = hashlib.sha256(tmp.read_bytes()).hexdigest()
         verificar("POST com rev antigo: NAO escreveu", sha_antes == sha_depois)
         verificar("POST com rev antigo: o interruptor nao mudou",

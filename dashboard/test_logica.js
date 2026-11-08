@@ -2033,6 +2033,22 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   I.setIdioma("pt");
 })();
 
+// Deteccao do 409: o `fetchJSON` do dashboard entrega um ApiError com `.status`
+// e uma frase humana sem "409" — detectar pelo texto dava sempre falso e o
+// painel mostrava a frase generica em ingles, sem recarregar a versao.
+(function () {
+  const C = T.ehConflito;
+  check("conflito: ApiError 409 e reconhecido pelo codigo",
+        C({ status: 409, message: "That change conflicts with the current state on the server." }) === true);
+  check("conflito: ApiError 400 nao e conflito",
+        C({ status: 400, message: "Some of the entered values are not valid." }) === false);
+  check("conflito: caminho de recurso (texto com 409) continua reconhecido",
+        C(new Error("409: Conflict")) === true);
+  check("conflito: erro sem status nem 409 nao e conflito",
+        C(new Error("Failed to fetch")) === false);
+  check("conflito: nada e nao conflito", C(null) === false && C(undefined) === false);
+})();
+
 console.log("");
 if (falhas) {
   console.log(falhas + " de " + total + " verificacoes FALHARAM");

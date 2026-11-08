@@ -756,6 +756,21 @@
       });
   }
 
+  // Conflito de versao (409): decide-se pelo CODIGO, nao pelo texto.
+  //
+  // O `fetchJSON` do dashboard entrega um `ApiError` com `.status` e com uma
+  // frase humana — "That change conflicts with the current state on the
+  // server." — que NAO contem "409". A deteccao antiga, pelo texto, dava
+  // sempre falso por essa via: o painel mostrava a frase generica em ingles
+  // depois de "Erro ao salvar:" e nunca corria o ramo que recarrega a versao,
+  // deixando o editor preso a repetir um gesto que nao podia passar. O codigo
+  // do estado serve nos dois caminhos (SDK e o fetch de recurso).
+  function ehConflito(e) {
+    if (e && typeof e.status === "number") return e.status === 409;
+    var msg = String(e && e.message ? e.message : e);
+    return msg.indexOf("409") !== -1;
+  }
+
   function hora(ts) {
     if (!ts) return "—";
     const d = new Date(ts);
@@ -3446,7 +3461,7 @@
         .then(function () { return carregar(); })
         .catch(function (e) {
           const msg = String(e && e.message ? e.message : e);
-          setErro(msg.indexOf("409") !== -1
+          setErro(ehConflito(e)
             ? "A estratégia mudou noutro sítio — recarreguei o estado. Escolha outra vez."
             : T("Erro ao gravar a estratégia: ") + msg);
           return carregar();
@@ -3469,7 +3484,7 @@
         .then(function () { return carregar(); })
         .catch(function (e) {
           const msg = String(e && e.message ? e.message : e);
-          setErro(msg.indexOf("409") !== -1
+          setErro(ehConflito(e)
             ? "As superfícies mudaram noutro sítio — recarreguei o estado. Escolha outra vez."
             : T("Erro ao gravar a superfície: ") + msg);
           return carregar();
@@ -3523,7 +3538,7 @@
         })
         .catch(function (e) {
           const msg = String(e && e.message ? e.message : e);
-          setErro(msg.indexOf("409") !== -1
+          setErro(ehConflito(e)
             ? "O ensaio mudou noutro sítio — recarreguei o estado. Repita a re-selagem."
             : T("Erro ao re-selar os braços: ") + msg);
           return carregar();
@@ -3616,7 +3631,7 @@
           })
           .catch(function (e) {
             const msg = String(e && e.message ? e.message : e);
-            if (msg.indexOf("409") !== -1) {
+            if (ehConflito(e)) {
               setValidacaoOk(null);
               setErro(T("A configuração foi alterada noutro sítio desde que abriu este editor ")
                 + T("— recarreguei a versão actual. Reveja o que quer mudar e grave outra vez."));
@@ -3754,7 +3769,7 @@
         })
         .catch(function (e) {
           const msg = textoDoErro(e);
-          setModeloErro(msg.indexOf("409") !== -1
+          setModeloErro(ehConflito(e)
             ? T("A configuração foi alterada noutro sítio desde que abriu esta página. ")
               + T("Descartar e abrir outra vez para ver o estado actual.")
             : T("Erro ao gravar: ") + msg);
@@ -3917,7 +3932,7 @@
         })
         .catch(function (e) {
           const msg = textoDoErro(e);
-          setPerfilErro(msg.indexOf("409") !== -1
+          setPerfilErro(ehConflito(e)
             ? T("A configuração foi alterada noutro sítio desde que abriu esta página. ")
               + T("Descartar e abrir outra vez para ver o estado actual.")
             : T("Erro ao gravar: ") + msg);
@@ -4156,6 +4171,7 @@
   // — escrevem no bloco que o middleware le. Testadas em node, sem browser.
   if (typeof window !== "undefined" && window.__VMM_TEST__) {
     window.__VMM_TEST__.lerJSON = lerJSON;
+    window.__VMM_TEST__.ehConflito = ehConflito;
     window.__VMM_TEST__.blocoDe = blocoDe;
     window.__VMM_TEST__.baseDoBloco = baseDoBloco;
     window.__VMM_TEST__.comBloco = comBloco;

@@ -752,8 +752,8 @@ _EN: dict[str, str] = {
         "a different classifier",
     "anterior ao erro actual":
         "older than the current error",
-    "config desactualizado: o editor foi aberto noutra versao":
-        "config out of date: the editor was opened on another version",
+    "config desactualizado: o editor foi aberto noutra versao, e a config já mudou no disco":
+        "config out of date: the editor was opened on another version and the config has changed on disk",
     "config mudou durante a gravação":
         "config changed while saving",
     "config sem nenhum perfil: o plugin ficaria sem rotas":
