@@ -209,9 +209,21 @@ def testes() -> None:
         check("bracos: a origem do provider e dita (catalogo, nunca palpite)",
               corpo_r["providers_origem"] == {"a": "catalogo", "b": "catalogo"},
               json.dumps(corpo_r.get("providers_origem")))
+        # A lista e fechada E vem do catalogo: deriva-se da config copiada em vez
+        # de se fixar um instantaneo. Fixa, quebra sozinha no dia em que o dono
+        # acrescenta um provider ao catalogo (aconteceu a 2026-11-08 com o
+        # `inception` do mercury-3): a assercao media o ambiente, nao o codigo.
+        _cfg_lida = json.loads((base / "config.json").read_text(encoding="utf-8"))
+        _esperados = sorted({
+            str(_e.get("provider") or "").strip().lower()
+            for _p in (_cfg_lida.get("perfis") or {}).values() if isinstance(_p, dict)
+            for _e in (_p.get("catalogo") or [])
+            if isinstance(_e, dict) and str(_e.get("provider") or "").strip()})
         check("bracos: a lista de providers e fechada e vem do catalogo",
-              corpo_r["sombra"]["providers_disponiveis"] == ["deepseek", "openrouter"],
-              json.dumps(corpo_r["sombra"].get("providers_disponiveis")))
+              corpo_r["sombra"]["providers_disponiveis"] == _esperados
+              and {"deepseek", "openrouter"} <= set(_esperados),
+              json.dumps({"lista": corpo_r["sombra"].get("providers_disponiveis"),
+                          "esperado": _esperados}))
         check("bracos: o ficheiro novo e o que a leitura escolhe",
               Path(corpo_r["sombra"]["pre_registo"]).name
               == "pre-registo-" + HOJE_PRE_REGISTO + "c.json",
