@@ -1,0 +1,82 @@
+name: tests
+
+# O CI do catalogo (`NousResearch/hermes-agent`) corre `hermes plugins validate`
+# contra o commit pinado; este workflow corre o mesmo tipo de prova **no repo**,
+# para que um bump de pin nao chegue ao PR sem testes verdes.
+#
+# Nao instala o Hermes: o pacote nao e' publico no PyPI, e um passo que falha por
+# o binario faltar seria ruido. A validacao do catalogo e' feita no pin pelo CI
+# do hermes-agent; aqui corre o que o repo consegue provar sozinho (manifesto,
+# 29 ficheiros de teste, o auto-teste do painel e o JS).
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Dependencias dos testes
+        run: python -m pip install --upgrade pip fastapi httpx
+
+      - name: Manifesto declara o que o catalogo le
+        run: |
+          for campo in name version requires_hermes license homepage; do
+            grep -qE "^${campo}:" plugin.yaml || { echo "plugin.yaml sem ${campo}"; exit 1; }
+          done
+          echo "campos do manifesto presentes"
+        # A comparacao versao manifesto == painel, capacidades e pin fica em
+        # test_catalogo.py, que corre na bateria abaixo: um heredoc Python dentro
+        # de um bloco YAML leva o recuo do bloco e morre em IndentationError.
+
+      - name: Auto-teste do plugin (selftest.py)
+        run: python selftest.py
+
+      - name: Bateria de testes
+        run: |
+          falhas=""
+          for t in test_*.py; do
+            echo "::group::$t"
+            python "$t" || falhas="$falhas $t"
+            echo "::endgroup::"
+          done
+          if [ -n "$falhas" ]; then echo "FALHARAM:$falhas"; exit 1; fi
+
+      - name: Auto-teste do painel (API)
+        run: python dashboard/selftest.py
+
+  javascript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Sintaxe do painel
+        run: node --check dashboard/dist/index.js
+      - name: Logica do painel
+        run: node dashboard/test_logica.js
+
+  licenca:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ficheiros de licenca presentes e coerentes
+        run: |
+          test -f LICENSE
+          test -f LICENSE-MIT
+          test -f LICENSE-APACHE
+          grep -q "SPDX-License-Identifier: MIT OR Apache-2.0" LICENSE
+          grep -q 'license: "MIT OR Apache-2.0"' plugin.yaml
+          echo "licenca dupla declarada no LICENSE e no manifesto"

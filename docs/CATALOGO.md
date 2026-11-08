@@ -4,7 +4,7 @@ Regra a regra, o que está verificado, **como** foi verificado, e o que ainda
 impede uma submissão. A autoridade é `plugin-catalog/README.md` do
 `NousResearch/hermes-agent`; esta página segue a numeração dessa lista.
 
-Versão do plugin a que se refere: **3.47.6** (`plugin.yaml` ==
+Versão do plugin a que se refere: **3.47.8** (`plugin.yaml` ==
 `dashboard/manifest.json`). Hermes medido: **v0.23.0 (2026.9.24)**, instalação
 `docker`.
 
@@ -26,7 +26,7 @@ declarados a casar com o registo.
 | # | Regra | Estado | Evidência |
 |---|---|---|---|
 | 1 | Gate humano por PR | processo | n/a ao código; falta abrir o PR |
-| 2 | Repositório público clonável (GitHub/GitLab) | **conforme** | `https://github.com/ptv1p3r/vipernet-model-manager`, público, espelho automático do `main` do Gitea. Provado por clone anónimo: `env -i HOME=<vazio> GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone` → rc 0, HEAD `35ce9401` = `main` do Gitea, 3.47.6 |
+| 2 | Repositório público clonável (GitHub/GitLab) | **conforme** | `https://github.com/ptv1p3r/vipernet-model-manager`, público, espelho automático do `main` do Gitea. Provado por clone anónimo: `env -i HOME=<vazio> GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone` → rc 0 no pin. **Licença desde a 3.47.8**: `LICENSE` (dupla `MIT OR Apache-2.0`), `LICENSE-MIT`, `LICENSE-APACHE`, e `license:` no manifesto — antes era clonável mas não adoptável, que é a diferença entre cumprir a letra da regra e a sua razão |
 | 3 | Pinos por SHA de 40 caracteres | conforme | `sha` de 40 hex, nunca tag nem ramo; o commit tem de existir no `main` do GitHub — o espelho preserva o sha do Gitea |
 | 4 | Sem código que se actualiza a si próprio | conforme | nenhum `git pull`/download/auto-update no caminho de execução; `subprocess` só em `selftest.py` e `dashboard/selftest.py`, para correr `node --check` e o próprio CLI |
 | 5 | Bumps de SHA são PRs novos | processo | n/a ao código |
@@ -41,7 +41,7 @@ declarados a casar com o registo.
 | 14 | Metadados de compatibilidade verdadeiros | conforme | `requires_hermes: ">=0.22.0"` em SemVer, não mais recente do que 0.23.0; `version` do manifesto == `plugin.yaml` == pin |
 | 15 | Sem skins nem forks de plugins incluídos | conforme | plugin original, standalone |
 | 16 | Uma entrada por linhagem | conforme | sem fork de plugin listado |
-| 17 | Sem payload executável não inspeccionável | conforme | 75 ficheiros, nenhum binário por cabeçalho (ELF/Mach-O/PE/Wasm), nenhum `.pyc`/`.pyo`/`.so`/`.whl`/arquivo; 54 `.py`, 8 `.md`, 2 `.js`, 2 `.yaml`, 2 `.json`, 1 `.css` |
+| 17 | Sem payload executável não inspeccionável | conforme | 82 ficheiros, nenhum binário por cabeçalho (ELF/Mach-O/PE/Wasm), nenhum `.pyc`/`.pyo`/`.so`/`.whl`/arquivo; 55 `.py`, 9 `.md`, 3 `.png`, 3 `.jsonl`, 2 `.yaml`, 2 `.json`, 2 `.js`, 1 `.yml`, 1 `.css`, 3 sem extensão (`LICENSE*`) |
 | 18 | Gestores de passwords vêm do fabricante | n/a | não regista `browser_vault` |
 
 ## Regra 9: de exceção declarada a conforme
@@ -96,7 +96,12 @@ porque a chave vem do resolver do Hermes) por uma regressão funcional.
    `03-registo.png`), tiradas do painel vivo na `v3.47.6`, e a entrada declara-as
    em `screenshots:` com URLs `raw.githubusercontent.com` no sha do pin. O nome
    completo do dono sai substituído pelo handle público nas imagens.
-2. **Abrir o PR** em `NousResearch/hermes-agent` a acrescentar
-   `plugin-catalog/vipernet-model-manager.yaml`. Nenhum PR foi aberto até hoje —
-   é o único passo que falta, e é de processo, não de código.
-   A descrição do PR leva a divulgação da regra 13 e as capturas.
+2. ~~**Abrir o PR**~~ — **aberto**: `NousResearch/hermes-agent` PR **#150929**
+   (1 ficheiro, `plugin-catalog/vipernet-model-manager.yaml`), com o pedido de
+   hook em **#150930** e comentário cruzado. O CI do catálogo está
+   `action_required` desde a abertura: é a primeira contribuição de um fork e o
+   GitHub só corre os workflows depois de um mantenedor aprovar a execução. O
+   que se pôde correr à mão correu: `OK: 1052 file(s) valid` (structural) e
+   `Validation passed` no pin, num clone anónimo.
+3. **Rebase do pin** quando a entrada apontar a `3.47.8`: bump de sha é PR novo,
+   com as três URLs de captura re-pinadas no mesmo sha (regra 4).

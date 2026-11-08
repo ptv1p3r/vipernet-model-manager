@@ -26,7 +26,7 @@ Three sentences that sum up the contract:
 
 ## Screenshots
 
-The dashboard tab **Model Manager**, at `v3.47.6`, captured from a live install:
+The dashboard tab **Model Manager**, at `v3.47.8`, captured from a live install configured in Portuguese (the panel is bilingual; the catalogue entry and this README are English):
 
 | Capture | What it shows |
 |---|---|
@@ -1548,3 +1548,17 @@ holdouts, 266 in panel — including pure editor logic run in node —, 51 in
 needs triage, 22 in sampling/labelling, 55 in learning cycle, 23 in
 turn-pinned level and 16 in tasks.
 
+## Licence and CI
+
+Dual licensed under **MIT OR Apache-2.0** — you pick the one that fits your
+project, and you do not have to comply with both. The texts are in `LICENSE-MIT`
+and `LICENSE-APACHE`, the choice is stated in `LICENSE`, and `plugin.yaml`
+declares `license: "MIT OR Apache-2.0"`. Until 3.47.8 the repository was public
+with no licence file: cloneable, but not usable by anyone, which is not what
+catalogue rule 2 is for.
+
+Every push runs `.github/workflows/tests.yml`: the manifest guards, this
+repository's test battery on Python 3.11 and 3.13, the panel's own self-test and
+the JavaScript logic under node. The catalogue CI separately runs
+`hermes plugins validate` against the pinned commit; that check is the
+catalogue's, not this repository's.
