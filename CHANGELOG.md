@@ -9,6 +9,22 @@ what that reviewer reads first.
 Older history (before 3.45.0) lives in `git log` — the repository was published
 with one automatic commit per change, each with a per-file summary.
 
+## 3.47.13 — 2026-11-08
+
+- **Provider custom resolve credencial.** O botão ⚡ Testar ligação respondia «sem
+  credencial para inception neste processo» com a chave carregada e a rota a
+  responder 200 (`mercury-3`, 847 ms medidos à mão). A pool de credenciais só
+  tem o que passou por `hermes auth add`; um provider declarado em
+  `providers.<name>` guarda a chave em `key_env` e o endpoint em `base_url`. O
+  resolvedor passa a ter essa terceira via — `hermes_cli.config.get_compatible_custom_providers`
+  para o par `base_url`/`key_env` (superfície pública; a privada
+  `agent.custom_entry_pool` disparava o aviso da regra 9) e
+  `agent.secret_scope.get_secret` para o segredo (honra o
+  perfil activo; `UnscopedSecretError` cai para o ambiente, como no núcleo). A
+  linha do resultado mostra a origem (`providers.inception/key_env`), para se
+  saber de onde veio a credencial. Guardas: `test_sonda_provider_custom.py`
+  (8 testes, sem rede).
+
 ## 3.47.12 — 2026-11-08
 
 - **Botão de sonda de ligação na página de um modelo.** Ao criar uma rota para um
