@@ -9,6 +9,36 @@ what that reviewer reads first.
 Older history (before 3.45.0) lives in `git log` — the repository was published
 with one automatic commit per change, each with a per-file summary.
 
+## 3.47.12 — 2026-11-08
+
+- **Botão de sonda de ligação na página de um modelo.** Ao criar uma rota para um
+  provider/modelo novo não havia forma de saber, antes de gravar, se aquele par
+  responde: o `Validar` só verifica a forma da configuração e o primeiro sinal de
+  uma chave errada era o turno seguinte a falhar. Passa a haver um icon **⚡
+  Testar ligação**, junto dos campos `provider` e `modelo`, que faz **uma**
+  chamada mínima ao provider (`max_tokens: 8`, mensagem `ping`) e mostra o
+  resultado ao lado: `✓ respondeu em N ms · HTTP 200 · provider/modelo` ou
+  `✗ falhou · HTTP 401 · <motivo do provider>`.
+- **A sonda não grava nada e não lê o catálogo.** Endpoint novo
+  `POST /modelo/testar` (`dashboard/api.py`), com `sondar_rota()` a resolver a
+  credencial por `seams.resolver_provider` — a mesma via pública do Hermes, nunca
+  o ambiente nem um ficheiro. A chave não sai na resposta (e é substituída por
+  `***` se um provider a ecoar numa mensagem de erro).
+- **Falhar a ligação não é um erro do painel.** A resposta é 200 com `ok:false` e
+  o motivo — a API do painel respondeu, foi o provider que não. Um 5xx aqui faria
+  o ecrã mostrar um erro do painel em vez do erro que o dono precisa de ler.
+  Provider servido por subprocesso (`openai-codex`) e falta de credencial dizem
+  exactamente isso, em vez de um «falhou» mudo.
+- **O resultado é limpo a cada tecla.** Mudar o `provider` ou o `modelo` apaga o
+  verde anterior: um ✓ ao lado de um par diferente é a mentira mais fácil de
+  escrever neste painel. O botão fica desligado enquanto não houver os dois
+  campos, para não se gastar um pedido a descobrir que falta um.
+- Medido a 2026-11-08 no processo do agente: `deepseek/deepseek-flash` →
+  `ok=true, http=200, 881 ms`; modelo inexistente → `http=400` com a lista que o
+  provider aceita; provider desconhecido → `sem credencial … neste processo`.
+  Bateria: 218/218 no auto-teste do painel (14 novas), 354/354 em node (10
+  novas), 30/30 ficheiros Python, `test_idioma` e `test_chaves_fechadas` verdes.
+
 ## 3.47.11 — 2026-11-08
 
 - **Dois termos genéricos juntos deixaram de associar a tarefa.** A 3.47.10

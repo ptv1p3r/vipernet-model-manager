@@ -1394,6 +1394,60 @@ check("pagina do modelo: cada superficie tem o seu selector tri-estado",
         });
         return tri.length === OPCOES.superficies.length + 1;
       })(), String(seletores.length));
+
+// --- Sonda de ligação (3.47.12) -----------------------------------------
+// O botão da página de um modelo chama o provider com o par escrito e diz se
+// responde. Prova-se, sem browser e sem rede: que existe com o icon, que está
+// desligado sem o par (não se gasta um pedido a descobrir que falta um campo) e
+// que o resultado é lido nas três formas que o backend devolve.
+const botaoSonda = comTag(arvoreModelo, "button").filter(function (b) {
+  return textoPlano(b.filhos).trim().indexOf("Testar ligação") !== -1;
+});
+check("pagina do modelo: o botao de sonda existe com icon",
+      botaoSonda.length === 1
+      && textoPlano(botaoSonda[0].filhos).trim().charAt(0) === "⚡",
+      rotulosModelo.join(" | "));
+check("pagina do modelo: a sonda esta ligada com o par preenchido",
+      botaoSonda.length === 1 && botaoSonda[0].props.disabled === false,
+      String(botaoSonda[0] && botaoSonda[0].props.disabled));
+
+const semPar = renderModelo({
+  form: T.entradaParaForm({ id: "x", provider: "", modelo: "", complexidade: ["leve"] }),
+});
+const sondaSemPar = comTag(semPar, "button").filter(function (b) {
+  return textoPlano(b.filhos).trim().indexOf("Testar ligação") !== -1;
+});
+check("pagina do modelo: sem provider/modelo a sonda esta desligada",
+      sondaSemPar.length === 1 && sondaSemPar[0].props.disabled === true,
+      String(sondaSemPar[0] && sondaSemPar[0].props.disabled));
+
+const emCurso = renderModelo({ aSondar: true });
+const botaoEmCurso = comTag(emCurso, "button").filter(function (b) {
+  return textoPlano(b.filhos).trim().indexOf("a testar a ligação") === 0;
+});
+check("pagina do modelo: a meio da sonda o botao diz que esta a testar",
+      botaoEmCurso.length === 1,
+      comTag(emCurso, "button").map(function (b) { return textoPlano(b.filhos).trim(); }).join(" | "));
+check("pagina do modelo: a meio da sonda o botao fica desligado",
+      botaoEmCurso.length === 1 && botaoEmCurso[0].props.disabled === true);
+
+check("sonda: sucesso diz ms, http e o par",
+      T.textoSonda({ ok: true, ms: 412, http: 200, provider: "deepseek", modelo: "deepseek-flash" })
+      === "✓ respondeu em 412 ms · HTTP 200 · deepseek/deepseek-flash",
+      T.textoSonda({ ok: true, ms: 412, http: 200, provider: "deepseek", modelo: "deepseek-flash" }));
+check("sonda: falha com http mostra o motivo",
+      T.textoSonda({ ok: false, http: 401, ms: 42, motivo: "Incorrect API key" })
+      === "✗ falhou · HTTP 401 · Incorrect API key",
+      T.textoSonda({ ok: false, http: 401, ms: 42, motivo: "Incorrect API key" }));
+check("sonda: falha antes do pedido nao inventa um 0",
+      T.textoSonda({ ok: false, http: 0, ms: 0, motivo: "URLError: sem rede" })
+      === "✗ falhou · URLError: sem rede");
+check("sonda: motivo vazio leva marcador em vez de linha muda",
+      T.textoSonda({ ok: false, motivo: "   " }) === "✗ falhou · ?",
+      T.textoSonda({ ok: false, motivo: "   " }));
+check("sonda: o texto vai para o ecra e nao para o ficheiro",
+      T.textoSonda({ ok: true, ms: 5, http: 200, provider: "p", modelo: "m" })
+      === "✓ respondeu em 5 ms · HTTP 200 · p/m");
 // O provider deixou de ser lista fechada a 2026-11-08, por um defeito medido: o
 // dono tentou criar uma rota para um provider que o Hermes ja serve e o painel
 // so deixava escolher entre os que a configuracao ja usava. Passou a texto livre
@@ -1931,8 +1985,10 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
         && I.normalizarIdioma(null) === "en");
 
   const chaves = Object.keys(I.PT_EN);
-  check("i18n: o dicionario tem as 479 chaves medidas",
-        chaves.length === 479, "tem " + chaves.length);
+  // A contagem e um alarme de deriva: subir a mao quando se acrescentam chaves e
+  // o que obriga a olhar para o dicionario. +9 na 3.47.12 (sonda de ligacao).
+  check("i18n: o dicionario tem as 488 chaves medidas",
+        chaves.length === 488, "tem " + chaves.length);
   check("i18n: nenhuma traducao vazia",
         chaves.every(function (k) { return String(I.PT_EN[k]).trim() !== ""; }));
   // Nomes proprios e termos tecnicos ficam iguais nas duas linguas — o que nao

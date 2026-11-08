@@ -1839,6 +1839,178 @@ def modelo_post(corpo: Any = Body(default=None)) -> JSONResponse:
     })
 
 
+# ------------------------------------------------------ sonda de ligacao
+# Um botao na pagina de um modelo: "testar a ligacao" chama o provider com o par
+# provider/modelo que esta no formulario e diz se responde — antes de gravar.
+#
+# Porque vive aqui e nao no `cli.py`, que ja tem um `_chamar_modelo`: sao
+# processos diferentes. O `cli.py` corre dentro do agente; este backend corre no
+# servico do dashboard. O que se reusa e o `seams.resolver_provider` do plugin —
+# a unica peca que sabe de credenciais — e nao uma copia da resolucao.
+#
+# O que NAO se faz: ler a chave do ambiente, do `.env` ou de outro ficheiro. Se
+# o processo do painel a nao conseguir resolver pela via publica do Hermes, a
+# resposta diz isso mesmo. Uma sonda que inventa credencial e um verde falso.
+
+#: Tecto da sonda. Um provider pendurado nao pode pendurar a pagina: a sonda
+#: desiste e di-lo, com o nome da excepcao.
+_TIMEOUT_SONDA = 20.0
+
+
+def _resolver_credencial(provider: str, modelo: str) -> dict[str, Any]:
+    """Credencial e endpoint do provider pela via publica do Hermes.
+
+    `seams` e modulo do plugin (ja no `sys.path` por causa do `gestor`). O
+    import e tardio de proposito: um painel que abra num ambiente sem nucleo tem
+    de continuar a servir as outras paginas.
+    """
+    import seams  # noqa: PLC0415
+
+    return seams.resolver_provider(provider, modelo)
+
+
+def _url_de_chat(base: str) -> str:
+    """Endpoint de chat a partir do `base_url` da rota.
+
+    O `base_url` da pool traz `/v1` na maioria dos providers e nao traz em
+    alguns; um que ja venha com o caminho completo nao e remexido.
+    """
+    limpo = str(base or "").strip().rstrip("/")
+    if limpo.endswith("/chat/completions"):
+        return limpo
+    return limpo + "/chat/completions"
+
+
+def _http_sonda(url: str, chave: str, modelo: str, timeout: float) -> dict[str, Any]:
+    """Uma chamada minima ao modelo. Separada para os testes trocarem o transporte.
+
+    Devolve `{ok, http, ms, motivo}` e nunca inclui a chave. `max_tokens: 8` e
+    uma mensagem `ping` porque o objectivo e provar que a rota responde, nao
+    obter resposta — o custo tem de ser o menor que o provider aceita.
+    """
+    import time as _tempo
+    import urllib.error
+    import urllib.request
+
+    corpo = json.dumps({
+        "model": modelo,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 8,
+        "stream": False,
+    }).encode()
+    pedido = urllib.request.Request(
+        url,
+        data=corpo,
+        headers={
+            "Authorization": "Bearer " + chave,
+            "Content-Type": "application/json",
+            # O UA por omissao do urllib e recusado por varios proxies (1010),
+            # que se le como «sem rede» e nao como «bloqueado na borda».
+            "User-Agent": "curl/8.5.0",
+        },
+    )
+    inicio = _tempo.monotonic()
+    try:
+        with urllib.request.urlopen(pedido, timeout=timeout) as resposta:  # noqa: S310
+            resposta.read()
+            http = int(getattr(resposta, "status", 0) or 0)
+        ms = int((_tempo.monotonic() - inicio) * 1000)
+        return {"ok": http == 200, "http": http, "ms": ms, "motivo": ""}
+    except urllib.error.HTTPError as exc:
+        ms = int((_tempo.monotonic() - inicio) * 1000)
+        texto = exc.read().decode(errors="replace")
+        try:
+            dados = json.loads(texto)
+        except ValueError:
+            dados = {}
+        msg = ""
+        if isinstance(dados, dict):
+            erro = dados.get("error")
+            if isinstance(erro, dict):
+                msg = str(erro.get("message") or "")
+            msg = msg or str(dados.get("message") or "")
+        return {"ok": False, "http": int(exc.code), "ms": ms,
+                "motivo": (msg or texto).strip()[:200]}
+    except Exception as exc:  # noqa: BLE001
+        ms = int((_tempo.monotonic() - inicio) * 1000)
+        return {"ok": False, "http": 0, "ms": ms,
+                "motivo": f"{type(exc).__name__}: {str(exc)[:160]}"}
+
+
+def sondar_rota(
+    provider: str,
+    modelo: str,
+    *,
+    resolver: Any = None,
+    transporte: Any = None,
+) -> dict[str, Any]:
+    """Mede se o par provider/modelo responde. Nunca grava e nunca imprime chave.
+
+    `resolver` e `transporte` existem para os testes: sem eles a suite faria
+    chamadas reais a um provider (e gastaria tokens) para provar o que se prova
+    com um falso. Em producao ficam os dois a None e usam-se os verdadeiros.
+    """
+    provider = str(provider or "").strip()
+    modelo = str(modelo or "").strip()
+    resolver = resolver or _resolver_credencial
+    transporte = transporte or _http_sonda
+    resultado: dict[str, Any] = {
+        "ok": False, "http": 0, "ms": 0,
+        "provider": provider, "modelo": modelo, "motivo": "", "fonte": "",
+    }
+    if not provider or not modelo:
+        resultado["motivo"] = t("faltam 'provider' e 'modelo' para testar a ligação")
+        return resultado
+    try:
+        rota = resolver(provider, modelo)
+    except Exception as exc:  # noqa: BLE001
+        resultado["motivo"] = t(
+            "sem credencial para {provider} neste processo: {motivo}",
+            provider=provider, motivo=f"{type(exc).__name__}: {str(exc)[:160]}")
+        return resultado
+    rota = rota if isinstance(rota, dict) else {}
+    chave = str(rota.get("api_key") or "")
+    url_base = str(rota.get("base_url") or "")
+    resultado["fonte"] = str(rota.get("source") or "")
+    if not url_base.strip():
+        resultado["motivo"] = t(
+            "o provider {provider} não declara endpoint HTTP (é servido por subprocesso)",
+            provider=provider)
+        return resultado
+    medida = dict(transporte(_url_de_chat(url_base), chave, modelo, _TIMEOUT_SONDA) or {})
+    motivo = str(medida.get("motivo") or "")
+    # Defesa em profundidade: se um provider ecoar a chave na mensagem de erro,
+    # ela nao sai daqui — o painel e um sitio publico para o dono, nao um log.
+    if chave and chave in motivo:
+        motivo = motivo.replace(chave, "***")
+    resultado.update({
+        "ok": bool(medida.get("ok")),
+        "http": int(medida.get("http") or 0),
+        "ms": int(medida.get("ms") or 0),
+        "motivo": motivo,
+    })
+    return resultado
+
+
+@router.post("/modelo/testar")
+def modelo_testar(corpo: Any = Body(default=None)) -> JSONResponse:
+    """Testa a ligação ao provider com o par que está no formulário.
+
+    Não grava, não lê o catálogo e não exige que a rota exista: o botão serve
+    exactamente para antes de gravar. Uma ligação que falha devolve 200 com
+    `ok: false` e o motivo — a API do painel respondeu, foi o provider que não;
+    um 5xx aqui faria o ecrã mostrar um erro do painel em vez de um erro do
+    provider, que é o que o dono precisa de ler.
+    """
+    corpo = _corpo_objeto(corpo)
+    resultado = sondar_rota(str(corpo.get("provider") or ""),
+                            str(corpo.get("modelo") or ""))
+    perfil = str(corpo.get("perfil") or "").strip()
+    if perfil:
+        resultado["perfil"] = perfil
+    return JSONResponse(content=resultado)
+
+
 # --------------------------------------------------------------- um perfil
 # Uma pagina por perfil, a semelhanca da pagina de um modelo. O que se edita
 # aqui e o que o perfil DECLARA — nao o catalogo (esse tem pagina propria, por
