@@ -10,8 +10,9 @@ perfil `default`:
    texto (ja sem contexto injectado), e a heranca transporta essa prova.
 2. `sensor`, `entidade` e `automação` sao termos **genericos**: aparecem em
    trabalho de plugin, de codigo e de documentacao. Sozinhos associavam a
-   tarefa e mandavam o turno para o modelo dela. Um generico so conta quando
-   outro termo da mesma tarefa o acompanha.
+   tarefa e mandavam o turno para o modelo dela. Um generico nunca associa:
+   nem sozinho, nem com outro generico ao lado (3.47.11) — exige-se um termo
+   especifico da tarefa.
 
 Uso: python3 test_tarefa_prova.py  ->  rc 0 se tudo passar.
 """
@@ -58,12 +59,22 @@ class Detector(unittest.TestCase):
         self.assertEqual(d["tarefa"], "home-assistant")
         self.assertEqual(sorted(d["termos"]), ["home assistant", "sensor"])
 
-    def test_dois_genericos_detectam(self):
+    def test_dois_genericos_nao_detectam(self):
+        # O caso reportado pelo dono: substantivos do dominio sem nenhuma prova
+        # de que o pedido seja de Home Assistant.
+        for texto in ("a entidade e o sensor do quadro",
+                      "explica as automações e as entidades deste documento"):
+            self.assertIsNone(analise.detectar_tarefa(msg(texto), REGRAS), texto)
+
+    def test_especifico_com_generico_detecta(self):
+        # A companhia especifica continua a valer, e o termo reportado e' o
+        # especifico — a prova nao aponta para o generico que o acompanhou.
         d = analise.detectar_tarefa_detalhe(
-            msg("a entidade e o sensor do quadro"), REGRAS)
+            msg("a automação do home assistant esta a falhar"), REGRAS)
         self.assertIsNotNone(d)
         self.assertEqual(d["tarefa"], "home-assistant")
-        self.assertTrue(d["generico"])
+        self.assertEqual(d["termo"], "home assistant")
+        self.assertFalse(d["generico"])
 
     # --- a prova ----------------------------------------------------------
     def test_prova_traz_termo_e_digest(self):
