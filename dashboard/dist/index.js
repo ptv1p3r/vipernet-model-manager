@@ -556,6 +556,27 @@
     return IDIOMA;
   }
 
+  // A lingua vive no config, e o editor de config tem o documento inteiro em
+  // texto. Mudar a lingua por um `select` grava no servidor mas deixa o texto do
+  // editor com o valor antigo: um "Gravar" a seguir ou repunha a lingua que se
+  // acabou de escolher, ou era recusado por `rev` desactualizado. Aqui o texto do
+  // editor acompanha a escrita, sem tocar em mais nada do que o utilizador la
+  // tem. Devolve o texto inalterado quando nao e JSON de objecto — nesse caso
+  // quem manda e o erro que o editor ja mostra.
+  function aplicarIdiomaNoTexto(texto, codigo) {
+    let obj;
+    try {
+      obj = JSON.parse(String(texto == null ? "" : texto));
+    } catch (e) {
+      return { texto: texto, aplicado: false };
+    }
+    if (obj === null || typeof obj !== "object" || Array.isArray(obj)) {
+      return { texto: texto, aplicado: false };
+    }
+    obj.idioma = normalizarIdioma(codigo);
+    return { texto: JSON.stringify(obj, null, 2), aplicado: true };
+  }
+
   function T(texto) {
     if (IDIOMA === "pt") return texto;
     const traducao = PT_EN[texto];
@@ -3437,7 +3458,17 @@
         body: { idioma: codigo, rev: (estado && estado.rev) || "" },
       })
         .then(function (r) {
-          setIdioma(r && r.idioma ? r.idioma : codigo);
+          const lido = r && r.idioma ? r.idioma : codigo;
+          setIdioma(lido);
+          // O servidor devolve o `rev` novo porque a lingua e config: adoptá-lo
+          // aqui evita que o "Gravar" do editor aberto acuse conflito por uma
+          // escrita que o proprio painel fez; e o texto do editor acompanha,
+          // para nao repor a lingua antiga ao gravar.
+          if (r && r.rev) setConfigRev(String(r.rev));
+          setConfigJSON(function (prev) {
+            const aplicado = aplicarIdiomaNoTexto(prev, lido);
+            return aplicado.aplicado ? aplicado.texto : prev;
+          });
           return carregar();
         })
         .catch(function (e) {
@@ -4214,6 +4245,9 @@
     window.__VMM_TEST__.PaginaPerfil = PaginaPerfil;
     window.__VMM_TEST__.perfilParaForm = perfilParaForm;
     window.__VMM_TEST__.formParaPerfil = formParaPerfil;
+    // Mudar a lingua grava no config; o texto do editor tem de acompanhar, senao
+    // o "Gravar" seguinte repoe a lingua antiga ou leva 409 por rev velho.
+    window.__VMM_TEST__.aplicarIdiomaNoTexto = aplicarIdiomaNoTexto;
     // A tarefa persistente tem dois donos (global na configuracao, delta no
     // perfil): testar as quatro funcoes e o que impede o painel de escrever um
     // valor que a validacao descarta em silencio.
@@ -4230,6 +4264,7 @@
       normalizarIdioma: normalizarIdioma, PT_EN: PT_EN, IDIOMAS: IDIOMAS,
       SeletorIdioma: SeletorIdioma, tQuanto: tQuanto, tHa: tHa,
       tInstantes: tInstantes, h: h, localeHora: localeHora, fmtNum: fmtNum,
+      aplicarIdiomaNoTexto: aplicarIdiomaNoTexto,
     };
   }
 })();

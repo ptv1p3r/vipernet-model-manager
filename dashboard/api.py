@@ -958,7 +958,12 @@ def idioma_post(corpo: Any = Body(default=None)) -> JSONResponse:
     if lido != codigo:
         raise HTTPException(status_code=500,
                             detail=t("gravacao nao confirmada: pedido {pedido}, lido {lido}", pedido=codigo, lido=lido))
-    return JSONResponse({"ok": True, "idioma": lido})
+    # O `rev` novo volta na resposta porque a lingua **e** config: o editor aberto
+    # noutra seccao carregou o documento antes desta escrita e, sem este numero,
+    # ficava com a versao antiga e o "Gravar" seguinte levava 409 a dizer que a
+    # config "mudou noutro sitio" — quando foi o proprio painel que a mudou.
+    cfg_final, _erros_final = gestor.carregar()
+    return JSONResponse({"ok": True, "idioma": lido, "rev": _rev(cfg_final)})
 
 
 @router.post("/estrategia")

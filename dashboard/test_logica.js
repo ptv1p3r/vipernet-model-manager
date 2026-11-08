@@ -2049,6 +2049,28 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   check("conflito: nada e nao conflito", C(null) === false && C(undefined) === false);
 })();
 
+// A lingua vive no config: mudar o seletor grava no servidor e o texto que o
+// editor tem em maos tem de acompanhar. Sem isto, o "Gravar" seguinte repunha a
+// lingua antiga ou era recusado por `rev` velho — o erro que o dono viu a
+// 2026-11-08 08:28:43 ao mudar a lingua e gravar.
+(function () {
+  const A = T.idioma.aplicarIdiomaNoTexto;
+  const cfg = JSON.stringify({ versao: 3, idioma: "pt", perfis: { default: { activo: true } } }, null, 2);
+  const r = A(cfg, "en");
+  const obj = JSON.parse(r.texto);
+  check("idioma no texto: aplica o codigo novo", r.aplicado === true && obj.idioma === "en");
+  check("idioma no texto: preserva o resto do documento",
+        obj.versao === 3 && obj.perfis.default.activo === true && Object.keys(obj).length === 3);
+  check("idioma no texto: normaliza a forma recebida",
+        JSON.parse(A(cfg, "PT-BR").texto).idioma === "pt");
+  check("idioma no texto: JSON invalido fica como esta",
+        A("{nao e json", "en").aplicado === false
+        && A("{nao e json", "en").texto === "{nao e json");
+  check("idioma no texto: array nao e documento de config", A("[1,2]", "en").aplicado === false);
+  check("idioma no texto: vazio e null nao rebentam",
+        A(null, "en").aplicado === false && A("", "en").aplicado === false);
+})();
+
 console.log("");
 if (falhas) {
   console.log(falhas + " de " + total + " verificacoes FALHARAM");

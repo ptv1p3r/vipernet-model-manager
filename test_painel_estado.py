@@ -313,6 +313,31 @@ def test_endpoint(tmp: Path) -> None:
         r = cliente.post(base + "/config", json={"config": {"perfis": {}}, "rev": rev2})
         verificar("POST sem perfis: 400", r.status_code == 400, str(r.status_code))
 
+        # O gesto do dono, medido a 2026-11-08 08:28:43: mudar a lingua no seletor
+        # e gravar o formulario logo a seguir. A lingua vive no config, logo
+        # grava-la muda o `rev`; se a resposta do /idioma nao o devolvesse, o
+        # editor aberto ficava com a versao anterior e o "Gravar" seguinte levava
+        # 409 a acusar uma mudanca que o proprio painel tinha feito.
+        r = cliente.post(base + "/idioma", json={"idioma": "en"})
+        verificar("POST idioma: 200", r.status_code == 200, str(r.status_code))
+        corpo_idioma = r.json()
+        verificar("POST idioma: devolve o rev novo", bool(corpo_idioma.get("rev")),
+                  str(sorted(corpo_idioma)))
+        lido = cliente.get(base + "/config").json()
+        verificar("POST idioma: o rev devolvido e o do disco",
+                  corpo_idioma.get("rev") == lido["rev"],
+                  "%s != %s" % (corpo_idioma.get("rev"), lido["rev"]))
+        doc = json.loads(json.dumps(lido["config"]))
+        doc["idioma"] = "en"
+        r = cliente.post(base + "/config", json={"config": doc, "rev": corpo_idioma["rev"]})
+        verificar("gravar depois de mudar a lingua: 200", r.status_code == 200,
+                  str(r.status_code) + " " + r.text[:160])
+        verificar("gravar depois de mudar a lingua: idioma mantido",
+                  json.loads(tmp.read_text()).get("idioma") == "en")
+        # Deixa o fixture como estava, para os testes seguintes nao herdarem a
+        # lingua trocada.
+        cliente.post(base + "/idioma", json={"idioma": "pt"})
+
         # As chaves de adaptacao a modelos arbitrarios chegam ao disco e voltam
         # intactas. Se a validacao do painel as descartasse em silencio, o
         # painel e a config ficavam com dois comportamentos e nenhum aviso —
