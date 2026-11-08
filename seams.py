@@ -14,6 +14,8 @@ plugin falso com um import por candidato.
   agent.credential_pool.load_pool              PUBLICO  -> runtime_api_key,
                                                           runtime_base_url
   agent.secret_scope.get_secret                PUBLICO  (escopo do perfil)
+  hermes_cli.config.get_compatible_custom_...   PUBLICO  (base_url + key_env
+                                                          de providers.<name>)
   hermes_cli.auth.resolve_external_process_...  PUBLICO  (provider de subprocesso)
   hermes_cli.runtime_provider.resolve_...     BLOQUEADO (era o que havia)
   hermes_cli.model_switch.switch_model        BLOQUEADO (mesmo com credenciais
@@ -94,6 +96,83 @@ def _da_pool(provider: str) -> dict[str, Any] | None:
     return None
 
 
+def _segredo(nome: str) -> str:
+    """Le um segredo pelo caminho do proprio Hermes (escopo do perfil).
+
+    `agent.secret_scope.get_secret` e' a via documentada (regra 10 do catalogo):
+    honra o perfil activo. `UnscopedSecretError` significa processo de perfil
+    unico, em que a credencial entra pelo ambiente — e' o unico caso em que se
+    le `os.environ`, e e' o que o proprio nucleo faz (`_scoped_key_env`).
+    """
+    if not nome:
+        return ""
+    try:  # superficie publica
+        from agent.secret_scope import UnscopedSecretError, get_secret  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return ""
+    try:
+        return (get_secret(nome) or "").strip()
+    except UnscopedSecretError:
+        import os  # noqa: PLC0415
+
+        return (os.getenv(nome) or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _de_config_custom(provider: str) -> dict[str, Any] | None:
+    """Provider custom declarado em `providers.<name>`: `base_url` + `key_env`.
+
+    A pool de credenciais so tem o que passou por `hermes auth add`. Um provider
+    custom declara a chave por `key_env` e o endpoint por `base_url` — sem esta
+    via, um provider assim aparece como «sem credencial» mesmo com a chave
+    carregada no processo, e o teste de ligacao falha com a rota a responder
+    200. Foi o caso medido do `inception` (`key_env: INCEPTION_API_KEY`).
+
+    Le-se `hermes_cli.config.get_compatible_custom_providers`, que e' superficie
+    publica (esta na lista `_PUBLIC` do proprio validador, ao contrario de
+    `agent.custom_entry_pool`): a lista ja vem normalizada de `providers:` e da
+    lista legada `custom_providers`.
+    """
+    alvo = (provider or "").strip().lower()
+    if not alvo:
+        return None
+    try:  # superficie publica
+        from hermes_cli.config import get_compatible_custom_providers  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        entradas = get_compatible_custom_providers() or []
+    except Exception:  # noqa: BLE001
+        return None
+    for entrada in entradas:
+        if not isinstance(entrada, dict):
+            continue
+        nomes = {
+            str(entrada.get("name") or "").strip().lower(),
+            str(entrada.get("provider_key") or "").strip().lower(),
+        }
+        if alvo not in nomes:
+            continue
+        base = str(entrada.get("base_url") or "").strip()
+        chave = str(entrada.get("api_key") or "").strip()
+        origem = f"providers.{alvo}"
+        if not chave:
+            chave = _segredo(str(entrada.get("key_env") or entrada.get("api_key_env") or "").strip())
+            if chave:
+                origem = f"{origem}/key_env"
+        if not (base or chave):
+            return None
+        return {
+            "provider": str(entrada.get("provider_key") or entrada.get("name") or alvo).strip().lower(),
+            "api_key": chave,
+            "base_url": base,
+            "api_mode": str(entrada.get("api_mode") or ""),
+            "source": origem,
+        }
+    return None
+
+
 def _de_subprocesso(provider: str) -> dict[str, Any] | None:
     """Providers servidos por subprocesso local (Codex / ChatGPT por subscricao).
 
@@ -129,7 +208,7 @@ def resolver_provider(provider: str, modelo: str) -> dict[str, Any]:
     credencial.
     """
     motivos: list[str] = []
-    for via in (_da_pool, _de_subprocesso):
+    for via in (_da_pool, _de_config_custom, _de_subprocesso):
         try:
             rota = via(provider)
         except Exception as exc:  # noqa: BLE001
