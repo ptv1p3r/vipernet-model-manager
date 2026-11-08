@@ -1291,6 +1291,17 @@ histerese e com a mesma trava:
 - Sem detecção e com tarefa viva, o turno **herda-a** e regista
   `tarefa_origem: herdada` com `tarefa_idade_turnos` — é o que permite medir se a
   herança está a colar demais sem ler a conversa.
+- Cada detecção grava a **prova** no ledger — `tarefa_termo` (o termo, tal como
+  está na config), `tarefa_termos` (todos os encontrados), `tarefa_texto_chars` e
+  `tarefa_texto_sha` (digest do texto **já sem contexto injectado**) — e a
+  herança transporta-a: um turno herdado continua a explicar-se a partir do
+  ledger. `nivel_origem` diz de onde veio o **nível**, que não é o mesmo que
+  `origem` (de onde veio o **modelo**).
+- Termo genérico não chega sozinho: `sensor`, `sensores`, `entidade`,
+  `entidades`, `automação`, `automações` só contam com companhia da mesma
+  tarefa na mesma mensagem. Medido a 2026-11-08 sobre 588 mensagens de 24 h: 88
+  turnos atribuídos a uma tarefa passaram a 9, e os 79 que saíram tinham apenas
+  termos genéricos.
 - O prazo conta desde a última **detecção**: herdar não o renova. Renovar deixava
   um «sim» de oito em oito turnos manter um modelo pago vivo sem fim.
 - Termina por tarefa nova, por prazo (`expira_turnos` **ou** `expira_min`), ou por

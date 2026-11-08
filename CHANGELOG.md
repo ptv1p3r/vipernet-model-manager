@@ -9,6 +9,37 @@ what that reviewer reads first.
 Older history (before 3.45.0) lives in `git log` — the repository was published
 with one automatic commit per change, each with a per-file summary.
 
+## 3.47.10 — 2026-11-08
+
+- **A atribuição de tarefa ficou auditável — e o termo genérico deixou de
+  chegar sozinho.** O registo de utilização dizia `origem: tarefa` e nada mais:
+  nem qual tarefa, nem se vinha deste turno, nem **que termo** a tinha fixado. O
+  dono leu `tarefa` num turno de trabalho no model manager, sem actividade em
+  Home Assistant, e não havia como responder. O ledger passa a levar
+  `tarefa_termo`, `tarefa_termos`, `tarefa_texto_chars` e `tarefa_texto_sha`
+  (digest do texto já sem contexto injectado), a herança transporta a prova, e
+  `nivel_origem` separa a origem do **nível** da origem do **modelo** (que é o
+  que `origem` sempre disse).
+- **`sensor`, `entidade` e `automação` são termos genéricos**: aparecem em
+  trabalho de plugin, de código e de documentação. Sozinhos associavam a tarefa
+  e mandavam o turno para o modelo dela. Agora só contam com companhia da mesma
+  tarefa na mesma mensagem. Medido a 2026-11-08 sobre 588 mensagens de 24 h de
+  `state.db`: 88 turnos atribuídos a uma tarefa → **9**; os 79 que saíram
+  tinham apenas termos genéricos.
+- **O painel diz a proveniência na célula**: `tarefa · home-assistant ·
+  «sensor»`, e `herdada 3t` quando o turno apenas herda; o `title` leva o nível
+  e o digest, para a linha ser reproduzível. Antes a célula mostrava só
+  `tarefa`.
+- **O contexto anexado deixou de poder classificar o pedido**: num wrapper de
+  pesquisa o pedido vem depois de `</context>` e o documento anexado não é texto
+  do utilizador. Medido: neutro nas 588 mensagens de 24 h (0 mudanças) — fica
+  como defesa.
+- **Guardas**: `test_logica.js` 337 → 344 (rótulo e detalhe da origem);
+  `test_tarefa_prova.py` novo, 10 testes (genérico sozinho, dois
+  genéricos, prova e digest estáveis, memória injectada, documento anexado,
+  herança a transportar a prova, turno de plugin sem tarefa); Python 30/30
+  ficheiros rc 0; painel `204/204`; `test_painel_estado.py` 100.
+
 ## 3.47.9 — 2026-11-08
 
 - **O campo `provider` de uma rota passou a texto livre com sugestões.** Era uma

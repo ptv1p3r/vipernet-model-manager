@@ -1292,6 +1292,17 @@ history and with the same lock:
 - Without detection and with a live task, the turn **inherits it** and logs
   `tarefa_origem: herdada` with `tarefa_idade_turnos` — this is what allows measuring whether
   inheritance is sticking too much without reading the conversation.
+- Every detection records its **proof** in the ledger — `tarefa_termo` (the term,
+  as written in the config), `tarefa_termos` (all it found), `tarefa_texto_chars`
+  and `tarefa_texto_sha` (digest of the text **with injected context already
+  removed**) — and inheritance carries it, so an inherited turn keeps explaining
+  itself from the ledger. `nivel_origem` says where the **level** came from,
+  which is not the same as `origem` (where the **model** came from).
+- A generic term is not enough on its own: `sensor`, `sensores`, `entidade`,
+  `entidades`, `automação`, `automações` only count with company from the same
+  task in the same message. Measured 2026-11-08 over 588 messages of 24 h: 88
+  turns assigned to a task dropped to 9, and the 79 that left had only generic
+  terms.
 - The deadline counts from the last **detection**: inheriting does not renew
   it. Renewing would let an "every eighth turn yes" keep a paid model alive
 - It ends by new task, by deadline (`expira_turnos` **or** `expira_min`), or by
