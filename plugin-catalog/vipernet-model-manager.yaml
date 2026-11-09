@@ -17,31 +17,27 @@
 # descartadas em silencio.
 #
 # ---------------------------------------------------------------------------
-# ESTADO MEDIDO 2026-11-08 20:36 WET
+# ESTADO MEDIDO 2026-11-09 21:00 WET
 # ---------------------------------------------------------------------------
-# Pin: `main` do repositorio do plugin depois do merge do PR #29, que leva a
-#   3.47.15. Desde o pin anterior (437304cf / 3.47.13):
-#   - 3.47.14 — o ensaio em sombra deixa de roubar a superficie fixada: quando
-#     a regra de superficie escolheu a entrada (`origem == "superficie"`), o
-#     ensaio recusa com motivo `superficie_fixada` em vez de substituir o
-#     modelo. Antes, a superficie cron fixava `inception-mercury-3` e o ensaio
-#     aplicava por cima.
-#   - 3.47.15 — o pin do turno deixava de honrar a ordem nos pedidos seguintes:
-#     o bloco da superficie estava atras de `if entrada is None or rota is None`,
-#     e num turno de varios pedidos o pin reutilizado preenchia entrada e rota
-#     antes de se chegar la'. Nesses passos a origem ficava em `modelo` e o
-#     ensaio aplicava. Agora a regra corre sempre (salvo marcador explicito na
-#     mensagem) e, quando substitui o pin, marca `pin: substituido_pela_superficie`.
-#   Medido no ledger, mesmo job de cron `1b79fd3ea275`, antes e depois:
-#     antes — 13 passos, 1 em `origem=superficie` (mercury-3), 12 em
-#       `origem=sombra` (nemotron-ultra-free) com `pin=reutilizado`;
-#     depois — 20 passos, 20 em `origem=superficie` com `modelo=mercury-3`
-#       (1 `pin=novo`, 19 `pin=substituido_pela_superficie`), motor 3.47.15.
-#   Nao ha mudanca de comportamento quando nenhuma superficie esta fixada e
-#   nenhuma tarefa esta associada: o ensaio aplica como antes.
-#   Regra 2 e regra 9 como abaixo; `hermes plugins validate` no pin responde
-#   `Validation passed` (16 verificacoes, `no core override`, security scan
-#   `safe`).
+# Pin: `main` do repositorio do plugin depois do merge do PR #32, que leva a
+#   3.47.16. A arvore desse merge (cf1b372) e' identica a do head do PR que foi
+#   testado (`git diff --stat 0018d0f cf1b372` vazio). Desde o pin anterior
+#   (6884fb77 / 3.47.15):
+#   - 3.47.16 — botao «Remover» por modelo na pagina do modelo, no painel do
+#     perfil: o primeiro clique pede confirmacao e o segundo remove. O botao
+#     nao existe nas rotas de criacao e fica desactivado durante gravacao,
+#     validacao e sonda de ligacao.
+#   - 3.47.16 — `POST /modelo/remover` recusa ANTES de escrever quando alguma
+#     `analise.superficies.<nome>` aponta para a rota que se quer remover, e
+#     devolve a lista do que a desbloqueia; nenhuma superficie fica orfa.
+#   Medido no head testado do PR #32 (0018d0f): 31 ficheiros test_*.py rc=0,
+#     selftest 209/209, painel 218/218, node 365/365 (inclui «remover: fica
+#     desactivado durante uma gravacao»), `node --check` OK, test_catalogo 9/9.
+#   `hermes plugins validate` no pin responde `Validation passed` (no core
+#   override, security scan `safe`).
+#   Estado publico do pin, lido por `raw.githubusercontent.com` (nao por
+#   auto-relato do espelho): `plugin.yaml` e `dashboard/manifest.json` ja'
+#   dizem 3.47.16 no sha cf1b372.
 #
 # Regra 2 (repo clonavel por https, anonimamente): OK no GitHub.
 #   Provado por clone anonimo, nao pelo auto-relato do espelho:
@@ -71,13 +67,13 @@
 #   pin. O nome completo do dono sai substituido pelo handle publico
 #   (`proldan`) nas imagens, e a substituicao esta declarada nos dois README.
 #   As imagens sao as da 3.47.8: abrem no sha novo (os bytes sao os mesmos,
-#   `assets/` nao mudou desde entao) mas nao mostram o botao «Testar ligacao»
-#   nem o campo de provider em texto livre. Fica declarado — recapturar exige
-#   uma sessao com o painel a 3.47.15 em carga.
+#   `assets/` nao mudou desde entao) mas nao mostram o botao «Remover» por
+#   modelo nem o botao «Testar ligacao». Fica declarado — recapturar exige
+#   uma sessao com o painel a 3.47.16 em carga.
 #
 # NOTA DE CONSTRUCAO: o `sha` abaixo nao pode apontar para o commit que contem
 #   esta versao do ficheiro (um ficheiro nao se cita a si mesmo). Aponta para o
-#   `main` que ja' traz a 3.47.15; o commit que acrescenta esta versao da entrada
+#   `main` que ja' traz a 3.47.16; o commit que acrescenta esta versao da entrada
 #   difere desse pin apenas neste ficheiro.
 # ---------------------------------------------------------------------------
 
@@ -85,8 +81,8 @@ name: vipernet-model-manager
 repo: https://github.com/ptv1p3r/vipernet-model-manager.git
 
 # Commit EXATO do catalogo, 40 hex — resolvido por `git ls-remote` no GitHub,
-# nunca completado de memoria. `main` do GitHub relido a 2026-11-08: 6884fb77.
-sha: "6884fb77058521c1e3320bfb4da90dd01215ce03"
+# nunca completado de memoria. `main` do GitHub relido a 2026-11-09: cf1b3726.
+sha: "cf1b372679e71f9766dcc65d03957550230d99fe"
 
 description: >-
   Picks the provider and model for each turn from the profile's own catalog,
@@ -99,16 +95,16 @@ maintainer: proldan
 tier: community
 category: models
 requires_hermes: ">=0.22.0"
-version: "3.47.15"
+version: "3.47.16"
 title: Vipernet Model Manager
 readme: true
 
 # Galeria de /docs/plugins/vipernet-model-manager. URLs no sha do pin: um bump
 # de pin obriga a re-pinar as imagens (regra 4).
 screenshots:
-  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/6884fb77058521c1e3320bfb4da90dd01215ce03/assets/01-visao-geral.png
-  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/6884fb77058521c1e3320bfb4da90dd01215ce03/assets/02-configuracao.png
-  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/6884fb77058521c1e3320bfb4da90dd01215ce03/assets/03-registo.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/cf1b372679e71f9766dcc65d03957550230d99fe/assets/01-visao-geral.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/cf1b372679e71f9766dcc65d03957550230d99fe/assets/02-configuracao.png
+  - https://raw.githubusercontent.com/ptv1p3r/vipernet-model-manager/cf1b372679e71f9766dcc65d03957550230d99fe/assets/03-registo.png
 
 # Capacidades = o que o plugin regista de facto em `__init__.py`. O validador
 # confirma-as no pin (`declared hooks/middleware — matches registrations`).
