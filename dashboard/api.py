@@ -1839,6 +1839,110 @@ def modelo_post(corpo: Any = Body(default=None)) -> JSONResponse:
     })
 
 
+# ------------------------------------------------------ remover uma rota
+# Um botao na pagina de um modelo: tira a rota do catalogo do perfil.
+#
+# A ordem e a decisao: existir -> nao estar referida -> gravar. Verificar as
+# referencias ANTES de escrever nao e redundante com o `_escrever` (que valida
+# e recusaria): a mensagem do schema nomeia o caminho (`perfis.default.analise.
+# superficies.cron: entrada desconhecida ...`) e nao diz ao utilizador que a
+# cura e apontar a superficie a outra rota. Uma recusa que nao diz o que fazer
+# seguinte e meia recusa.
+
+
+class _RotaEmUso(Exception):
+    """A rota e chamada por regras do perfil; remover deixaria a config invalida."""
+
+    def __init__(self, referencias: list[str]):
+        super().__init__(", ".join(referencias))
+        self.referencias = list(referencias)
+
+
+@router.post("/modelo/remover")
+def modelo_remover(corpo: Any = Body(default=None)) -> JSONResponse:
+    """Tira uma rota do catalogo de um perfil, ou diz porque nao pode.
+
+    Nao ha remocao parcial: ou a rota sai e a config fica valida, ou nada muda.
+    O `_escrever` grava num `.tmp` e troca com `os.replace`, portanto uma
+    excepcao a meio nao deixa ficheiro pela metade.
+    """
+    corpo = _corpo_objeto(corpo)
+    perfil = str(corpo.get("perfil") or "").strip()
+    id_rota = str(corpo.get("id") or "").strip()
+    rev = str(corpo.get("rev") or "")
+    if not perfil:
+        raise HTTPException(status_code=400, detail=t("falta 'perfil'"))
+    if not id_rota:
+        raise HTTPException(status_code=400, detail=t("falta 'id'"))
+
+    def referencias(bloco: dict[str, Any]) -> list[str]:
+        """Regras deste perfil que chamam a rota pelo id.
+
+        So `analise.superficies.<nome>.entrada`: e o unico sitio da config que
+        aponta para uma rota por id. As tarefas apontam para rotas pelo mapa
+        `tarefas` DENTRO da entrada, e por isso desaparecem com ela.
+        """
+        refs: list[str] = []
+        regras = ((bloco.get("analise") or {}).get("superficies") or {})
+        if isinstance(regras, dict):
+            for nome, regra in sorted(regras.items()):
+                if isinstance(regra, dict) and str(regra.get("entrada") or "") == id_rota:
+                    refs.append("analise.superficies." + str(nome))
+        return refs
+
+    def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
+        dados, catalogo = _perfil_da_config(cfg, perfil)
+        posicao = _entrada_por_id(catalogo, id_rota)
+        if posicao is None:
+            raise HTTPException(
+                status_code=404,
+                detail=t("modelo {id!r} ja nao existe no catalogo de {perfil!r}",
+                         id=id_rota, perfil=perfil))
+        pendentes = referencias(dados)
+        if pendentes:
+            raise _RotaEmUso(pendentes)
+        dados["catalogo"] = [e for i, e in enumerate(catalogo) if i != posicao]
+        return cfg
+
+    try:
+        novo, rev_novo = gestor.alterar(mutar, rev_esperado=rev or None)
+    except gestor.Conflito as exc:
+        return JSONResponse(status_code=409, content=_corpo_conflito(
+            t("a configuração mudou desde que esta página a leu"), exc.rev_actual))
+    except _RotaEmUso as exc:
+        # 200 com `ok: false` de proposito: o `fetch` do painel nao entrega o
+        # corpo de uma resposta HTTP de erro ao chamador, e a lista das regras
+        # que chamam a rota e o que o utilizador precisa de ver.
+        msg = t("a rota {id!r} e chamada por {refs} — aponte primeiro essas "
+                "regras a outra rota e so depois a remova",
+                id=id_rota, refs=", ".join(exc.referencias))
+        return JSONResponse(content={
+            "ok": False, "motivo": "em_uso", "detail": msg, "erro": msg,
+            "id": id_rota, "perfil": perfil, "referencias": exc.referencias,
+            "rev": _rev(_cfg()),
+        })
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code,
+                            content={"ok": False, "detail": exc.detail})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False,
+            "detail": t("nao removeu: {erro}", erro=str(exc)),
+            "erros": [p for p in str(exc).split("; ") if p],
+        })
+
+    # Releitura independente: a prova de que saiu e o ficheiro, nao a intencao.
+    confirmado = _cfg()
+    _, catalogo_lido = _perfil_da_config(confirmado, perfil)
+    if _entrada_por_id(catalogo_lido, id_rota) is not None:  # pragma: no cover
+        raise HTTPException(status_code=500,
+                            detail=t("removeu mas a rota continua na releitura"))
+    return JSONResponse(content={
+        "ok": True, "perfil": perfil, "id": id_rota,
+        "restantes": len(catalogo_lido), "rev": _rev(confirmado),
+    })
+
+
 # ------------------------------------------------------ sonda de ligacao
 # Um botao na pagina de um modelo: "testar a ligacao" chama o provider com o par
 # provider/modelo que esta no formulario e diz se responde — antes de gravar.

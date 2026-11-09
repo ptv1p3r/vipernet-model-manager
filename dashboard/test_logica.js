@@ -1986,9 +1986,10 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
 
   const chaves = Object.keys(I.PT_EN);
   // A contagem e um alarme de deriva: subir a mao quando se acrescentam chaves e
-  // o que obriga a olhar para o dicionario. +9 na 3.47.12 (sonda de ligacao).
-  check("i18n: o dicionario tem as 488 chaves medidas",
-        chaves.length === 488, "tem " + chaves.length);
+  // o que obriga a olhar para o dicionario. +9 na 3.47.12 (sonda de ligacao),
+  // +9 na 3.47.16 (remover uma rota do catalogo).
+  check("i18n: o dicionario tem as 497 chaves medidas",
+        chaves.length === 497, "tem " + chaves.length);
   check("i18n: nenhuma traducao vazia",
         chaves.every(function (k) { return String(I.PT_EN[k]).trim() !== ""; }));
   // Nomes proprios e termos tecnicos ficam iguais nas duas linguas — o que nao
@@ -2191,6 +2192,68 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   check("idioma no texto: array nao e documento de config", A("[1,2]", "en").aplicado === false);
   check("idioma no texto: vazio e null nao rebentam",
         A(null, "en").aplicado === false && A("", "en").aplicado === false);
+})();
+
+// Remover uma rota do catalogo: o botao tem de chegar ao ecra e nao pode
+// aparecer onde nao ha nada para remover. Renderiza-se a pagina com o `h`
+// falso — o que aqui se prova e a arvore que o React receberia, nao uma string.
+(function () {
+  const P = T.PaginaModelo;
+  check("remover: a pagina do modelo esta exportada para o teste", typeof P === "function");
+  const base = {
+    perfil: "default",
+    estado: {},
+    opcoes: { tarefas: [], providers: [] },
+    form: { id: "deepseek-flash", provider: "deepseek", modelo: "deepseek-chat" },
+    onCampo: function () {},
+    onValidar: function () {},
+    onGravar: function () {},
+    onDescartar: function () {},
+    onPedirRemocao: function () {},
+    onCancelarRemocao: function () {},
+    onRemover: function () {},
+  };
+  const guardada = P(Object.assign({}, base));
+  const textoGuardada = textoDaArvore(guardada);
+  check("remover: rota gravada mostra o botao", textoGuardada.indexOf("Remover") !== -1);
+  const botao = procurarNaArvore(guardada, function (no) {
+    return no.props && no.props.className === "vmm-btn-perigo";
+  });
+  check("remover: o botao leva a classe destrutiva", !!botao);
+  check("remover: o primeiro clique pede confirmacao, nao remove",
+        !!botao && typeof botao.props.onClick === "function"
+        && botao.props.onClick === base.onPedirRemocao);
+  check("remover: ainda nao ha confirmacao na arvore",
+        textoGuardada.indexOf("Confirmar remoção") === -1);
+
+  const nova = P(Object.assign({}, base, { novo: true, form: { id: "" } }));
+  check("remover: rota nova nao tem botao de remover",
+        textoDaArvore(nova).indexOf("Remover") === -1
+        && !procurarNaArvore(nova, function (no) {
+          return no.props && no.props.className === "vmm-btn-perigo";
+        }));
+
+  const aConfirmar = P(Object.assign({}, base, { confirmarRemocao: true }));
+  const textoConfirma = textoDaArvore(aConfirmar);
+  check("remover: a segunda etapa diz o que vai acontecer",
+        textoConfirma.indexOf("Confirmar remoção") !== -1);
+  check("remover: a segunda etapa deixa cancelar", textoConfirma.indexOf("Cancelar") !== -1);
+  const confirma = procurarNaArvore(aConfirmar, function (no) {
+    return no.props && no.props.className === "vmm-btn-perigo";
+  });
+  check("remover: a segunda etapa chama a remocao",
+        !!confirma && confirma.props.onClick === base.onRemover);
+  const cancelar = procurarNaArvore(aConfirmar, function (no) {
+    return no.props && no.props.onClick === base.onCancelarRemocao;
+  });
+  check("remover: cancelar volta atras sem chamar a API", !!cancelar);
+
+  const aGravar = P(Object.assign({}, base, { aGravar: true }));
+  const desactivado = procurarNaArvore(aGravar, function (no) {
+    return no.props && no.props.className === "vmm-btn-perigo";
+  });
+  check("remover: fica desactivado durante uma gravacao",
+        !!desactivado && desactivado.props.disabled === true);
 })();
 
 console.log("");
