@@ -253,6 +253,13 @@ _EN: dict[str, str] = {
         "the model needs an id (surfaces and tasks refer to it by that id)",
     "modelo {id!r} ja nao existe no catalogo de {perfil!r}":
         "model {id!r} no longer exists in the catalogue of {perfil!r}",
+    "falta 'id'": "missing 'id'",
+    "nao removeu: {erro}": "did not remove: {erro}",
+    "a rota {id!r} e chamada por {refs} — aponte primeiro essas regras a outra rota e so depois a remova":
+        ("route {id!r} is called by {refs} — point those rules at another route "
+         "first, and only then remove it"),
+    "removeu mas a rota continua na releitura":
+        "removed, but the route is still there when read back",
     "ja existe um modelo com o id {id!r} no perfil {perfil!r}":
         "a model with id {id!r} already exists in profile {perfil!r}",
     "gravou mas a rota não aparece na releitura":

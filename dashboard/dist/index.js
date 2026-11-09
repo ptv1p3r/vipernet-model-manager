@@ -58,6 +58,10 @@
     " termos": " terms",
     " turnos": " turns",
     " turnos · ": " turns · ",
+    " — ficam ": " — ",
+    " — o gestor já não o tem": " — the manager no longer has it",
+    " removido de ": " removed from ",
+    " rotas no catálogo": " routes left in the catalogue",
     " turnos: ": " turns: ",
     " vez": " time",
     " · 0 erros": " · 0 errors",
@@ -126,6 +130,11 @@
     "Criar um modelo novo no catálogo de ": "Create a new model in the catalogue of ",
     "Descartar": "Discard",
     "Descartar e abrir outra vez para ver o estado actual.": "Discard and reopen to see the current state.",
+    "Confirmar remoção": "Confirm removal",
+    "Não removeu: ": "Did not remove: ",
+    "Remover": "Remove",
+    "a remover…": "removing…",
+    "recusado pelo gestor": "refused by the manager",
     "Desligado — ligar": "Off — turn on",
     "Desligado, o turno volta a ser decidido pelo nível": "Off, the turn is decided by the level again",
     "Editar as opções de ": "Edit the options of ",
@@ -807,7 +816,26 @@
     delete resto.headers;
     return fetch(BASE + caminho, Object.assign({ credentials: "include", headers: headers }, resto))
       .then(function (r) {
-        if (!r.ok) throw new Error(r.status + ": " + r.statusText);
+        if (!r.ok) {
+          // O corpo de uma resposta de erro traz a razão em `detail` (ou `erro`)
+          // e era deitado fora: o ecrã mostrava «409: Conflict» e o utilizador
+          // ficava sem saber o que corrigir. Lê-se o corpo e põem-se três coisas
+          // no erro — `.status` (que o `ehConflito` já procurava e nunca via),
+          // `.detalhe` com a frase e `.corpo` para quem precise da lista, como a
+          // recusa de remover uma rota, que nomeia as regras que lhe chamam.
+          return r.text().then(function (texto) {
+            var corpo = null;
+            try { corpo = JSON.parse(texto); } catch (eCorpo) { corpo = null; }
+            var razao = corpo && typeof corpo === "object"
+              ? String(corpo.detail || corpo.erro || corpo.message || "")
+              : "";
+            var erro = new Error(razao || (r.status + ": " + r.statusText));
+            erro.status = r.status;
+            erro.detalhe = razao;
+            erro.corpo = corpo;
+            throw erro;
+          });
+        }
         return r.json();
       });
   }
@@ -1541,7 +1569,36 @@
             variant: "ghost",
             onClick: props.onDescartar,
             title: "Voltar ao painel sem gravar as alterações",
-          }, "Descartar")
+          }, "Descartar"),
+          // Remover fica no fim, separado dos outros: é o único botão da página
+          // que tira uma coisa do perfil, e o primeiro clique não o faz. Só
+          // existe em rotas já gravadas — uma rota nova não tem o que remover.
+          novo ? null : (props.confirmarRemocao
+            ? h(Button, {
+                size: "sm",
+                variant: "default",
+                className: "vmm-btn-perigo",
+                onClick: props.onRemover,
+                disabled: props.aGravar || props.aCarregar,
+                title: "Tira esta rota do catálogo do perfil — não se desfaz",
+              }, props.aGravar ? "a remover…" : "Confirmar remoção")
+            : h(Button, {
+                size: "sm",
+                variant: "outline",
+                className: "vmm-btn-perigo",
+                onClick: props.onPedirRemocao,
+                disabled: props.aGravar || props.aCarregar,
+                title: "Tira esta rota do catálogo do perfil — pede confirmação",
+              }, "Remover")),
+          novo ? null : (props.confirmarRemocao
+            ? h(Button, {
+                size: "sm",
+                variant: "ghost",
+                onClick: props.onCancelarRemocao,
+                disabled: props.aGravar,
+                title: "Volta atrás sem remover nada",
+              }, "Cancelar")
+            : null)
         )
       ),
 
@@ -3543,6 +3600,12 @@
     // de um par provider/modelo que já não é o que está no ecrã.
     const [modeloSonda, setModeloSonda] = useState(null);
     const [modeloASondar, setModeloASondar] = useState(false);
+    // Remoção de uma rota: duas etapas. Não há desfazer para o gesto (o backup
+    // do `gravar` existe, mas restaurá-lo é trabalho de outra pessoa), e um
+    // botão destrutivo de um só clique na fila das acções ao lado de «Gravar»
+    // era um acidente à espera de acontecer. A segunda etapa diz o que vai
+    // acontecer; cancelar volta ao botão simples.
+    const [modeloConfirmarRemocao, setModeloConfirmarRemocao] = useState(false);
     // Um perfil aberto na sua propria pagina. Estado separado do da pagina de
     // um modelo porque as duas nao se sobrepoem: cada uma tem o seu early
     // return e os seus proprios buffers — partilhar `form` obrigaria a limpar
@@ -3856,6 +3919,7 @@
       setModeloErros([]);
       setModeloOk(null);
       setModeloSonda(null);
+      setModeloConfirmarRemocao(false);
       // O aviso verde do painel fala da gravacao anterior; deixa-lo de pe atras
       // desta pagina faz parecer que o que se esta a editar ja foi gravado.
       setValidacaoOk(null);
@@ -3981,6 +4045,58 @@
         .then(function () { setModeloAGravar(false); });
     }
 
+    // Remover: tira a rota do catalogo do perfil, em duas etapas. O backend
+    // recusa — e nomeia — as regras de superficie que chamam a rota pelo id: a
+    // cura e apontar essas regras a outra rota na pagina do perfil, e uma
+    // remocao que passasse por cima delas deixava o perfil a apontar para o nada.
+    function pedirRemocao() { setModeloConfirmarRemocao(true); }
+    function cancelarRemocao() { setModeloConfirmarRemocao(false); }
+
+    function removerModelo() {
+      const aberto = modeloAberto || {};
+      if (!aberto.id || aberto.novo) return;
+      setModeloErros([]);
+      setModeloOk(null);
+      setModeloErro(null);
+      setModeloAGravar(true);
+      pedir("/modelo/remover", {
+        method: "POST",
+        body: { perfil: aberto.perfil, id: aberto.id, rev: modeloRev },
+      })
+        .then(function (r) {
+          if (r && r.ok === false) {
+            const refs = (r && r.referencias) || [];
+            if (refs.length) setModeloErros(refs);
+            setModeloErro(T("Não removeu: ")
+              + String((r && (r.detail || r.erro)) || T("recusado pelo gestor")));
+            return;
+          }
+          const saiu = (r && r.id) || aberto.id;
+          const restantes = r && typeof r.restantes === "number" ? r.restantes : null;
+          setModeloAberto(null);
+          setModeloForm({});
+          setModeloOpcoes({});
+          setModeloRev("");
+          setModeloConfirmarRemocao(false);
+          setModeloSonda(null);
+          setValidacaoOk(T("Modelo ") + saiu + T(" removido de ") + aberto.perfil
+            + (restantes === null
+              ? T(" — o gestor já não o tem")
+              : T(" — ficam ") + restantes + T(" rotas no catálogo")));
+          carregar();
+        })
+        .catch(function (e) {
+          const corpo = e && e.corpo;
+          const refs = (corpo && corpo.referencias) || [];
+          if (refs.length) setModeloErros(refs);
+          setModeloErro(ehConflito(e)
+            ? T("A configuração foi alterada noutro sítio desde que abriu esta página. ")
+              + T("Descartar e abrir outra vez para ver o estado actual.")
+            : T("Erro ao remover: ") + textoDoErro(e));
+        })
+        .then(function () { setModeloAGravar(false); });
+    }
+
     // Descartar e o unico caminho que abandona o formulario — sempre por accao
     // explicita do dono, nunca por um erro. Como no editor de configuracao,
     // nao deixa aviso: fechar sem gravar nao e um resultado a anunciar.
@@ -3992,6 +4108,8 @@
       setModeloErros([]);
       setModeloErro(null);
       setModeloOk(null);
+      setModeloSonda(null);
+      setModeloConfirmarRemocao(false);
       setValidacaoOk(null);
     }
 
@@ -4223,6 +4341,10 @@
         onValidar: validarModelo,
         onGravar: gravarModelo,
         onDescartar: descartarModelo,
+        confirmarRemocao: modeloConfirmarRemocao,
+        onPedirRemocao: pedirRemocao,
+        onCancelarRemocao: cancelarRemocao,
+        onRemover: removerModelo,
       });
     }
 
@@ -4377,6 +4499,9 @@
   // configuracao sao puras (sem React) e sao o sitio onde um erro se paga caro
   // — escrevem no bloco que o middleware le. Testadas em node, sem browser.
   if (typeof window !== "undefined" && window.__VMM_TEST__) {
+    // A pagina do modelo renderiza para uma arvore no `h` falso: e o que prova
+    // que o botao de remover chega ao ecra (e que nao chega numa rota nova).
+    window.__VMM_TEST__.PaginaModelo = PaginaModelo;
     window.__VMM_TEST__.lerJSON = lerJSON;
     window.__VMM_TEST__.ehConflito = ehConflito;
     window.__VMM_TEST__.rotuloOrigem = rotuloOrigem;

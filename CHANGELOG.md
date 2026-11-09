@@ -9,6 +9,38 @@ what that reviewer reads first.
 Older history (before 3.45.0) lives in `git log` — the repository was published
 with one automatic commit per change, each with a per-file summary.
 
+## 3.47.16 — 2026-11-09
+
+- **Cada modelo tem botão «Remover».** A página de uma rota do catálogo passa a
+  ter, no fim das acções, um botão que a tira do perfil. Em duas etapas: o
+  primeiro clique pede confirmação («Confirmar remoção» + «Cancelar»), porque é
+  o único gesto do painel que tira uma coisa do perfil e não há desfazer no ecrã.
+  Não aparece em rotas novas — uma rota que ainda não existe não tem o que
+  remover — e fica desactivado enquanto há gravação, validação ou sonda em curso.
+
+- **A remoção é recusada quando alguma superfície chama a rota.** `POST
+  /modelo/remover` verifica `analise.superficies.<nome>.entrada` **antes** de
+  escrever e devolve `ok: false` com a lista das regras que apontam para a rota.
+  O `_escrever` já validaria e recusaria (a config fica sempre válida), mas a
+  mensagem do schema diz o caminho e não diz que a cura é apontar essas regras a
+  outra rota — e uma recusa que não diz o que fazer a seguir é meia recusa. A
+  resposta vai com 200 e `ok: false` de propósito: o `fetch` do painel não
+  entrega o corpo de uma resposta HTTP de erro.
+
+- **O `pedir` já não deita fora a razão de um erro.** O painel mostrava
+  «409: Conflict» para qualquer recusa com corpo, incluindo as que já existiam
+  (gravar com `rev` velho, validação falhada). Passa a ler o corpo, põe a frase
+  em `.detalhe` e o objecto em `.corpo`, e `.status` — que o `ehConflito` já
+  procurava e nunca via num erro do `fetch` local. A mensagem antiga mantém-se
+  quando não há corpo, para não partir nenhum chamador.
+
+- Verificação: `python3 test_painel_estado.py` cobre os três desfechos (remove,
+  recusa por referência, rota inexistente) mais os 400 de campos em falta e o
+  409 de `rev` velho, contra a app FastAPI em memória — 120 verificações.
+  `node dashboard/test_logica.js` passa a 365, com 11 a renderizarem a página
+  (botão presente numa rota gravada, ausente numa rota nova, dois passos com
+  cancelamento) e o dicionário em 497 chaves.
+
 ## 3.47.15 — 2026-11-08
 
 - **A superfície fixada ganha também ao *pin* do turno.** O 3.47.14 fechou a

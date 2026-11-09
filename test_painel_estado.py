@@ -429,6 +429,94 @@ def test_endpoint(tmp: Path) -> None:
         gestor.directorio = original_dir  # type: ignore[assignment]
 
 
+def test_remover_modelo(tmp: Path) -> None:
+    """Remover uma rota do catalogo pelo botao da pagina do modelo.
+
+    Tres desfechos, todos medidos contra a app FastAPI em memoria e sempre numa
+    copia: (a) rota livre sai e desaparece do ficheiro; (b) rota chamada por uma
+    superficie e recusada com o nome da regra e NAO escreve; (c) rota que ja nao
+    existe da 404. A recusa por referencia e o caso que interessa: e o que
+    impede o perfil de ficar a apontar para o nada.
+    """
+    original_fc = gestor.ficheiro_config
+    original_dir = gestor.directorio
+    gestor.ficheiro_config = lambda: tmp  # type: ignore[assignment]
+    gestor.directorio = lambda: tmp.parent  # type: ignore[assignment]
+    try:
+        cliente = _app(tmp)
+        base = "/api/plugins/vipernet-model-manager"
+
+        rev = cliente.get(base + "/config").json()["rev"]
+        doc = json.loads(tmp.read_text(encoding="utf-8"))
+        # (a) rota livre no perfil `pessoal` — nenhuma superficie lhe chama.
+        antes = [e["id"] for e in doc["perfis"]["pessoal"]["catalogo"]]
+        alvo = "lightning-free"
+        verificar("remover: a fixture tem a rota livre", alvo in antes, str(antes))
+        sha_antes = hashlib.sha256(tmp.read_bytes()).hexdigest()
+
+        r = cliente.post(base + "/modelo/remover",
+                         json={"perfil": "pessoal", "id": alvo, "rev": rev})
+        verificar("remover rota livre: 200", r.status_code == 200, r.text[:200])
+        corpo = r.json()
+        verificar("remover rota livre: ok", corpo.get("ok") is True, str(corpo))
+        verificar("remover rota livre: diz quantas ficam",
+                  corpo.get("restantes") == len(antes) - 1, str(corpo.get("restantes")))
+        verificar("remover rota livre: rev novo devolvido",
+                  bool(corpo.get("rev")) and corpo.get("rev") != rev, str(corpo.get("rev")))
+        depois = [e["id"] for e in json.loads(tmp.read_text(encoding="utf-8"))["perfis"]["pessoal"]["catalogo"]]
+        verificar("remover rota livre: saiu do ficheiro", alvo not in depois, str(depois))
+        verificar("remover rota livre: os outros ficaram",
+                  [i for i in antes if i != alvo] == depois, str(depois))
+        verificar("remover rota livre: escreveu", sha_antes != hashlib.sha256(tmp.read_bytes()).hexdigest())
+
+        # (b) rota chamada pela superficie `cron` no perfil `default`.
+        rev = cliente.get(base + "/config").json()["rev"]
+        doc = json.loads(tmp.read_text(encoding="utf-8"))
+        sup = (doc["perfis"]["default"].get("analise") or {}).get("superficies") or {}
+        chamada = str((sup.get("cron") or {}).get("entrada") or "")
+        verificar("remover: a fixture tem superficie com entrada", bool(chamada), str(sup))
+        sha_antes = hashlib.sha256(tmp.read_bytes()).hexdigest()
+        contagem_antes = len(doc["perfis"]["default"]["catalogo"])
+
+        r = cliente.post(base + "/modelo/remover",
+                         json={"perfil": "default", "id": chamada, "rev": rev})
+        # 200 com ok=false de proposito: o fetch do painel nao entrega o corpo de
+        # uma resposta de erro, e a lista das regras e o que ha a mostrar.
+        verificar("remover rota em uso: 200 com ok=false",
+                  r.status_code == 200 and r.json().get("ok") is False, r.text[:200])
+        corpo = r.json()
+        verificar("remover rota em uso: motivo em_uso", corpo.get("motivo") == "em_uso", str(corpo.get("motivo")))
+        verificar("remover rota em uso: nomeia a superficie",
+                  corpo.get("referencias") == ["analise.superficies.cron"], str(corpo.get("referencias")))
+        verificar("remover rota em uso: a razao vem em detail",
+                  "analise.superficies.cron" in str(corpo.get("detail") or ""), str(corpo.get("detail")))
+        verificar("remover rota em uso: NAO escreveu",
+                  sha_antes == hashlib.sha256(tmp.read_bytes()).hexdigest())
+        verificar("remover rota em uso: o catalogo nao mudou",
+                  len(json.loads(tmp.read_text(encoding="utf-8"))["perfis"]["default"]["catalogo"]) == contagem_antes)
+
+        # (c) rota que ja nao existe.
+        r = cliente.post(base + "/modelo/remover",
+                         json={"perfil": "pessoal", "id": "nao-existe-esta-rota", "rev": rev})
+        verificar("remover rota inexistente: 404", r.status_code == 404, str(r.status_code))
+
+        # (d) pedidos sem os campos obrigatorios.
+        r = cliente.post(base + "/modelo/remover", json={"id": "x"})
+        verificar("remover sem perfil: 400", r.status_code == 400, str(r.status_code))
+        r = cliente.post(base + "/modelo/remover", json={"perfil": "pessoal"})
+        verificar("remover sem id: 400", r.status_code == 400, str(r.status_code))
+
+        # (e) rev velho: a aba antiga nao remove o que outra sessao mudou.
+        r = cliente.post(base + "/modelo/remover",
+                         json={"perfil": "pessoal", "id": "deepseek-flash", "rev": "rev-que-ja-nao-existe"})
+        verificar("remover com rev antigo: 409", r.status_code == 409, str(r.status_code))
+        verificar("remover com rev antigo: a razao e legivel",
+                  bool(str(r.json().get("detail") or "").strip()), str(sorted(r.json())))
+    finally:
+        gestor.ficheiro_config = original_fc  # type: ignore[assignment]
+        gestor.directorio = original_dir  # type: ignore[assignment]
+
+
 def main() -> int:
     test_rev()
     test_conflito()
@@ -440,6 +528,11 @@ def main() -> int:
         tmp = Path(td) / "config.json"
         tmp.write_bytes(origem.read_bytes())
         test_endpoint(tmp)
+    with tempfile.TemporaryDirectory() as td:
+        origem = Path("/opt/data/plugin-data/vipernet-model-manager/config.json")
+        tmp = Path(td) / "config.json"
+        tmp.write_bytes(origem.read_bytes())
+        test_remover_modelo(tmp)
     print("verificacoes ok: %d" % OK)
     if FALHAS:
         print("FALHAS (%d):" % len(FALHAS))

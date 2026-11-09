@@ -77,6 +77,18 @@
   flex-wrap: wrap;
 }
 
+/* Botao destrutivo: tira uma rota do catalogo. Nao e um «Descartar» — esse
+   abandona o formulario; este muda o perfil. A cor tem de o dizer antes de o
+   rato chegar la, e nao depois do clique. */
+.vmm-btn-perigo {
+  color: hsl(var(--destructive, 0 72% 51%));
+  border-color: hsl(var(--destructive, 0 72% 51%));
+}
+
+.vmm-btn-perigo:hover:not(:disabled) {
+  background: hsl(var(--destructive, 0 72% 51%) / 0.12);
+}
+
 /* Seletor de lingua: fica nas accoes do topo da pagina de configuracao, a
    esquerda dos botoes, e nao dentro de uma seccao — mudar de lingua tem de
    estar alcancavel sem rolar, e nao depende de nenhuma seccao estar aberta. */
