@@ -798,3 +798,93 @@
 .vmm-icone-perfil {
   margin-left: 0.35rem;
 }
+
+/* Painel do ensaio em sombra (ao lado do registo de utilizacao).
+   A barra e um div com largura em %: nao ha biblioteca de graficos no painel e
+   uma barra de progresso nao precisa de uma. A cor do estado distingue «a
+   correr» de «travado» — o mesmo numero com o mesmo aspeto leria-se como saude
+   igual nos dois casos. */
+.vmm-card-sombra {
+  border-color: hsl(var(--border, 214 32% 91%));
+  background: hsl(var(--muted, 210 40% 98%) / 0.35);
+}
+
+.vmm-sombra-progresso {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.vmm-sombra-braco {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.vmm-sombra-valor {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.vmm-barra {
+  position: relative;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: hsl(var(--border, 214 32% 91%));
+  overflow: hidden;
+}
+
+.vmm-barra-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: hsl(var(--primary, 221 83% 53%));
+  transition: width 0.3s ease;
+}
+
+.vmm-barra-completa {
+  background: hsl(var(--primary, 142 71% 45%));
+}
+
+.vmm-sombra-estado {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  text-transform: lowercase;
+}
+
+.vmm-sombra-a_correr {
+  color: hsl(142 71% 30%);
+  border-color: hsl(142 71% 45% / 0.4);
+  background: hsl(142 71% 45% / 0.12);
+}
+
+.vmm-sombra-travado,
+.vmm-sombra-sem_ritmo,
+.vmm-sombra-sem_selo,
+.vmm-sombra-sem_alvo {
+  color: hsl(35 92% 33%);
+  border-color: hsl(35 92% 50% / 0.4);
+  background: hsl(35 92% 50% / 0.12);
+}
+
+.vmm-sombra-concluido {
+  color: hsl(221 83% 40%);
+  border-color: hsl(221 83% 53% / 0.4);
+  background: hsl(221 83% 53% / 0.12);
+}
+
+.vmm-sombra-sem-data {
+  color: hsl(35 92% 33%);
+}
+
+.vmm-sombra-previsao,
+.vmm-sombra-modelos {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  border-top: 1px solid hsl(var(--border, 214 32% 91%));
+  padding-top: 0.5rem;
+}
+

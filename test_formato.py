@@ -207,7 +207,9 @@ EXCECOES: dict[tuple[str, str], str] = {
 
 #: Funcoes do painel autorizadas a falar com o `Intl`: sao a fonte unica do
 #: locale no browser. Qualquer outra conversao numero->texto em JS e violacao.
-JS_AUXILIARES: frozenset[str] = frozenset({"fmtNum", "localeHora", "hora"})
+#: `fmtPct` e a gemea JS do `formato.percentagem` (valor em pontos percentuais)
+#: — o painel tem de mostrar percentagens pela mesma casa que o CLI.
+JS_AUXILIARES: frozenset[str] = frozenset({"fmtNum", "fmtPct", "localeHora", "hora"})
 
 TIPOS_NUMERICOS = frozenset("diouxXeEfFgG%")
 _RE_PCT_NUM = re.compile(r"%[-+ #0]*[0-9]*(?:\.[0-9]+)?[diouxXeEfFgG]")

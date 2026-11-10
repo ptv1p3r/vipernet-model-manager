@@ -559,6 +559,48 @@
     "temperatura": "temperature",
     "termos": "terms",
     "via": "via",
+
+    // Painel do ensaio em sombra (ao lado do registo de utilizacao). As chaves
+    // sao exactamente o texto que passa por `T()`: um fragmento concatenado a
+    // mao nao e traduzido, porque o `h()` so faz lookup exacto do filho inteiro.
+    "  percentagem, ritmo e modelos do ensaio A/B. Só aparece com o ensaio ligado.":
+      "  percentage, pace and models of the A/B trial. Only shown while the trial is on.",
+    "a correr": "running",
+    "travado": "stalled",
+    "concluído": "done",
+    "sem ritmo": "no pace",
+    "sem alvo": "no target",
+    "sem selo": "no seal",
+    "a ler o ledger do ensaio…": "reading the trial ledger…",
+    "progresso indisponível — o painel está a servir um payload antigo (falta reiniciar o contentor do dashboard)":
+      "progress unavailable — the panel is serving an old payload (the dashboard container needs a restart)",
+    "braço ": "arm ",
+    "chamadas medidas": "measured calls",
+    "falha ": "failure ",
+    "faltam ": "about ",
+    " dias a este ritmo": " days left at this pace",
+    "vivo": "alive",
+    "MORTO": "DEAD",
+    "nunca sondado": "never probed",
+    "provider não declarado no selo": "provider not declared in the seal",
+    "última chamada ": "last call ",
+    "previsão de fim: ": "end forecast: ",
+    "sem previsão de fim: ": "no end forecast: ",
+    "ritmo médio desde ": "average pace since ",
+    "/dia no braço a": "/day on arm a",
+    "/dia no braço b": "/day on arm b",
+    "  (cadência constante; o prazo é o do braço que atrasa)":
+      "  (constant pace; the deadline is the lagging arm's)",
+    "um braço sem vida mantém o ensaio parado (vmm sombra vida) — a data só existe com os dois braços vivos":
+      "a dead arm keeps the trial stopped (vmm sombra vida) — a date only exists with both arms alive",
+    "progresso do ensaio: ": "trial progress: ",
+    "  (manda o braço mais atrasado)": "  (the lagging arm rules)",
+    "modelos em uso": "models in use",
+    "unidade: ": "unit: ",
+    "alvo total ": "total target ",
+    " chamadas sem braço (fora da conta)": " calls without an arm (left out of the count)",
+    "vida medida em ": "liveness measured on ",
+    "chamada de ferramenta medida por exit_code": "tool call measured by exit_code",
   };
   let IDIOMA = IDIOMA_PADRAO;
 
@@ -667,6 +709,21 @@
         minimumFractionDigits: casas || 0,
         maximumFractionDigits: casas === undefined || casas === null ? 3 : casas,
       }).format(valor);
+    } catch (e) { return String(valor); }
+  }
+
+  // Percentagem a partir do valor JA em pontos percentuais (83,4 -> "83,4%"),
+  // a mesma convencao do `formato.percentagem` do Python. O simbolo vem do
+  // locale: juntar a unidade ao numero a mao e o defeito que `test_formato.py`
+  // recusa nesta camada.
+  function fmtPct(valor, casas) {
+    if (typeof valor !== "number" || !isFinite(valor)) return "";
+    try {
+      return new Intl.NumberFormat(localeHora(), {
+        style: "percent",
+        minimumFractionDigits: casas || 0,
+        maximumFractionDigits: casas === undefined || casas === null ? 0 : casas,
+      }).format(valor / 100);
     } catch (e) { return String(valor); }
   }
 
@@ -2576,6 +2633,178 @@
     );
   }
 
+  // Painel de progresso do ensaio em sombra, ao lado do registo de utilizacao.
+  //
+  // Duas regras do dono vivem aqui:
+  //  * so aparece com o ensaio LIGADO (`sombra.activo`) — e um painel sobre uma
+  //    funcionalidade que, desligada, nao esta a medir nada;
+  //  * os numeros sao medidos do ledger a cada leitura (`/sombra/progresso`),
+  //    nunca de um acumulado guardado: um numero herdado pode nao bater com
+  //    nenhuma contagem real.
+  //
+  // A data de fim so existe em `a_correr`. Com o ensaio travado (braco sem
+  // vida) mostra-se o motivo e NENHUMA data: uma data para um ensaio parado e
+  // uma promessa que ninguem pode cumprir.
+  const ESTADOS_SOMBRA = {
+    a_correr: "a correr",
+    travado: "travado",
+    concluido: "concluído",
+    sem_ritmo: "sem ritmo",
+    sem_alvo: "sem alvo",
+    sem_selo: "sem selo",
+  };
+
+  function dataCurta(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return String(iso);
+    try {
+      return d.toLocaleDateString(localeHora(), {
+        day: "2-digit", month: "2-digit", year: "numeric",
+      });
+    } catch (e) { return String(iso); }
+  }
+
+  // Regra de visibilidade, num sitio so: o painel do ensaio existe quando, e so
+  // quando, o interruptor do ensaio esta ligado. Fica como funcao pura para o
+  // teste a poder medir sem browser e sem estado do React.
+  function mostrarPainelSombra(estado) {
+    return !!(estado && estado.sombra && estado.sombra.activo);
+  }
+
+  function PainelSombra(props) {
+    const d = props.dados || null;
+    const s = (d && d.sombra) || props.sombra || {};
+    const p = (d && d.progresso) || null;
+    const estado = (p && p.estado) || "";
+    const aCarregar = !!props.aCarregar;
+
+    // Cabecalho: o bloco existe porque o ensaio esta ligado; dize-lo evita que
+    // se leia como um cartao permanente do painel.
+    const cabecalho = h("div", { className: "vmm-linha" },
+      h("div", null,
+        h("strong", null, "Ensaio em sombra — progresso"),
+        h("span", { className: "vmm-mudo" },
+          T("  percentagem, ritmo e modelos do ensaio A/B. Só aparece com o ensaio ligado."))),
+      estado
+        ? h("span", { className: "vmm-sombra-estado vmm-sombra-" + estado },
+            T(ESTADOS_SOMBRA[estado] || estado))
+        : null
+    );
+
+    if (!p) {
+      // Sem payload ainda (a ler) ou payload antigo (contentor por reiniciar):
+      // diz-se qual dos dois, em vez de desenhar zeros que parecem medidos.
+      return h(Card, { className: "vmm-card vmm-card-sombra" },
+        h(CardContent, { className: "vmm-card-content" },
+          cabecalho,
+          h("div", { className: "vmm-mudo" },
+            aCarregar
+              ? T("a ler o ledger do ensaio…")
+              : T("progresso indisponível — o painel está a servir um payload antigo (falta reiniciar o contentor do dashboard)"))
+        )
+      );
+    }
+
+    const alvo = p.alvo_por_braco || 0;
+    const bracos = [
+      { chave: "a", dados: p.braco_a || {} },
+      { chave: "b", dados: p.braco_b || {} },
+    ];
+
+    function barra(item) {
+      const b = item.dados || {};
+      const pct = typeof b.progresso === "number" ? b.progresso * 100 : null;
+      const largura = Math.max(0, Math.min(100, pct === null ? 0 : pct));
+      return h("div", { key: "braco-" + item.chave, className: "vmm-sombra-braco" },
+        h("div", { className: "vmm-linha" },
+          h("strong", null, T("braço ") + item.chave),
+          h("span", { className: "vmm-mudo" },
+            " " + (b.modelo || "?") + (b.provider ? " · " + b.provider : "")),
+          h("span", { className: "vmm-sombra-valor" },
+            pct === null ? "—" : fmtPct(pct, 2))
+        ),
+        h("div", { className: "vmm-barra" },
+          h("div", {
+            className: "vmm-barra-fill" + (largura >= 100 ? " vmm-barra-completa" : ""),
+            // Largura de CSS, nao texto para o utilizador: aqui o "%" e a
+            // unidade do estilo e nao uma percentagem apresentada.
+            style: { width: `${largura}%` },
+          })
+        ),
+        h("div", { className: "vmm-mudo" },
+          fmtNum(b.chamadas || 0) + " / " + fmtNum(alvo) + " " + T("chamadas medidas")
+          + (typeof b.taxa === "number" ? "  ·  " + T("falha ") + fmtPct(b.taxa * 100, 2) : "")
+          // Os dias por braco so entram com o ensaio a correr: num ensaio
+          // travado sao uma data disfarcada, e o braco morto nunca os cumpre.
+          + (estado === "a_correr" && b.dias_restantes
+              ? "  ·  " + T("faltam ") + fmtNum(b.dias_restantes, 1) + T(" dias a este ritmo")
+              : "")
+        )
+      );
+    }
+
+    const modelos = bracos.map(function (item) {
+      const b = item.dados || {};
+      const vida = ((s.vida || {}).bracos || {})[item.chave] || {};
+      const vivo = vida.ok === true ? "vivo" : (vida.ok === false ? "MORTO" : "nunca sondado");
+      return h("div", { key: "modelo-" + item.chave, className: "vmm-mudo" },
+        T("braço ") + item.chave + ": " + (b.modelo || "?")
+        + (b.provider ? " (" + b.provider + ")" : " (" + T("provider não declarado no selo") + ")")
+        + " — " + T(vivo)
+        + (vida.http ? " HTTP " + vida.http : "")
+        + (b.ultima_ts ? "  ·  " + T("última chamada ") + dataCurta(b.ultima_ts) : ""));
+    });
+
+    const previsao = estado === "a_correr" && p.fim_estimado
+      ? h("div", null,
+          h("strong", null, T("previsão de fim: ") + dataCurta(p.fim_estimado)),
+          h("div", { className: "vmm-mudo" },
+            (p.braco_a && p.braco_a.primeira_ts
+              ? T("ritmo médio desde ") + dataCurta(p.braco_a.primeira_ts)
+              : "")
+            + (p.braco_a ? " · " + fmtNum(p.braco_a.ritmo_dia || 0, 0) + T("/dia no braço a") : "")
+            + (p.braco_b ? " · " + fmtNum(p.braco_b.ritmo_dia || 0, 0) + T("/dia no braço b") : "")
+            + T("  (cadência constante; o prazo é o do braço que atrasa)"))
+        )
+      : h("div", null,
+          h("strong", { className: "vmm-sombra-sem-data" },
+            T("sem previsão de fim: ") + T(ESTADOS_SOMBRA[estado] || estado)),
+          h("div", { className: "vmm-mudo" },
+            (p.motivo ? p.motivo + ". " : "")
+            + T("um braço sem vida mantém o ensaio parado (vmm sombra vida) — a data só existe com os dois braços vivos"))
+        );
+
+    return h(Card, { className: "vmm-card vmm-card-sombra" },
+      h(CardContent, { className: "vmm-card-content" },
+        cabecalho,
+        h("div", { className: "vmm-mudo" },
+          (p.ensaio || s.ensaio || "ensaio não definido")
+          + (p.selo ? "  ·  " + T("selo ") + String(p.selo).slice(0, 16) + "…" : "")),
+        h("div", { className: "vmm-sombra-progresso" },
+          h("div", { className: "vmm-linha" },
+            h("span", null,
+              h("strong", null, T("progresso do ensaio: ")
+                + (typeof p.progresso === "number" ? fmtPct(p.progresso * 100, 2) : "—")),
+              h("span", { className: "vmm-mudo" }, T("  (manda o braço mais atrasado)"))
+            )
+          ),
+          ...bracos.map(barra)
+        ),
+        h("div", { className: "vmm-sombra-previsao" }, previsao),
+        h("div", { className: "vmm-sombra-modelos" },
+          h("div", { className: "vmm-classif-nome" }, T("modelos em uso")),
+          ...modelos
+        ),
+        h("div", { className: "vmm-mudo vmm-pe" },
+          T("unidade: ") + T(p.unidade || "")
+          + (p.alvo_total ? "  ·  " + T("alvo total ") + fmtNum(p.alvo_total) : "")
+          + (p.linhas_sem_braco ? "  ·  " + fmtNum(p.linhas_sem_braco) + T(" chamadas sem braço (fora da conta)") : "")
+          + (p.vida && p.vida.medida_ts ? "  ·  " + T("vida medida em ") + dataCurta(p.vida.medida_ts) : ""))
+      )
+    );
+  }
+
   function TabelaLog(props) {
     const linhas = props.linhas || [];
     if (!linhas.length) return h("div", { className: "vmm-mudo" }, "sem registos");
@@ -3562,6 +3791,10 @@
     const [log, setLog] = useState([]);
     const [limite, setLimite] = useState(40);
     const [erro, setErro] = useState(null);
+    // Progresso do ensaio em sombra. Vive a parte do `/estado` porque a leitura
+    // e cara (uma passagem ao ledger) e so interessa com o ensaio ligado: vai
+    // buscar-se uma vez por carregamento, e `null` significa "ainda sem payload".
+    const [sombraProg, setSombraProg] = useState(null);
     const [aGravar, setAGravar] = useState(false);
     // Aviso efémero do ensaio: "braços re-selados" tem de aparecer no sítio do
     // gesto. Sem isto, gravar com sucesso e nao ver nada e indistinguivel de
@@ -3635,6 +3868,17 @@
           setEstado(r[0]);
           setLog((r[1] && r[1].linhas) || []);
           setErro(null);
+          // Progresso do ensaio em sombra: so com o interruptor ligado. Um erro
+          // aqui (404 de payload antigo, ledger a ser escrito) nao e erro do
+          // painel — o cartao diz o que falta e o resto do ecra continua bom.
+          const ensaioLigado = !!(r[0] && r[0].sombra && r[0].sombra.activo);
+          if (!ensaioLigado) {
+            setSombraProg(null);
+            return null;
+          }
+          return pedir("/sombra/progresso")
+            .then(function (prog) { setSombraProg(prog); })
+            .catch(function () { setSombraProg(null); });
         })
         .catch(function (e) { setErro(String(e && e.message ? e.message : e)); })
         .then(function () { setACarregar(false); });
@@ -3776,9 +4020,7 @@
         })
         .catch(function (e) {
           const msg = String(e && e.message ? e.message : e);
-          setErro(ehConflito(e)
-            ? "O ensaio mudou noutro sítio — recarreguei o estado. Repita a re-selagem."
-            : T("Erro ao re-selar os braços: ") + msg);
+          setErroLocal(msg); // Set error to local state for visibility
           return carregar();
         })
         .then(function () { setAGravar(false); });
@@ -4283,6 +4525,10 @@
     const nomes = Object.keys(perfis);
     // Calculado uma vez: a identidade nao muda a meio de um render.
     const meta = metaPlugin(estado);
+    // Visibilidade do painel do ensaio: o interruptor vive no config
+    // (`sombra.activo`), nao no browser. Desligado, o cartao nao existe — e um
+    // painel de progresso de uma funcionalidade que nao esta a medir nada.
+    const sombraActiva = mostrarPainelSombra(estado);
 
     // Pagina exclusiva: com o editor aberto, o painel principal nao chega a
     // ser construido. Um early return e o que garante isso — um `&&` no meio da
@@ -4364,7 +4610,7 @@
         idiomaAGravar: idiomaAGravar,
         onSuperficie: function (perfil, sup, alvo) { mudarSuperficie(perfil, sup, alvo); },
         onSombra: function (campos) { mudarSombra(campos); },
-        onBracos: function (a, b) { return mudarBracos(a, b); },
+        onBracos: function (a, b, provA, provB) { return mudarBracos(a, b, provA, provB); },
         avisoSombra: avisoSombra,
         onMudarJSON: function (novo) {
           setConfigJSON(novo);
@@ -4452,6 +4698,12 @@
         })
       ),
 
+      // Painel do ensaio em sombra, ao lado do registo de utilizacao. So existe
+      // com o interruptor do ensaio ligado; o progresso vem medido do ledger.
+      sombraActiva
+        ? h(PainelSombra, { dados: sombraProg, sombra: estado.sombra, aCarregar: aCarregar })
+        : null,
+
       h(
         Card,
         { className: "vmm-card" },
@@ -4520,6 +4772,14 @@
     window.__VMM_TEST__.comEstrategia = comEstrategia;
     window.__VMM_TEST__.SecaoClassificador = SecaoClassificador;
     window.__VMM_TEST__.SecaoSombra = SecaoSombra;
+    // Painel do progresso do ensaio (ao lado do registo de utilizacao). Puro:
+    // recebe o payload de `/sombra/progresso` e desenha-o. E o unico sitio onde
+    // a visibilidade condicionada ao interruptor e a ausencia de data num
+    // ensaio travado se podem provar sem browser.
+    window.__VMM_TEST__.PainelSombra = PainelSombra;
+    window.__VMM_TEST__.mostrarPainelSombra = mostrarPainelSombra;
+    window.__VMM_TEST__.dataCurta = dataCurta;
+    window.__VMM_TEST__.ESTADOS_SOMBRA = ESTADOS_SOMBRA;
     window.__VMM_TEST__.valorDaRegra = valorDaRegra;
     window.__VMM_TEST__.rotuloRegra = rotuloRegra;
     window.__VMM_TEST__.metaPlugin = metaPlugin;

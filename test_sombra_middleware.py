@@ -316,10 +316,31 @@ class Recusas(Base):
         sombra.escrever(registo, self.dir / "aprendiz" / "sombra"
                         / "pre-registo-teste.json")
         p._ensaio_cache.clear()
+        # A sonda tem de valer para o selo NOVO: uma vida do selo anterior não
+        # autoriza outro desenho (é o que `vida_de_outro_selo` recusa).
+        self.registo = registo
         self.escrever_vida()
         diag = self.decidir()
         self.assertFalse(diag["aplicado"])
         self.assertEqual(diag["motivo"], "modelo_fora_do_catalogo")
+
+    def test_vida_de_outro_selo_nao_autoriza_o_ensaio(self):
+        """Re-selar sem nova sonda deixa o ensaio parado, não a correr.
+
+        Os braços mudaram de modelo; a vida medida para o selo anterior diria
+        «vivo» sobre o modelo errado. O turno segue a rota normal e o motivo
+        diz que falta a sonda — não se inventa um veredicto.
+        """
+        self.escrever_vida()
+        registo = sombra.desenhar(caro=CARO, barato=BARATO, p0=0.0463,
+                                  margem=0.02, deff=3.08, chamadas_por_dia=16194)
+        self.assertNotEqual(registo.get("sha256"), self.registo.get("sha256"))
+        sombra.escrever(registo, self.dir / "aprendiz" / "sombra"
+                        / "pre-registo-teste2.json")
+        p._ensaio_cache.clear()
+        diag = self.decidir()
+        self.assertFalse(diag["aplicado"])
+        self.assertEqual(diag["motivo"], "vida_de_outro_selo")
 
     def test_superficie_nao_serve(self):
         self.escrever_vida()

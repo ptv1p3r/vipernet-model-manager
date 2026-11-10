@@ -443,6 +443,19 @@ def test_remover_modelo(tmp: Path) -> None:
     gestor.ficheiro_config = lambda: tmp  # type: ignore[assignment]
     gestor.directorio = lambda: tmp.parent  # type: ignore[assignment]
     try:
+        # A rota alvo e criada pelo teste, nao herdada do catalogo vivo. Depender
+        # de uma entrada real faz a suite falhar quando o dono remove um modelo
+        # (foi o que aconteceu ao `lightning-free`) — e essa falha nao e do
+        # codigo, e o teste deixa de medir o que diz medir.
+        doc_fixture = json.loads(tmp.read_text(encoding="utf-8"))
+        catalogo_pessoal = doc_fixture["perfis"]["pessoal"]["catalogo"]
+        alvo = "teste-rota-livre"
+        if not any(e.get("id") == alvo for e in catalogo_pessoal):
+            modelo_livre = dict(catalogo_pessoal[0])
+            modelo_livre.update({"id": alvo, "modelo": "teste/rota-livre", "ordem": 99})
+            catalogo_pessoal.append(modelo_livre)
+            tmp.write_text(json.dumps(doc_fixture, indent=2), encoding="utf-8")
+
         cliente = _app(tmp)
         base = "/api/plugins/vipernet-model-manager"
 
@@ -450,7 +463,6 @@ def test_remover_modelo(tmp: Path) -> None:
         doc = json.loads(tmp.read_text(encoding="utf-8"))
         # (a) rota livre no perfil `pessoal` — nenhuma superficie lhe chama.
         antes = [e["id"] for e in doc["perfis"]["pessoal"]["catalogo"]]
-        alvo = "lightning-free"
         verificar("remover: a fixture tem a rota livre", alvo in antes, str(antes))
         sha_antes = hashlib.sha256(tmp.read_bytes()).hexdigest()
 

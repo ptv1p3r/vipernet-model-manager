@@ -333,6 +333,115 @@ def verificar_lingua_no_pedido(cli) -> None:
           en.text[:120])
 
 
+def verificar_progresso_sombra(cli) -> None:
+    """Painel do ensaio em sombra: percentagem por chamada, previsao e trave.
+
+    Tres propriedades, cada uma com o seu caso negativo:
+      1. a percentagem conta CHAMADAS medidas (a unidade do pre-registo), nao
+         turnos — 6 chamadas num braco com um so turno medido dao 6, nao 1;
+      2. o progresso do ensaio e o do braco que atrasa, nunca a media;
+      3. um braco morto (`todos_vivos: false`) da `travado` e **nenhuma** data:
+         uma data para um ensaio parado e uma promessa que ninguem cumpre.
+    """
+    import sombra as _sombra
+
+    base = Path(os.environ["VMM_DIR"])
+    sombra_dir = base / "aprendiz" / "sombra"
+    sombra_dir.mkdir(parents=True, exist_ok=True)
+    registo = _sombra.desenhar(caro="deepseek-flash", barato="openai/gpt-6.1-sol",
+                               p0=0.5, margem=0.4, deff=1.0, chamadas_por_dia=10.0)
+    _sombra.escrever(registo, sombra_dir / "pre-registo-20261101a.json")
+    alvo = registo["n_por_braco"]
+
+    linhas = []
+
+    def turno(nome, braco, oks, falhas, ts):
+        linhas.append({"ts": ts, "evento": "resposta", "turno": nome, "perfil": "default",
+                       "sessao": "s1", "superficie": "api_server", "braco": braco,
+                       "modelo": registo[f"braco_{braco}"]})
+        for _ in range(oks):
+            linhas.append({"ts": ts, "evento": "efeito", "turno": nome, "efeito": "ok"})
+        for _ in range(falhas):
+            linhas.append({"ts": ts, "evento": "efeito", "turno": nome, "efeito": "falha"})
+
+    turno("t-a", "a", 5, 1, "2026-11-01T10:00:00+00:00")   # braco a: 6 chamadas
+    turno("t-b", "b", 2, 0, "2026-11-02T10:00:00+00:00")   # braco b: 2 chamadas
+    with (base / "uso.jsonl").open("a", encoding="utf-8") as fh:
+        for ev in linhas:
+            fh.write(json.dumps(ev, ensure_ascii=False) + "\n")
+
+    def escrever_vida(todos_vivos: bool) -> None:
+        (sombra_dir / "vida.json").write_text(json.dumps({
+            "ts": "2026-11-02T12:00:00+00:00",
+            "sha_registo": registo["sha256"],
+            "braco_a": {"modelo": registo["braco_a"], "ok": True, "http": 200, "motivo": ""},
+            "braco_b": {"modelo": registo["braco_b"], "ok": todos_vivos, "http": 200 if todos_vivos else 404,
+                        "motivo": "" if todos_vivos else "0 endpoints out of 1 requested"},
+            "todos_vivos": todos_vivos,
+        }), encoding="utf-8")
+
+    # --- 1. ensaio com os dois bracos vivos: percentagem por chamada --------
+    escrever_vida(True)
+    r = cli.get("/sombra/progresso")
+    check("/sombra/progresso 200", r.status_code == 200, str(r.status_code))
+    d = r.json() if r.status_code == 200 else {}
+    prog = d.get("progresso") or {}
+    check("/sombra/progresso traz as duas metades",
+          "sombra" in d and "progresso" in d, str(sorted(d)))
+    check("progresso: percentagem conta chamadas, nao turnos",
+          (prog.get("braco_a") or {}).get("chamadas") == 6
+          and (prog.get("braco_a") or {}).get("turnos_medidos") == 1,
+          json.dumps({k: (prog.get("braco_a") or {}).get(k)
+                      for k in ("chamadas", "turnos_medidos")}))
+    check("progresso: o braco que atrasa manda na percentagem",
+          abs((prog.get("progresso") or 0) - 2.0 / alvo) < 1e-9,
+          json.dumps({"progresso": prog.get("progresso"), "alvo": alvo}))
+    check("progresso: a_correr traz data de fim",
+          prog.get("estado") == "a_correr" and bool(prog.get("fim_estimado")),
+          json.dumps({"estado": prog.get("estado"), "fim": prog.get("fim_estimado")}))
+    check("progresso: declara a unidade da medida",
+          "chamada" in str(prog.get("unidade")), str(prog.get("unidade")))
+    check("progresso: lista os modelos em uso",
+          (prog.get("braco_a") or {}).get("modelo") == "deepseek-flash"
+          and (prog.get("braco_b") or {}).get("modelo") == "openai/gpt-6.1-sol",
+          json.dumps([(prog.get(k) or {}).get("modelo") for k in ("braco_a", "braco_b")]))
+
+    # --- 2. braco morto: travado e SEM data --------------------------------
+    escrever_vida(False)
+    d2 = cli.get("/sombra/progresso").json().get("progresso") or {}
+    check("progresso: braco morto da 'travado'",
+          d2.get("estado") == "travado", str(d2.get("estado")))
+    check("progresso: travado nao apresenta data nenhuma",
+          d2.get("fim_estimado") == "" and d2.get("fim_estimado_ultimo_dia") == "",
+          json.dumps({"fim": d2.get("fim_estimado"),
+                      "fim_ontem": d2.get("fim_estimado_ultimo_dia")}))
+    check("progresso: travado diz qual o braco e o HTTP",
+          "braço b sem vida" in str(d2.get("motivo")) and "404" in str(d2.get("motivo")),
+          str(d2.get("motivo")))
+
+    # --- 3. o interruptor e a visibilidade no painel ------------------------
+    # O interruptor vive no config (nao no progresso nem no browser): liga-se
+    # pela API e le-se de volta no ficheiro do disco e no /estado.
+    cli.post("/sombra", json={"activo": True})
+    cfg_disco = json.loads((base / "config.json").read_text(encoding="utf-8"))
+    check("progresso: o interruptor e gravado no config",
+          (cfg_disco.get("sombra") or {}).get("activo") is True,
+          json.dumps(cfg_disco.get("sombra")))
+    est = cli.get("/estado").json()
+    check("progresso: /estado le o interruptor do config",
+          (est.get("sombra") or {}).get("activo") is True,
+          json.dumps((est.get("sombra") or {}).get("activo")))
+    texto = (RAIZ / "dashboard" / "dist" / "index.js").read_text(encoding="utf-8")
+    check("painel: a visibilidade do cartao depende do interruptor",
+          "mostrarPainelSombra(estado)" in texto
+          and "sombraActiva\n        ? h(PainelSombra" in texto,
+          "procura-se a guarda e o uso no render")
+    check("painel: o cartao do ensaio fica ao lado do registo de utilizacao",
+          texto.index("h(PainelSombra")
+          < texto.index('h("strong", null, "Registo de utilizacao")'),
+          "o cartao do ensaio tem de vir antes do registo (o registo tem de ficar por baixo)")
+
+
 def main() -> int:
     d = preparar_dir()
     os.environ["VMM_DIR"] = str(d)
@@ -1176,6 +1285,9 @@ def main() -> int:
     check("/perfil gravar normaliza os termos",
           gravado["perfis"]["default"]["tarefas"]["revisao"]["termos"] == ["codigo", "review"],
           json.dumps(gravado["perfis"]["default"]["tarefas"], ensure_ascii=False))
+
+    # Painel do ensaio em sombra: progresso medido do ledger e visibilidade.
+    verificar_progresso_sombra(cli)
 
     # A logica pura do painel, corrida a serio em node (sem browser).
     node = shutil.which("node")

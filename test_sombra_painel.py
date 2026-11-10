@@ -52,6 +52,10 @@ from datetime import datetime as _dt
 # com data fixa so passa no dia em que foi escrito.
 HOJE_PRE_REGISTO = _dt.now(_FUSO).strftime("%Y%m%d") if _FUSO else _dt.now().strftime("%Y%m%d")
 
+# Slug do braco b usado nos casos de re-selagem. Uma so casa: o fixture
+# declara-o no catalogo copiado com este nome e as assercoes leem-no daqui.
+SLUG_BRACO_B = "nvidia/nemotron-3.5-lightning:free"
+
 AQUI = Path(__file__).resolve().parent
 _RESULTADOS: list[tuple[str, bool, str]] = []
 
@@ -85,6 +89,20 @@ def _preparar(base: Path) -> None:
                 or "/opt/data/plugin-data/vipernet-model-manager/config.json")
     cfg = json.loads(vivo.read_text(encoding="utf-8"))
     cfg["sombra"] = {"activo": True, "vida_ttl_h": 24}
+    # O slug do braco b usado na re-selagem e declarado no catalogo copiado. O
+    # teste mede a resolucao pelo catalogo (e a origem "catalogo"), nao a
+    # existencia do modelo na instalacao viva — que muda quando o dono limpa o
+    # catalogo e fazia a suite falhar por um motivo que nao e do codigo.
+    for _perfil in (cfg.get("perfis") or {}).values():
+        _cat = _perfil.get("catalogo") if isinstance(_perfil, dict) else None
+        if not _cat:
+            continue
+        if not any(str(e.get("modelo") or "") == SLUG_BRACO_B for e in _cat):
+            _entrada = dict(_cat[0])
+            _entrada.update({"id": "teste-braco-b", "modelo": SLUG_BRACO_B,
+                             "provider": "openrouter", "ordem": 98})
+            _cat.append(_entrada)
+        break
     (base / "config.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")
     registo = sombra.desenhar(
         caro="deepseek-flash",
@@ -188,7 +206,7 @@ def testes() -> None:
         # -------------------------------------------------- 6. re-sela
         r = api.sombra_bracos_post(corpo={
             "braco_a": "deepseek-flash",
-            "braco_b": "nvidia/nemotron-3.5-lightning:free",
+            "braco_b": SLUG_BRACO_B,
             "confirmar_reabertura": True,
         })
         corpo_r = json.loads(bytes(r.body).decode("utf-8"))
@@ -196,7 +214,7 @@ def testes() -> None:
               and corpo_r["pre_registo"]["selo_valido"] is True,
               json.dumps(corpo_r.get("pre_registo")))
         check("bracos: releitura independente devolve os bracos novos",
-              corpo_r["sombra"]["bracos"]["b"] == "nvidia/nemotron-3.5-lightning:free",
+              corpo_r["sombra"]["bracos"]["b"] == SLUG_BRACO_B,
               json.dumps(corpo_r["sombra"]["bracos"]))
         # O provider passou a fazer parte do desenho: sem ele a sonda e o
         # middleware tinham de adivinhar a credencial pelo nome do modelo.
@@ -242,14 +260,14 @@ def testes() -> None:
         for rotulo, corpo_mau, esperado in (
             ("provider que nao serve o modelo",
              {"braco_a": "deepseek-flash", "braco_a_provider": "openrouter",
-              "braco_b": "nvidia/nemotron-3.5-lightning:free",
+              "braco_b": SLUG_BRACO_B,
               "confirmar_reabertura": True}, 400),
             ("modelo fora de todos os catalogos",
              {"braco_a": "deepseek-flash", "braco_b": "fantasma/modelo:free",
               "confirmar_reabertura": True}, 400),
             ("provider inexistente",
              {"braco_a": "deepseek-flash", "braco_a_provider": "anthropic",
-              "braco_b": "nvidia/nemotron-3.5-lightning:free",
+              "braco_b": SLUG_BRACO_B,
               "confirmar_reabertura": True}, 400),
         ):
             try:
@@ -267,7 +285,7 @@ def testes() -> None:
         check("interruptor: desliga", corpo2["sombra"]["activo"] is False,
               json.dumps(corpo2["sombra"]["activo"]))
         check("interruptor: nao mexe nos bracos",
-              corpo2["sombra"]["bracos"]["b"] == "nvidia/nemotron-3.5-lightning:free",
+              corpo2["sombra"]["bracos"]["b"] == SLUG_BRACO_B,
               json.dumps(corpo2["sombra"]["bracos"]))
         cfg_disco = json.loads((base / "config.json").read_text(encoding="utf-8"))
         # O `alterar` valida a config INTEIRA: uma escrita cirurgica que

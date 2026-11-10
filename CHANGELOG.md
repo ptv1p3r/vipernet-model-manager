@@ -9,6 +9,43 @@ what that reviewer reads first.
 Older history (before 3.45.0) lives in `git log` — the repository was published
 with one automatic commit per change, each with a per-file summary.
 
+## 3.47.17 — 2026-11-10
+
+- **Novo painel «Ensaio em sombra — progresso», ao lado do registo de
+  utilização.** Mostra a percentagem de cada braço, a percentagem do ensaio
+  (a do braço que atrasa), a data de fim prevista, o ritmo por dia e os modelos
+  em uso, com a sonda de vida de cada um. **Só aparece com o ensaio ligado**
+  (`sombra.activo`, lido do `/estado`): desligado, o cartão não existe.
+
+- **A percentagem conta chamadas de ferramenta, não turnos.** A medida primária
+  selada é «taxa de falha por chamada medida por `exit_code`», e foi sobre
+  chamadas (48 582) que `p0` e `n_por_braco` foram calculados. Medir turnos
+  contra um `n` em chamadas dava 1,5% onde o valor real é 51,2% — e uma data de
+  fim de mais de um ano em vez de dias. `sombra.contagens` faz a contagem na
+  unidade do pré-registo e `sombra.projectar` deriva ritmo e data.
+
+- **`GET /sombra/progresso`** lê o ledger na hora (cache por `mtime`/tamanho/
+  selo) e devolve `sombra` + `progresso`. Sem pré-registo selado responde
+  `estado: sem_selo` em vez de zeros; o painel diz que falta o payload novo
+  enquanto o contentor do dashboard não for reiniciado.
+
+- **Braço morto não é braço lento: sem data.** Com `todos_vivos: false` o
+  estado é `travado`, o motivo nomeia o braço e o `HTTP` (404 no
+  `nemotron-3-ultra` na medição desta passagem) e **não se apresenta data
+  nenhuma**. A projeção só existe com os dois braços vivos.
+
+- **A percentagem e a data medem-se, não se herdam.** O valor sai do ledger a
+  cada leitura; um acumulado de sessão anterior não é repetido sem ser
+  reproduzido, e a âncora do ritmo («média desde a primeira chamada») vai
+  escrita ao lado da data.
+
+- **Os testes do painel deixaram de depender do catálogo vivo.** O fixture de
+  `test_sombra_painel.py` declara no catálogo copiado o slug do braço b que usa
+  na re-selagem, e `test_painel_estado.py` cria a rota livre que remove. Antes,
+  limpar um modelo do perfil (`lightning-free`) fazia a bateria falhar por um
+  motivo que não era do código: as duas falhas foram reproduzidas iguais no
+  commit `acdc240`, sem alterações locais. Bateria: 2000/2000 em 38 ficheiros.
+
 ## 3.47.16 — 2026-11-09
 
 - **Cada modelo tem botão «Remover».** A página de uma rota do catálogo passa a
