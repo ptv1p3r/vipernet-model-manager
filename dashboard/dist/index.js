@@ -4020,9 +4020,7 @@
         })
         .catch(function (e) {
           const msg = String(e && e.message ? e.message : e);
-          setErro(ehConflito(e)
-            ? "O ensaio mudou noutro sítio — recarreguei o estado. Repita a re-selagem."
-            : T("Erro ao re-selar os braços: ") + msg);
+          setErroLocal(msg); // Set error to local state for visibility
           return carregar();
         })
         .then(function () { setAGravar(false); });
@@ -4612,7 +4610,7 @@
         idiomaAGravar: idiomaAGravar,
         onSuperficie: function (perfil, sup, alvo) { mudarSuperficie(perfil, sup, alvo); },
         onSombra: function (campos) { mudarSombra(campos); },
-        onBracos: function (a, b) { return mudarBracos(a, b); },
+        onBracos: function (a, b, provA, provB) { return mudarBracos(a, b, provA, provB); },
         avisoSombra: avisoSombra,
         onMudarJSON: function (novo) {
           setConfigJSON(novo);
