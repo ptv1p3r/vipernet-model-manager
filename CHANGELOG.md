@@ -39,6 +39,13 @@ with one automatic commit per change, each with a per-file summary.
   reproduzido, e a âncora do ritmo («média desde a primeira chamada») vai
   escrita ao lado da data.
 
+- **Os testes do painel deixaram de depender do catálogo vivo.** O fixture de
+  `test_sombra_painel.py` declara no catálogo copiado o slug do braço b que usa
+  na re-selagem, e `test_painel_estado.py` cria a rota livre que remove. Antes,
+  limpar um modelo do perfil (`lightning-free`) fazia a bateria falhar por um
+  motivo que não era do código: as duas falhas foram reproduzidas iguais no
+  commit `acdc240`, sem alterações locais. Bateria: 2000/2000 em 38 ficheiros.
+
 ## 3.47.16 — 2026-11-09
 
 - **Cada modelo tem botão «Remover».** A página de uma rota do catálogo passa a
