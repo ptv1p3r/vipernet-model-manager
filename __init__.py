@@ -545,6 +545,15 @@ def _sombra_do_turno(
     if not vida:
         diag["motivo"] = "vida_nao_medida"
         return diag
+    selo_vida = str(vida.get("sha_registo") or "")
+    if selo_vida and selo_vida != str(registo.get("sha256") or ""):
+        # Vida medida para outro selo não autoriza este desenho: um braço mudou
+        # de modelo e o veredicto antigo diria «vivo» sobre o modelo errado.
+        # Tratar como nunca medida obriga a `vmm sombra vida` antes de acumular.
+        # (Sem `sha_registo` o ficheiro é de uma versão anterior: vale o
+        # veredicto, mas a sonda seguinte passa a gravar o selo.)
+        diag["motivo"] = "vida_de_outro_selo"
+        return diag
     try:
         ttl_h = float(bloco.get("vida_ttl_h", 24) or 24)
     except (TypeError, ValueError):

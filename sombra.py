@@ -267,6 +267,33 @@ def braco_do_modelo(registo: dict[str, Any], modelo: str,
     return None
 
 
+def braco_gravado_da_linha(registo: dict[str, Any], linha: dict[str, Any],
+                           cache: dict[tuple[str, str], str | None] | None = None
+                           ) -> str | None:
+    """Braco a que esta chamada pertence NESTE selo, ou None.
+
+    O `braco` gravado no ledger é um facto do turno, mas do desenho que o selou:
+    um selo novo troca o modelo de um braço. Sem conferir o `modelo` (e o
+    `provider`, quando gravado) contra o selo em vigor, as chamadas do modelo
+    antigo entravam no braço novo e contavam como amostras de um desenho que
+    nunca as recolheu. A regra de correspondência é a de `braco_do_modelo` —
+    uma só, para os dois lados não divergirem.
+    """
+    gravado = linha.get("braco")
+    if gravado not in ("a", "b") or not registo:
+        return None
+    modelo = str(linha.get("modelo") or "")
+    provider = str(linha.get("provider") or "")
+    chave = (modelo.strip().lower(), provider.strip().lower())
+    if cache is not None and chave in cache:
+        apurado = cache[chave]
+    else:
+        apurado = braco_do_modelo(registo, modelo, provider)
+        if cache is not None:
+            cache[chave] = apurado
+    return gravado if apurado == gravado else None
+
+
 def veredicto_do_turno(linhas: list[dict[str, Any]]) -> str:
     """Resultado de um turno a partir das linhas de efeito das suas chamadas.
 
@@ -298,12 +325,13 @@ def recolher(linhas: list[dict[str, Any]],
     if not verificar(registo):
         raise ValueError("pre-registo alterado: o sha256 não bate")
     braco_por_turno: dict[str, str] = {}
+    cache_braco: dict[tuple[str, str], str | None] = {}
     for linha in linhas:
         if linha.get("evento") != "resposta":
             continue
-        braco = linha.get("braco")
+        braco = braco_gravado_da_linha(registo, linha, cache_braco)
         turno = linha.get("turno") or linha.get("turn_id")
-        if braco in ("a", "b") and turno:
+        if braco and turno:
             braco_por_turno[str(turno)] = braco
 
     por_turno: dict[str, list[dict[str, Any]]] = {}
@@ -366,12 +394,17 @@ def contagens(linhas: Any, registo: dict[str, Any]) -> dict[str, Any]:
     ts_por_turno: dict[str, str] = {}
     por_turno: dict[str, list[int]] = {}
     sem_braco = 0
+
+    # Só conta a chamada cujo modelo é o que o selo declara para aquele braço:
+    # um selo novo troca o braço de modelo, e herdar as chamadas do anterior
+    # apresentava como amostras deste desenho turnos que ele nunca serviu.
+    cache_braco: dict[tuple[str, str], str | None] = {}
     for linha in linhas:
         evento = linha.get("evento")
         if evento == "resposta":
-            braco = linha.get("braco")
+            braco = braco_gravado_da_linha(registo, linha, cache_braco)
             turno = linha.get("turno") or linha.get("turn_id")
-            if braco in ("a", "b") and turno:
+            if braco and turno:
                 braco_por_turno[str(turno)] = braco
                 ts_por_turno[str(turno)] = str(linha.get("ts") or "")
             continue

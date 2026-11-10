@@ -383,7 +383,18 @@ def _vida_sombra() -> dict[str, Any]:
         dados = json.loads((_dir_sombra() / "vida.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
         return {}
-    return dados if isinstance(dados, dict) else {}
+    if not isinstance(dados, dict):
+        return {}
+    registo, _ = _pre_registo_actual()
+    selo = str((registo or {}).get("sha256") or "")
+    selo_vida = str(dados.get("sha_registo") or "")
+    if selo and selo_vida and selo_vida != selo:
+        # Vida medida para outro selo: os modelos dos braços mudaram de dono e o
+        # veredicto antigo daria «travado» com o motivo de um modelo que já não
+        # é deste desenho (ou, pior, «vivo» a autorizar um braço novo). Vale
+        # como nunca medida até `vmm sombra vida` voltar a sondar.
+        return {}
+    return dados
 
 
 def _linhas_ledger(caminho: Path) -> Any:

@@ -193,6 +193,22 @@ class TestRecolher(unittest.TestCase):
         with self.assertRaises(ValueError):
             s.recolher(self._ledger(), r)
 
+    def test_selo_novo_nao_herda_as_chamadas_do_modelo_antigo(self):
+        """Re-selar com outro braço b não pode herdar as chamadas do anterior.
+
+        O `braco` gravado no ledger é um facto do turno, mas pertence ao desenho
+        que o selou. Se a contagem ignorasse o modelo, as chamadas do modelo
+        antigo apareciam como amostras do braço novo e o painel mostrava um
+        progresso que este desenho nunca recolheu.
+        """
+        novo = s.desenhar(caro="caro", barato="outro", p0=0.0463, margem=0.01,
+                          deff=3.08, chamadas_por_dia=16000.0)
+        r = s.recolher(self._ledger(), novo)
+        self.assertEqual(r["braco_b"]["n"], 0)
+        self.assertEqual(r["braco_a"]["n"], 1)
+        # t2 e t3 (braço b do selo antigo) e t0 (sem braço) ficam de fora.
+        self.assertEqual(r["linhas_sem_braco"], 3)
+
 
 class TestContagensPorChamada(unittest.TestCase):
     """O progresso conta CHAMADAS, nao turnos — a unidade do pre-registo.
