@@ -456,7 +456,7 @@ def projectar(contagem: dict[str, Any], registo: dict[str, Any], *,
     if instante.tzinfo is None:
         instante = instante.replace(tzinfo=timezone.utc)
     utc = instante.astimezone(timezone.utc)
-    ontem = (utc.date() - timedelta(days=1)).strftime("%Y-%m-%d")
+    ontem = (utc.date() - timedelta(days=1)).isoformat()
     alvo = int(registo.get("n_por_braco") or 0)
 
     saida: dict[str, Any] = {

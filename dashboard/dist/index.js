@@ -600,6 +600,7 @@
     "alvo total ": "total target ",
     " chamadas sem braço (fora da conta)": " calls without an arm (left out of the count)",
     "vida medida em ": "liveness measured on ",
+    "chamada de ferramenta medida por exit_code": "tool call measured by exit_code",
   };
   let IDIOMA = IDIOMA_PADRAO;
 
@@ -708,6 +709,21 @@
         minimumFractionDigits: casas || 0,
         maximumFractionDigits: casas === undefined || casas === null ? 3 : casas,
       }).format(valor);
+    } catch (e) { return String(valor); }
+  }
+
+  // Percentagem a partir do valor JA em pontos percentuais (83,4 -> "83,4%"),
+  // a mesma convencao do `formato.percentagem` do Python. O simbolo vem do
+  // locale: juntar a unidade ao numero a mao e o defeito que `test_formato.py`
+  // recusa nesta camada.
+  function fmtPct(valor, casas) {
+    if (typeof valor !== "number" || !isFinite(valor)) return "";
+    try {
+      return new Intl.NumberFormat(localeHora(), {
+        style: "percent",
+        minimumFractionDigits: casas || 0,
+        maximumFractionDigits: casas === undefined || casas === null ? 0 : casas,
+      }).format(valor / 100);
     } catch (e) { return String(valor); }
   }
 
@@ -2706,18 +2722,24 @@
           h("span", { className: "vmm-mudo" },
             " " + (b.modelo || "?") + (b.provider ? " · " + b.provider : "")),
           h("span", { className: "vmm-sombra-valor" },
-            pct === null ? "—" : fmtNum(pct, 2) + "%")
+            pct === null ? "—" : fmtPct(pct, 2))
         ),
         h("div", { className: "vmm-barra" },
           h("div", {
             className: "vmm-barra-fill" + (largura >= 100 ? " vmm-barra-completa" : ""),
-            style: { width: largura + "%" },
+            // Largura de CSS, nao texto para o utilizador: aqui o "%" e a
+            // unidade do estilo e nao uma percentagem apresentada.
+            style: { width: `${largura}%` },
           })
         ),
         h("div", { className: "vmm-mudo" },
           fmtNum(b.chamadas || 0) + " / " + fmtNum(alvo) + " " + T("chamadas medidas")
-          + (typeof b.taxa === "number" ? "  ·  " + T("falha ") + fmtNum(b.taxa * 100, 2) + "%" : "")
-          + (b.dias_restantes ? "  ·  " + T("faltam ") + fmtNum(b.dias_restantes, 1) + T(" dias a este ritmo") : "")
+          + (typeof b.taxa === "number" ? "  ·  " + T("falha ") + fmtPct(b.taxa * 100, 2) : "")
+          // Os dias por braco so entram com o ensaio a correr: num ensaio
+          // travado sao uma data disfarcada, e o braco morto nunca os cumpre.
+          + (estado === "a_correr" && b.dias_restantes
+              ? "  ·  " + T("faltam ") + fmtNum(b.dias_restantes, 1) + T(" dias a este ritmo")
+              : "")
         )
       );
     }
@@ -2747,7 +2769,7 @@
         )
       : h("div", null,
           h("strong", { className: "vmm-sombra-sem-data" },
-            T("sem previsão de fim: ") + (ESTADOS_SOMBRA[estado] || estado)),
+            T("sem previsão de fim: ") + T(ESTADOS_SOMBRA[estado] || estado)),
           h("div", { className: "vmm-mudo" },
             (p.motivo ? p.motivo + ". " : "")
             + T("um braço sem vida mantém o ensaio parado (vmm sombra vida) — a data só existe com os dois braços vivos"))
@@ -2763,19 +2785,19 @@
           h("div", { className: "vmm-linha" },
             h("span", null,
               h("strong", null, T("progresso do ensaio: ")
-                + (typeof p.progresso === "number" ? fmtNum(p.progresso * 100, 2) : "—") + "%"),
+                + (typeof p.progresso === "number" ? fmtPct(p.progresso * 100, 2) : "—")),
               h("span", { className: "vmm-mudo" }, T("  (manda o braço mais atrasado)"))
             )
           ),
-          bracos.map(barra)
+          ...bracos.map(barra)
         ),
         h("div", { className: "vmm-sombra-previsao" }, previsao),
         h("div", { className: "vmm-sombra-modelos" },
           h("div", { className: "vmm-classif-nome" }, T("modelos em uso")),
-          modelos
+          ...modelos
         ),
         h("div", { className: "vmm-mudo vmm-pe" },
-          T("unidade: ") + (p.unidade || "")
+          T("unidade: ") + T(p.unidade || "")
           + (p.alvo_total ? "  ·  " + T("alvo total ") + fmtNum(p.alvo_total) : "")
           + (p.linhas_sem_braco ? "  ·  " + fmtNum(p.linhas_sem_braco) + T(" chamadas sem braço (fora da conta)") : "")
           + (p.vida && p.vida.medida_ts ? "  ·  " + T("vida medida em ") + dataCurta(p.vida.medida_ts) : ""))

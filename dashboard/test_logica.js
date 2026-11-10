@@ -1987,9 +1987,10 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   const chaves = Object.keys(I.PT_EN);
   // A contagem e um alarme de deriva: subir a mao quando se acrescentam chaves e
   // o que obriga a olhar para o dicionario. +9 na 3.47.12 (sonda de ligacao),
-  // +9 na 3.47.16 (remover uma rota do catalogo).
-  check("i18n: o dicionario tem as 497 chaves medidas",
-        chaves.length === 497, "tem " + chaves.length);
+  // +9 na 3.47.16 (remover uma rota do catalogo), +34 na 3.47.17 (painel do
+  // ensaio em sombra: etiquetas de estado, barras e previsao).
+  check("i18n: o dicionario tem as 531 chaves medidas",
+        chaves.length === 531, "tem " + chaves.length);
   check("i18n: nenhuma traducao vazia",
         chaves.every(function (k) { return String(I.PT_EN[k]).trim() !== ""; }));
   // Nomes proprios e termos tecnicos ficam iguais nas duas linguas — o que nao
@@ -2254,6 +2255,109 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   });
   check("remover: fica desactivado durante uma gravacao",
         !!desactivado && desactivado.props.disabled === true);
+})();
+
+// --- painel do ensaio em sombra (ao lado do registo de utilizacao) ----------
+// O dono pediu: "percentagens actualizadas, previsao de quando estara concluido
+// e quais os modelos em uso", num painel que so aparece com o modo sombra
+// activo. Tres propriedades, cada uma com o seu caso negativo:
+//  * a visibilidade depende do interruptor e de mais nada;
+//  * um ensaio a correr mostra percentagem, data e modelos;
+//  * um ensaio travado mostra o motivo e NENHUMA data (braco morto nao e braco
+//    lento), e sem payload nao se inventam zeros.
+(function () {
+  check("sombra: mostrarPainelSombra so com o ensaio ligado",
+        T.mostrarPainelSombra({ sombra: { activo: true } }) === true
+        && T.mostrarPainelSombra({ sombra: { activo: false } }) === false);
+  check("sombra: sem estado (ou sem bloco) o painel nao aparece",
+        T.mostrarPainelSombra(null) === false
+        && T.mostrarPainelSombra(undefined) === false
+        && T.mostrarPainelSombra({}) === false
+        && T.mostrarPainelSombra({ sombra: {} }) === false);
+
+  const payload = {
+    sombra: {
+      activo: true,
+      ensaio: "nvidia/nemotron-3-ultra-550b-a55b:free vs deepseek-flash",
+      vida: {
+        medida_ts: "2026-11-10T06:54:38+00:00",
+        todos_vivos: false,
+        bracos: {
+          a: { modelo: "deepseek-flash", ok: true, http: 200 },
+          b: { modelo: "nvidia/nemotron-3-ultra-550b-a55b:free", ok: false, http: 404 },
+        },
+      },
+    },
+    progresso: {
+      unidade: "chamada de ferramenta medida por exit_code",
+      alvo_por_braco: 18536,
+      alvo_total: 37072,
+      selo: "5275bbf6eba15dbbe09d80f7f68c5b34422e8541b4c02dcb1b85d5f323e898f2",
+      ensaio: "nvidia/nemotron-3-ultra-550b-a55b:free vs deepseek-flash",
+      progresso: 0.0733,
+      estado: "travado",
+      motivo: "braço b sem vida (nvidia/nemotron-3-ultra-550b-a55b:free, HTTP 404)",
+      fim_estimado: "",
+      fim_estimado_ultimo_dia: "",
+      braco_a: { modelo: "deepseek-flash", provider: "", chamadas: 9505, taxa: 0.0638,
+                 progresso: 0.5128, restante: 9031, ritmo_dia: 1765.9,
+                 dias_restantes: 5.1, primeira_ts: "2026-11-05T00:59:06+00:00",
+                 ultima_ts: "2026-11-10T10:09:38+00:00" },
+      braco_b: { modelo: "nvidia/nemotron-3-ultra-550b-a55b:free", provider: "",
+                 chamadas: 1359, taxa: 0.2053, progresso: 0.0733, restante: 17177,
+                 ritmo_dia: 271.5, dias_restantes: 63.3,
+                 primeira_ts: "2026-11-05T10:02:18+00:00",
+                 ultima_ts: "2026-11-09T20:29:21+00:00" },
+      vida: { todos_vivos: false, medida_ts: "2026-11-10T06:54:38+00:00" },
+    },
+  };
+
+  const arvore = T.PainelSombra({ dados: payload, aCarregar: false });
+  const texto = textoDaArvore(arvore);
+  check("sombra: o painel tem titulo proprio", texto.indexOf("Ensaio em sombra — progresso") !== -1,
+        texto.slice(0, 160));
+  check("sombra: mostra a percentagem dos dois bracos",
+        texto.indexOf("51,28") !== -1 && texto.indexOf("7,33") !== -1, texto);
+  check("sombra: mostra a percentagem do ensaio pelo braco que atrasa",
+        texto.indexOf("7,33%") !== -1, texto);
+  check("sombra: nomeia os modelos em uso", texto.indexOf("modelos em uso") !== -1
+        && texto.indexOf("deepseek-flash") !== -1
+        && texto.indexOf("nvidia/nemotron-3-ultra-550b-a55b:free") !== -1, texto);
+  check("sombra: travado nao mostra data e diz o motivo",
+        texto.indexOf("sem previsão de fim") !== -1
+        && texto.indexOf("HTTP 404") !== -1, texto);
+  const antesModelos = texto.split("modelos em uso")[0];
+  check("sombra: travado nao mostra data nenhuma",
+        antesModelos.indexOf("sem previsão de fim") !== -1
+        && antesModelos.indexOf("/2026") === -1, texto);
+  check("sombra: declara a unidade da medida",
+        texto.indexOf("chamada de ferramenta medida por exit_code") !== -1, texto);
+  const barras = recolher(arvore, function (no) {
+    return no.props && no.props.className === "vmm-barra-fill";
+  });
+  check("sombra: uma barra por braco", barras.length === 2, "obtive " + barras.length);
+
+  // Ensaio a correr: aqui a data existe (o caso positivo do mesmo componente).
+  const aCorrer = JSON.parse(JSON.stringify(payload));
+  aCorrer.progresso.estado = "a_correr";
+  aCorrer.progresso.fim_estimado = "2026-12-15T00:00:00+00:00";
+  aCorrer.progresso.motivo = "";
+  aCorrer.sombra.vida.todos_vivos = true;
+  const textoCorrer = textoDaArvore(T.PainelSombra({ dados: aCorrer }));
+  check("sombra: a correr mostra a data de fim",
+        textoCorrer.indexOf("previsão de fim: ") !== -1
+        && textoCorrer.indexOf("15/12/2026") !== -1, textoCorrer);
+  check("sombra: a data vem com a ancora do ritmo",
+        textoCorrer.indexOf("ritmo médio desde") !== -1, textoCorrer);
+
+  // Sem payload: diz que falta o reinicio em vez de desenhar zeros medidos.
+  const semPayload = textoDaArvore(T.PainelSombra({ dados: null, aCarregar: false }));
+  check("sombra: sem payload nao inventa numeros",
+        semPayload.indexOf("progresso indisponível") !== -1
+        && semPayload.indexOf("51,28") === -1, semPayload);
+  const aCarregarTxt = textoDaArvore(T.PainelSombra({ dados: null, aCarregar: true }));
+  check("sombra: enquanto le, diz que esta a ler",
+        aCarregarTxt.indexOf("a ler o ledger do ensaio") !== -1, aCarregarTxt);
 })();
 
 console.log("");
