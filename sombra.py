@@ -35,6 +35,12 @@ from typing import Any
 Z_ALFA_95_UNILATERAL = 1.6448536269514722
 Z_PODER_80 = 0.8416212335729143
 
+# A medida primaria selada (`medida_primaria`) e por chamada de ferramenta com
+# `exit_code`, nao por turno: e sobre chamadas que `p0` e `n_por_braco` foram
+# calculados. O progresso do ensaio le-se na mesma unidade, senao a percentagem
+# e a data de fim saem desfasadas por um factor de ~30.
+UNIDADE_CHAMADA = "chamada de ferramenta medida por exit_code"
+
 LIMIARES = {"alfa": 0.05, "poder": 0.80, "unilateral": True}
 
 
@@ -331,6 +337,233 @@ def recolher(linhas: list[dict[str, Any]],
         "linhas_sem_braco": sem_braco,
         "n_por_braco_pedido": registo.get("n_por_braco"),
     }
+
+
+def contagens(linhas: Any, registo: dict[str, Any]) -> dict[str, Any]:
+    """Chamadas de ferramenta MEDIDAS por braco — a unidade do pre-registo.
+
+    `recolher` conta **turnos** (o desfecho de um turno e um veredicto unico),
+    mas a medida primaria selada e `taxa de falha por chamada de ferramenta
+    medida por exit_code`, e foi sobre chamadas que `p0` e `n_por_braco` foram
+    calculados (48 582 chamadas com `exit_code`, deff por clusters de sessao).
+    Medir o progresso em turnos contra um `n` em chamadas dava uma percentagem
+    ~30x menor e uma data de fim absurda — o painel estaria a mentir com numeros
+    verdadeiros. Por isso o progresso le-se daqui.
+
+    Uma chamada entra no braco do **seu turno** (linha `resposta` com `braco`),
+    nunca do modelo que se julga ter servido: a atribuicao e um facto do ledger.
+    Chamadas de turnos sem braco (anteriores ao selo, ou servidas por um modelo
+    fora do desenho) ficam de fora e sao contadas em `linhas_sem_braco`.
+    """
+    if not verificar(registo):
+        raise ValueError("pre-registo alterado: o sha256 não bate")
+
+    # Uma so passagem: o chamador pode entregar um gerador (o ledger tem
+    # dezenas de MB e nao se carrega inteiro). Os efeitos sao guardados por
+    # `turno` — que as linhas de efeito trazem — e atribuidos no fim, quando o
+    # braco de cada turno ja e conhecido.
+    braco_por_turno: dict[str, str] = {}
+    ts_por_turno: dict[str, str] = {}
+    por_turno: dict[str, list[int]] = {}
+    sem_braco = 0
+    for linha in linhas:
+        evento = linha.get("evento")
+        if evento == "resposta":
+            braco = linha.get("braco")
+            turno = linha.get("turno") or linha.get("turn_id")
+            if braco in ("a", "b") and turno:
+                braco_por_turno[str(turno)] = braco
+                ts_por_turno[str(turno)] = str(linha.get("ts") or "")
+            continue
+        if evento != "efeito":
+            continue
+        turno = str(linha.get("turno") or "")
+        efeito = linha.get("efeito")
+        marcas = por_turno.setdefault(turno, [0, 0, 0])  # ok, falha, nao medidos
+        if efeito == "ok":
+            marcas[0] += 1
+        elif efeito == "falha":
+            marcas[1] += 1
+        else:
+            marcas[2] += 1
+
+    base: dict[str, Any] = {
+        braco: {
+            "chamadas": 0,
+            "falhas": 0,
+            "turnos_medidos": 0,
+            "turnos_sem_efeito": 0,
+            "primeira_ts": "",
+            "ultima_ts": "",
+            "por_dia": {},
+        }
+        for braco in ("a", "b")
+    }
+    for turno, (ok, falhas, nao_medidos) in por_turno.items():
+        if turno not in braco_por_turno:
+            # Turno anterior ao selo, ou servido por um modelo fora do desenho:
+            # conta-se como linha sem braço em vez de se inventar atribuição.
+            sem_braco += ok + falhas + nao_medidos
+            continue
+        braco = braco_por_turno[turno]
+        medidas = ok + falhas
+        if medidas == 0:
+            base[braco]["turnos_sem_efeito"] += 1
+            continue
+        base[braco]["turnos_medidos"] += 1
+        base[braco]["chamadas"] += medidas
+        base[braco]["falhas"] += falhas
+        instante = ts_por_turno.get(turno) or ""
+        if instante:
+            dia = instante[:10]
+            base[braco]["por_dia"][dia] = base[braco]["por_dia"].get(dia, 0) + medidas
+            if not base[braco]["primeira_ts"] or instante < base[braco]["primeira_ts"]:
+                base[braco]["primeira_ts"] = instante
+            if instante > base[braco]["ultima_ts"]:
+                base[braco]["ultima_ts"] = instante
+
+    return {
+        "unidade": UNIDADE_CHAMADA,
+        "braco_a": base["a"],
+        "braco_b": base["b"],
+        "linhas_sem_braco": sem_braco,
+        "turnos_marcados": len(braco_por_turno),
+        "n_por_braco_pedido": registo.get("n_por_braco"),
+    }
+
+
+def projectar(contagem: dict[str, Any], registo: dict[str, Any], *,
+              agora: Any = None, vida: Any = None) -> dict[str, Any]:
+    """Percentagem, ritmo e data de fim a partir das contagens — so leitura.
+
+    Regras que fazem a diferenca entre uma data e uma promessa:
+
+    - `n` e **por braco**: o fim e o maior dos dois `restante/ritmo`, nunca o
+      total dividido pela soma dos ritmos, que esconde o braco que atrasa.
+    - **Braco morto nao e braco lento.** Com a sonda de vida a dizer
+      `todos_vivos: false` o ensaio esta *parado* (o middleware devolve
+      `braco_sem_vida:<x>` e nem o braco vivo acumula) e nao se apresenta data
+      nenhuma: uma data para um ensaio travado e uma promessa que ninguem pode
+      cumprir. Declara-se `travado` e o motivo.
+    - O ritmo tem **ancora declarada**: a media desde a primeira chamada de cada
+      braco (`ritmo_dia`) e o ultimo dia completo (`ritmo_ultimo_dia`), que
+      diferem quando houve pausas. As duas datas vao no resultado; o painel
+      mostra a da media e diz de onde vem.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    instante = agora if agora is not None else datetime.now().astimezone()
+    if instante.tzinfo is None:
+        instante = instante.replace(tzinfo=timezone.utc)
+    utc = instante.astimezone(timezone.utc)
+    ontem = (utc.date() - timedelta(days=1)).strftime("%Y-%m-%d")
+    alvo = int(registo.get("n_por_braco") or 0)
+
+    saida: dict[str, Any] = {
+        "unidade": UNIDADE_CHAMADA,
+        "alvo_por_braco": alvo,
+        "alvo_total": 2 * alvo,
+        "selo": str(registo.get("sha256") or ""),
+        "ensaio": registo.get("ensaio"),
+    }
+    bracos: dict[str, Any] = {}
+    for braco in ("a", "b"):
+        c = (contagem.get(f"braco_{braco}") or {})
+        chamadas = int(c.get("chamadas") or 0)
+        falhas = int(c.get("falhas") or 0)
+        primeira = str(c.get("primeira_ts") or "")
+        dias = 0.0
+        if primeira:
+            try:
+                inicio = datetime.fromisoformat(primeira)
+                if inicio.tzinfo is None:
+                    inicio = inicio.replace(tzinfo=timezone.utc)
+                dias = max((utc - inicio.astimezone(timezone.utc)).total_seconds() / 86400.0,
+                           1.0 / 24.0)
+            except ValueError:
+                dias = 0.0
+        ritmo = (chamadas / dias) if dias else 0.0
+        ritmo_ontem = float((c.get("por_dia") or {}).get(ontem, 0) or 0)
+        restante = max(0, alvo - chamadas)
+        bracos[braco] = {
+            "modelo": registo.get(f"braco_{braco}"),
+            "provider": provider_do_braco(registo, braco),
+            "chamadas": chamadas,
+            "falhas": falhas,
+            "taxa": (falhas / chamadas) if chamadas else None,
+            "progresso": (chamadas / alvo) if alvo else 0.0,
+            "restante": restante,
+            "ritmo_dia": ritmo,
+            "ritmo_ultimo_dia": ritmo_ontem,
+            "dias_restantes": (restante / ritmo) if (ritmo > 0 and restante) else (
+                0.0 if restante == 0 else None),
+            "dias_restantes_ultimo_dia": (restante / ritmo_ontem) if (ritmo_ontem > 0 and restante) else None,
+            "primeira_ts": primeira,
+            "ultima_ts": str(c.get("ultima_ts") or ""),
+            "turnos_medidos": int(c.get("turnos_medidos") or 0),
+            "turnos_sem_efeito": int(c.get("turnos_sem_efeito") or 0),
+        }
+    saida["braco_a"] = bracos["a"]
+    saida["braco_b"] = bracos["b"]
+    # O progresso do ensaio e o do braco mais atrasado: os dois bracos tem de
+    # chegar ao alvo, e uma media dava por concluido o que ainda nao esta.
+    saida["progresso"] = min(bracos["a"]["progresso"], bracos["b"]["progresso"])
+
+    todos_vivos = None
+    if isinstance(vida, dict) and vida:
+        todos_vivos = bool(vida.get("todos_vivos"))
+    saida["vida"] = {
+        "todos_vivos": todos_vivos,
+        "medida_ts": str((vida or {}).get("ts") or ""),
+    }
+
+    if alvo <= 0:
+        saida.update({"estado": "sem_alvo", "motivo": "o pré-registo não declara n por braço",
+                      "fim_estimado": "", "fim_estimado_ultimo_dia": ""})
+        return saida
+    if bracos["a"]["restante"] == 0 and bracos["b"]["restante"] == 0:
+        saida.update({"estado": "concluido", "motivo": "",
+                      "fim_estimado": utc.isoformat(timespec="seconds"),
+                      "fim_estimado_ultimo_dia": ""})
+        return saida
+    if todos_vivos is False:
+        mortos = []
+        for braco in ("a", "b"):
+            d = (vida or {}).get(f"braco_{braco}") or {}
+            if d and not d.get("ok"):
+                mortos.append(f"braço {braco} sem vida ({d.get('modelo') or '?'}"
+                              f"{', HTTP ' + str(d.get('http')) if d.get('http') else ''})")
+        saida.update({
+            "estado": "travado",
+            "motivo": "; ".join(mortos) or "a sonda de vida diz que um braço não responde",
+            "fim_estimado": "",
+            "fim_estimado_ultimo_dia": "",
+        })
+        return saida
+    sem_ritmo = [b for b in ("a", "b") if bracos[b]["ritmo_dia"] <= 0]
+    if sem_ritmo:
+        saida.update({
+            "estado": "sem_ritmo",
+            "motivo": "sem chamadas medidas no braço " + ", ".join(sem_ritmo),
+            "fim_estimado": "",
+            "fim_estimado_ultimo_dia": "",
+        })
+        return saida
+
+    dias_fim = max(bracos[b]["dias_restantes"] or 0.0 for b in ("a", "b"))
+    fim = utc + timedelta(days=dias_fim)
+    por_ontem = [bracos[b]["dias_restantes_ultimo_dia"] for b in ("a", "b")]
+    fim_ontem = ""
+    if all(v is not None for v in por_ontem):
+        fim_ontem = (utc + timedelta(days=max(por_ontem))).isoformat(timespec="seconds")  # type: ignore[arg-type]
+    saida.update({
+        "estado": "a_correr",
+        "motivo": "",
+        "fim_estimado": fim.isoformat(timespec="seconds"),
+        "fim_estimado_ultimo_dia": fim_ontem,
+        "dias_restantes": dias_fim,
+    })
+    return saida
 
 
 def sondar_vida(registo: dict[str, Any], chamar: Any, *,

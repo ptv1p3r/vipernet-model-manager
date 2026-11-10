@@ -371,6 +371,100 @@ def _sombra_estado(cfg: dict[str, Any]) -> dict[str, Any]:
 MOTIVO_VALIDADE_S = 7200
 
 
+def _vida_sombra() -> dict[str, Any]:
+    """Sonda de vida do ensaio, como esta em disco (vazio se nunca medida).
+
+    Os braços de um ensaio em sombra são modelos: um slug pode morrer no
+    provider sem nada mudar na config. `todos_vivos: false` é o que distingue
+    «ensaio a correr» de «ensaio parado» — e é a diferença entre dar uma data de
+    fim e declarar que ainda não há data.
+    """
+    try:
+        dados = json.loads((_dir_sombra() / "vida.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+    return dados if isinstance(dados, dict) else {}
+
+
+def _linhas_ledger(caminho: Path) -> Any:
+    """Percorre o ledger linha a linha, sem o carregar inteiro em memória.
+
+    O ficheiro tem dezenas de MB e cresce a cada turno; o progresso do ensaio
+    precisa de todas as linhas desde o selo, mas não precisa delas em memória ao
+    mesmo tempo. Uma linha ilegível é salto, não excepção: um ledger truncado a
+    meio (escrita em curso) não pode partir o painel.
+    """
+    try:
+        fh = caminho.open("r", encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    with fh:
+        for linha in fh:
+            linha = linha.strip()
+            if not linha:
+                continue
+            try:
+                evento = json.loads(linha)
+            except ValueError:
+                continue
+            if isinstance(evento, dict):
+                yield evento
+
+
+# As contagens são caras (uma passagem ao ledger) e mudam só quando o ledger
+# muda: a chave é (mtime, tamanho, selo). Projectar a partir delas é barato e
+# faz-se em cada pedido, para a data de fim não ficar congelada no primeiro.
+_CACHE_CONTAGENS: dict[str, Any] = {"chave": None, "valor": None}
+
+
+def _contagens_sombra(registo: dict[str, Any]) -> dict[str, Any]:
+    caminho = gestor.caminho_ledger()
+    try:
+        st = caminho.stat()
+        chave = (str(caminho), st.st_mtime_ns, st.st_size, str(registo.get("sha256") or ""))
+    except OSError:
+        return _sombra.contagens([], registo)
+    if _CACHE_CONTAGENS.get("chave") == chave:
+        return _CACHE_CONTAGENS["valor"]  # type: ignore[no-any-return]
+    valor = _sombra.contagens(_linhas_ledger(caminho), registo)
+    _CACHE_CONTAGENS["chave"] = chave
+    _CACHE_CONTAGENS["valor"] = valor
+    return valor
+
+
+def _progresso_sombra() -> dict[str, Any]:
+    """Progresso do ensaio: percentagem por braço, ritmo e data de fim.
+
+    Três regras herdadas de `references/ensaio-sombra-ledger-e-projecao.md`:
+    o progresso lê-se do ledger na hora (nunca de um acumulado herdado), `n` é
+    por braço (o fim é o do braço que atrasa) e um braço morto não é um braço
+    lento — nesse estado não se apresenta data nenhuma.
+    """
+    registo, caminho = _pre_registo_actual()
+    if registo is None:
+        return {
+            "estado": "sem_selo",
+            "motivo": "sem pré-registo selado — o progresso não se inventa",
+            "selo": "",
+            "pre_registo": "",
+            "fim_estimado": "",
+            "unidade": _sombra.UNIDADE_CHAMADA,
+        }
+    contagem = _contagens_sombra(registo)
+    progresso = _sombra.projectar(
+        contagem,
+        registo,
+        agora=datetime.now(ZoneInfo("Europe/Lisbon")),
+        vida=_vida_sombra(),
+    )
+    progresso["pre_registo"] = caminho
+    progresso["linhas_sem_braco"] = contagem.get("linhas_sem_braco", 0)
+    progresso["turnos_marcados"] = contagem.get("turnos_marcados", 0)
+    progresso["p0"] = registo.get("p0")
+    progresso["margem"] = registo.get("margem_nao_inferioridade")
+    return progresso
+
+
 def _decidir_rasto(
     cl: Any,
     rasto: Any,
@@ -1193,6 +1287,23 @@ def sombra_post(corpo: Any = Body(default=None)) -> JSONResponse:
     confirmado = _cfg()
     return JSONResponse({"ok": True, "sombra": _sombra_estado(confirmado),
                          "rev": _rev(confirmado)})
+
+
+@router.get("/sombra/progresso")
+def sombra_progresso() -> dict[str, Any]:
+    """Progresso do ensaio em sombra — o que o painel mostra ao lado do registo.
+
+    Devolve as duas metades na mesma resposta: `sombra` (interruptor, braços,
+    selo e vida) e `progresso` (percentagem por braço, ritmo, data de fim). O
+    painel só desenha o bloco com `sombra.activo` verdadeiro, mas o endpoint não
+    esconde nada: um progresso que só existe quando o interruptor está ligado é
+    um progresso que não se pode medir nem testar depois de desligar.
+
+    `estado` é o campo que decide o que se mostra a seguir: `a_correr` traz uma
+    data, `travado` traz o motivo e **nenhuma** data, `sem_selo` diz que não há
+    desenho selado. Um braço morto cai em `travado` — não é um braço lento.
+    """
+    return {"sombra": _sombra_estado(_cfg()), "progresso": _progresso_sombra()}
 
 
 def _proximo_nome_pre_registo() -> str:
