@@ -1185,6 +1185,49 @@ def _pedido_com_esforco(pedido: dict[str, Any], entrada: dict[str, Any],
     return novo, esforco
 
 
+_FIOS_RECONSTRUIVEIS = ("anthropic_messages", "codex_responses")
+
+
+def _payload_na_forma_do_destino(agente: Any, pedido: dict[str, Any],
+                                 modo_anterior: Any, modo_novo: Any
+                                 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Payload reconstruido na forma do fio de destino quando a troca muda de fio.
+
+    O `api_kwargs` chega a middleware **ja construido** para a rota anterior
+    (`agent/turn_api_request.py`: `agent._build_api_kwargs` corre antes de
+    `apply_llm_request_middleware`). Trocar de fio deixa-o na forma do antigo, e o
+    SDK do destino recusa-o antes de sair: medido a 2026-11-18, a Messages da
+    Anthropic deu `TypeError: Messages.stream() missing 1 required keyword-only
+    argument: 'max_tokens'` com um payload de chat/completions, e o core leu essa
+    mensagem como `context_overflow` — reiniciou a sessao em vez de repetir, o que
+    fazia toda a rota `anthropic_messages` morrer no primeiro pedido do turno.
+
+    Reconstroi-se com o construtor do proprio core, ja com o agente trocado
+    (`agent._build_api_kwargs`, o mesmo que `turn_api_request` usa). So quando o
+    destino precisa de forma propria e a origem era outra: a conversao inversa
+    (Anthropic -> chat/completions) nao tem construtor equivalente aqui e nao e
+    precisa — o core ja a repete no passo seguinte do laco.
+    """
+    de = str(modo_anterior or "").strip().lower()
+    para = str(modo_novo or "").strip().lower()
+    if not para or de == para or para not in _FIOS_RECONSTRUIVEIS:
+        return pedido, None
+    construtor = getattr(agente, "_build_api_kwargs", None)
+    if not callable(construtor):
+        return pedido, None
+    mensagens = _mensagens(pedido)
+    if not mensagens:
+        return pedido, None
+    try:
+        novo = construtor(mensagens)
+    except Exception as exc:  # noqa: BLE001 - o payload antigo segue como antes
+        _falha(f"reconstrucao do payload para {para}: {type(exc).__name__}: {exc}")
+        return pedido, None
+    if not isinstance(novo, dict) or not novo:
+        return pedido, None
+    return novo, {"de": de or "desconhecido", "para": para, "reconstruido": True}
+
+
 def _trocar(agente: Any, entrada: dict[str, Any], rota: dict[str, Any],
             perfil: str, sessao: str) -> dict[str, Any]:
     alvo_provider = rota["provider"] or entrada["provider"].lower()
@@ -1238,6 +1281,7 @@ def middleware_llm_request(
                         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                         "platform": platform, "session_id": session_id,
                         "model": model, "provider": provider,
+                        "api_mode": api_mode, "base_url": base_url,
                         "turn_id": str(turn_id)[-12:] if turn_id else None,
                     }, ensure_ascii=False) + "\n")
             except Exception:  # noqa: BLE001
@@ -1786,15 +1830,21 @@ def middleware_llm_request(
         # Depois da troca: o `switch_model` re-resolve `reasoning_config` do
         # `config.yaml` e apagaria um valor posto antes.
         esforco_agente = _aplicar_esforco(agente, entrada, session_id)
+        # O payload veio construido para o fio antigo; se a troca muda de fio e' 
+        # reconstruido aqui, senao o SDK do destino recusa-o antes de sair.
+        pedido_bruto, fio = _payload_na_forma_do_destino(
+            agente, {**request, "model": entrada["modelo"]}, api_mode,
+            rota.get("api_mode") or entrada.get("api_mode"))
         pedido, esforco_fio = _pedido_com_esforco(
-            {**request, "model": entrada["modelo"]}, entrada, rota, session_id)
+            pedido_bruto, entrada, rota, session_id)
         _registar({**resumo_de(base), "evento": "troca", "entrada": entrada["id"], "de": destino,
                    "acesso": entrada.get("acesso", ""),
                    "para": aplicado, "fonte_credencial": rota.get("source", ""),
                    "esforco": esforco_agente or "nao_declarado",
                    **({"preteridas": list(dict.fromkeys(falhadas))} if falhadas else {}),
+                   **({"fio": fio} if fio else {}),
                    "ms": round((time.monotonic() - inicio) * 1000, 1)}, registar=registar)
-        if entrada["modelo"] != request.get("model") or esforco_fio:
+        if entrada["modelo"] != request.get("model") or esforco_fio or fio:
             return {"request": pedido, "source": NOME,
                     "reason": f"{perfil}:complexidade={nivel}->{aplicado['provider']}:{entrada['modelo']}"}
         return None

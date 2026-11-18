@@ -1651,6 +1651,70 @@ def testes_recarga_de_modulo() -> None:
         pass
 
 
+def testes_fio_do_payload() -> None:
+    """Payload reconstruido quando a troca muda de fio (chat/codex -> anthropic).
+
+    O `api_kwargs` chega a middleware ja construido para a rota anterior. Sem
+    reconstrucao, a Messages da Anthropic recebia um payload de chat/completions e
+    respondia `TypeError: ... 'max_tokens'` — que o core le como
+    `context_overflow` e resolve reiniciando a sessao. Medido a 2026-11-18.
+    """
+    print("\n== payload na forma do fio de destino ==")
+    plugin = _mod("vmm_plugin_fio", AQUI / "__init__.py")
+
+    class Agente:
+        def __init__(self, rebenta: bool = False) -> None:
+            self.rebenta = rebenta
+            self.recebidas: list = []
+
+        def _build_api_kwargs(self, mensagens, tools_for_api=None):
+            self.recebidas.append(mensagens)
+            if self.rebenta:
+                raise RuntimeError("boom")
+            return {"model": "claude-fable-5-2", "messages": mensagens,
+                    "max_tokens": 8192, "stream": True}
+
+    pedido = {"model": "gpt-6.1-terra", "stream": True, "reasoning_effort": "low",
+              "messages": [{"role": "user", "content": "ola"}]}
+
+    for origem in ("chat_completions", "codex_responses"):
+        agente = Agente()
+        novo, fio = plugin._payload_na_forma_do_destino(
+            agente, pedido, origem, "anthropic_messages")
+        check(f"fio: {origem} -> anthropic reconstroi o payload",
+              bool(fio) and fio.get("reconstruido") is True and novo.get("max_tokens") == 8192,
+              str(fio))
+        check(f"fio: {origem} -> anthropic leva as mensagens ao construtor",
+              agente.recebidas == [pedido["messages"]], str(agente.recebidas))
+        check(f"fio: {origem} -> anthropic perde a forma do provider anterior",
+              "reasoning_effort" not in novo, str(novo))
+
+    mesmo, fio_mesmo = plugin._payload_na_forma_do_destino(
+        Agente(), pedido, "anthropic_messages", "anthropic_messages")
+    check("fio: mesma forma nao reconstroi",
+          fio_mesmo is None and mesmo is pedido)
+
+    inverso, fio_inverso = plugin._payload_na_forma_do_destino(
+        Agente(), pedido, "anthropic_messages", "chat_completions")
+    check("fio: anthropic -> chat fica para o core (sem construtor aqui)",
+          fio_inverso is None and inverso is pedido)
+
+    destino_vazio, fio_vazio = plugin._payload_na_forma_do_destino(
+        Agente(), pedido, "chat_completions", "")
+    check("fio: destino sem api_mode nao reconstroi",
+          fio_vazio is None and destino_vazio is pedido)
+
+    intacto, fio_falha = plugin._payload_na_forma_do_destino(
+        Agente(rebenta=True), pedido, "chat_completions", "anthropic_messages")
+    check("fio: construtor que rebenta devolve o pedido intacto (fail-open)",
+          fio_falha is None and intacto is pedido)
+
+    sem_mensagens, fio_sem = plugin._payload_na_forma_do_destino(
+        Agente(), {"model": "x", "stream": True}, "chat_completions", "anthropic_messages")
+    check("fio: pedido sem mensagens nao reconstroi",
+          fio_sem is None and sem_mensagens.get("model") == "x")
+
+
 def main() -> int:
     testes_gestor()
     testes_plugin()
@@ -1660,6 +1724,7 @@ def main() -> int:
     testes_heranca_classificador()
     testes_indicador_analise()
     testes_esforco()
+    testes_fio_do_payload()
     testes_cli()
     testes_verificar()
     testes_recarga_de_modulo()
