@@ -2095,6 +2095,40 @@ def _resolver_credencial(provider: str, modelo: str) -> dict[str, Any]:
     return seams.resolver_provider(provider, modelo)
 
 
+def _familia(base: str, api_mode: str) -> str:
+    """Familia de API da rota: o `api_mode` declarado manda, o endpoint desempata.
+
+    Medido a 2026-11-18: o `foundry-edp` declara `api_mode: anthropic_messages` e
+    vive em `.../anthropic`; a sonda antiga mandava tudo a `/chat/completions` e
+    recebia `404 Resource not found` de uma rota que responde 200 pela Messages.
+    Sem `api_mode`, um `base_url` que termina em `/anthropic` ja basta.
+    """
+    modo = str(api_mode or "").strip().lower()
+    if modo:
+        return modo
+    limpo = str(base or "").strip().rstrip("/").lower()
+    if limpo.endswith("/anthropic"):
+        return "anthropic_messages"
+    return "chat_completions"
+
+
+def _url_de_rota(base: str, api_mode: str = "") -> str:
+    """Endpoint da sonda a partir do `base_url` e da familia da rota."""
+    limpo = str(base or "").strip().rstrip("/")
+    familia = _familia(base, api_mode)
+    if familia == "anthropic_messages":
+        if limpo.endswith("/v1/messages") or limpo.endswith("/messages"):
+            return limpo
+        return limpo + "/v1/messages"
+    if familia == "codex_responses":
+        # Medido no Foundry a 2026-11-18: `/openai/v1/chat/completions` responde
+        # 400 (operacao nao suportada) e `/openai/v1/responses` responde 200.
+        if limpo.endswith("/responses"):
+            return limpo
+        return limpo + "/responses"
+    return _url_de_chat(limpo)
+
+
 def _url_de_chat(base: str) -> str:
     """Endpoint de chat a partir do `base_url` da rota.
 
@@ -2107,34 +2141,64 @@ def _url_de_chat(base: str) -> str:
     return limpo + "/chat/completions"
 
 
-def _http_sonda(url: str, chave: str, modelo: str, timeout: float) -> dict[str, Any]:
+def _http_sonda(url: str, chave: str, modelo: str, timeout: float,
+                api_mode: str = "") -> dict[str, Any]:
     """Uma chamada minima ao modelo. Separada para os testes trocarem o transporte.
 
     Devolve `{ok, http, ms, motivo}` e nunca inclui a chave. `max_tokens: 8` e
     uma mensagem `ping` porque o objectivo e provar que a rota responde, nao
     obter resposta — o custo tem de ser o menor que o provider aceita.
+
+    O cabecalho depende da familia: a Messages da Anthropic (Azure Foundry
+    incluido) leva `x-api-key` + `anthropic-version`; as rotas OpenAI levam
+    `Authorization: Bearer`.
     """
     import time as _tempo
     import urllib.error
     import urllib.request
 
-    corpo = json.dumps({
-        "model": modelo,
-        "messages": [{"role": "user", "content": "ping"}],
-        "max_tokens": 8,
-        "stream": False,
-    }).encode()
-    pedido = urllib.request.Request(
-        url,
-        data=corpo,
-        headers={
+    anthropic = "anthropic" in str(api_mode or "").strip().lower()
+    respostas = str(api_mode or "").strip().lower() == "codex_responses"
+    if anthropic:
+        corpo = json.dumps({
+            "model": modelo,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 8,
+        }).encode()
+        cabecalhos = {
+            "x-api-key": chave,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+            "User-Agent": "curl/8.5.0",
+        }
+    elif respostas:
+        # A API Responses recusa `messages`/`max_tokens`; o minimo e `input` +
+        # `max_output_tokens`. Medido: Bearer autentica no Foundry da EDP.
+        corpo = json.dumps({
+            "model": modelo,
+            "input": "ping",
+            "max_output_tokens": 16,
+        }).encode()
+        cabecalhos = {
+            "Authorization": "Bearer " + chave,
+            "Content-Type": "application/json",
+            "User-Agent": "curl/8.5.0",
+        }
+    else:
+        corpo = json.dumps({
+            "model": modelo,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 8,
+            "stream": False,
+        }).encode()
+        cabecalhos = {
             "Authorization": "Bearer " + chave,
             "Content-Type": "application/json",
             # O UA por omissao do urllib e recusado por varios proxies (1010),
             # que se le como «sem rede» e nao como «bloqueado na borda».
             "User-Agent": "curl/8.5.0",
-        },
-    )
+        }
+    pedido = urllib.request.Request(url, data=corpo, headers=cabecalhos)
     inicio = _tempo.monotonic()
     try:
         with urllib.request.urlopen(pedido, timeout=timeout) as resposta:  # noqa: S310
@@ -2203,7 +2267,9 @@ def sondar_rota(
             "o provider {provider} não declara endpoint HTTP (é servido por subprocesso)",
             provider=provider)
         return resultado
-    medida = dict(transporte(_url_de_chat(url_base), chave, modelo, _TIMEOUT_SONDA) or {})
+    modo = str(rota.get("api_mode") or "")
+    medida = dict(transporte(_url_de_rota(url_base, modo), chave, modelo,
+                             _TIMEOUT_SONDA, modo) or {})
     motivo = str(medida.get("motivo") or "")
     # Defesa em profundidade: se um provider ecoar a chave na mensagem de erro,
     # ela nao sai daqui — o painel e um sitio publico para o dono, nao um log.
