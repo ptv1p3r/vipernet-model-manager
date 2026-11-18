@@ -2109,6 +2109,13 @@ def _familia(base: str, api_mode: str) -> str:
     limpo = str(base or "").strip().rstrip("/").lower()
     if limpo.endswith("/anthropic"):
         return "anthropic_messages"
+    # O `/openai/v1` do Azure AI Foundry so serve a API Responses: o
+    # `chat/completions` ali responde `400 Unsupported parameter: 'max_tokens'`
+    # (medido a 2026-11-18 no `gpt-6.2-astra`). Sem esta regra, uma credencial
+    # resolvida pela pool (`api_mode` vazio) fazia a sonda ir ao chat e o 400
+    # lia-se como credencial invalida.
+    if limpo.endswith("/openai/v1"):
+        return "codex_responses"
     return "chat_completions"
 
 

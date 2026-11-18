@@ -1141,6 +1141,33 @@ def main() -> int:
         check("/modelo/testar responses vai a /responses",
               bool(chamadas) and chamadas[0][0] == "https://exemplo.invalid/openai/v1/responses",
               str(chamadas[:1]))
+
+        # Sem `api_mode` (credencial vinda da pool, que nao o carrega), o
+        # endpoint `/openai/v1` e' o desempate: mandar ao chat dava
+        # `400 Unsupported parameter: 'max_tokens'` no Foundry.
+        def _resolver_respostas_sem_modo(provider, modelo):
+            return {"api_key": "chave-secreta-de-teste",
+                    "base_url": "https://exemplo.invalid/openai/v1",
+                    "api_mode": "", "source": "pool"}
+
+        setattr(mod, "_resolver_credencial", _resolver_respostas_sem_modo)
+        chamadas.clear()
+        r = cli.post("/modelo/testar", json={"provider": "exemplo", "modelo": "gpt-x"})
+        check("/modelo/testar /openai/v1 sem api_mode vai a /responses",
+              bool(chamadas) and chamadas[0][0] == "https://exemplo.invalid/openai/v1/responses",
+              str(chamadas[:1]))
+
+        def _resolver_anthropic_sem_modo(provider, modelo):
+            return {"api_key": "chave-secreta-de-teste",
+                    "base_url": "https://exemplo.invalid/anthropic",
+                    "api_mode": "", "source": "pool"}
+
+        setattr(mod, "_resolver_credencial", _resolver_anthropic_sem_modo)
+        chamadas.clear()
+        r = cli.post("/modelo/testar", json={"provider": "exemplo", "modelo": "claude-x"})
+        check("/modelo/testar /anthropic sem api_mode vai a /v1/messages",
+              bool(chamadas) and chamadas[0][0] == "https://exemplo.invalid/anthropic/v1/messages",
+              str(chamadas[:1]))
         setattr(mod, "_resolver_credencial", _resolver_fixo)
 
         setattr(mod, "_http_sonda", _transporte_fixo(
