@@ -9,6 +9,20 @@ what that reviewer reads first.
 Older history (before 3.45.0) lives in `git log` — the repository was published
 with one automatic commit per change, each with a per-file summary.
 
+## 3.47.18 — 2026-11-18
+
+- **`key_cmd` passa a resolver credenciais de provider custom.** `seams.py::_de_config_custom`
+  resolvia só `api_key` e `key_env`; um provider que guarda o **comando** que imprime a chave (o
+  idiom `apiKeyHelper`, chave lida do cofre em tempo de pedido) aparecia como «chave curta (0 B)» e a
+  rota era dada por `rota_indisponivel` sem nunca ser servida. A via nova, `_de_key_cmd`, chama a
+  superfície pública `hermes_cli.auth_declared_providers.resolve_declared_api_key_provider`, que já
+  mina o `key_cmd` com cache de token por `(perfil, comando)`. Corre **depois** de `api_key` e
+  `key_env`: uma chave estática já resolvida não paga o custo de correr o comando. Medido com
+  `foundry-edp` (`claude-fable-5-2`): `vmm verificar trabalho` passa de `chave curta (0 B)` a
+  `ok … fonte=providers.foundry-edp/key_cmd; chave=84 B`, com o segredo só no cofre.
+- **Três testes novos** em `test_sonda_provider_custom.py` (8 → 11): `key_cmd` resolve, `key_cmd` que
+  falha não inventa chave, `key_env` ganha ao `key_cmd`.
+
 ## 3.47.17 — 2026-11-10
 
 - **Novo painel «Ensaio em sombra — progresso», ao lado do registo de
