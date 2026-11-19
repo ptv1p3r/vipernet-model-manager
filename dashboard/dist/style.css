@@ -616,6 +616,17 @@
   line-height: 1.35;
 }
 
+/* Interruptor do ensaio em sombra na pagina de um perfil: botoes a esquerda e
+   o estado do global ao lado, sem o `space-between` de `.vmm-linha`, que
+   atirava o segundo botao para a margem oposta. */
+.vmm-sombra-perfil-accoes {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.4rem;
+}
+
 .vmm-pagina-modelo .vmm-input {
   font: inherit;
   font-size: 0.8rem;
