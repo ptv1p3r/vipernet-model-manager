@@ -429,10 +429,40 @@ def _braco_da_resposta(modelo: str, provider: str = "") -> str | None:
 _sombra_vida_cache: dict[str, Any] = {}
 
 
-def _sombra_config(config: dict[str, Any] | None) -> dict[str, Any]:
-    """Bloco `sombra` da config; desligado quando ausente ou malformado."""
-    bloco = (config or {}).get("sombra")
-    return bloco if isinstance(bloco, dict) else {}
+def _sombra_config(config: dict[str, Any] | None,
+                   perfil: str = "") -> dict[str, Any]:
+    """Bloco `sombra` em vigor NESTE perfil: o global fundido com o do perfil.
+
+    Tres camadas, pela ordem que o resto do `gestor` ja usa: `config.sombra`
+    (global), `config.perfis.<perfil>.sombra` e `config.perfis.*.sombra` (o
+    curinga). Funde-se **chave a chave** e nao por substituicao: um perfil que
+    declare so `{"activo": false}` tem de herdar o `vida_ttl_h` do global, e um
+    que declare so o `vida_ttl_h` tem de herdar o interruptor. Substituir por
+    inteiro obrigava cada perfil a repetir o bloco todo, e o primeiro campo
+    esquecido voltava ao valor por omissao em silencio.
+
+    Ausente ou malformado vale `{}` — desligado. Nao se usa `perfil_config`
+    aqui porque isto corre a cada turno e nao precisa do `deepcopy` inteiro.
+    """
+    cfg = config or {}
+    bloco: dict[str, Any] = {}
+    global_s = cfg.get("sombra")
+    if isinstance(global_s, dict):
+        bloco.update(global_s)
+    perfis = cfg.get("perfis")
+    if perfil and isinstance(perfis, dict):
+        local: Any = None
+        proprio = perfis.get(perfil)
+        if isinstance(proprio, dict):
+            local = proprio.get("sombra")
+        if not isinstance(local, dict):
+            # Mesma regra do `perfil_config`: perfil ausente cai no curinga.
+            curinga = perfis.get("*")
+            if isinstance(curinga, dict):
+                local = curinga.get("sombra")
+        if isinstance(local, dict):
+            bloco.update(local)
+    return bloco
 
 
 def _sombra_vida() -> dict[str, Any]:
@@ -507,7 +537,7 @@ def _sombra_do_turno(
     e um que trocasse o modelo que a regra de superficie fixou estaria a apagar
     uma ordem explicita com um sorteio.
     """
-    bloco = _sombra_config(config)
+    bloco = _sombra_config(config, perfil)
     if not bloco.get("activo"):
         return None
     registo = _pre_registo_ensaio()

@@ -380,7 +380,7 @@ _CHAVES_CONFIG = frozenset({"versao", "activo", "registar", "analise",
                             "estrategia", "retencao", "sombra", "idioma",
                             "perfis"})
 _CHAVES_PERFIL = frozenset({"activo", "estrategia", "analise", "catalogo",
-                            "tarefas", "latencia_max_ms", "rodizio"})
+                            "tarefas", "latencia_max_ms", "rodizio", "sombra"})
 _CHAVES_ANALISE = frozenset(set(ANALISE_PADRAO) | {"pesos", "aprendiz",
                                                   "classificador", "circuit_breaker"})
 # `limiares` so tem dois limiares: sao os que `analise.nivel_de_score` le.
@@ -1334,6 +1334,16 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
                     if chave in saida["analise"] and valor == saida["analise"][chave]:
                         continue
                     panalise[chave] = valor
+        # Ensaio em sombra do perfil: interruptor independente do global.
+        # Grava-se a DECLARACAO tal e qual (mesma regra da estrategia), nao o
+        # delta: um interruptor e uma decisao do dono sobre aquele perfil, e um
+        # perfil que declarou `activo: false` nao pode voltar a ligar-se so
+        # porque o global foi ligado depois. A ausencia da chave e que significa
+        # "herda o global" — um bloco vazio deixa de ser distinguivel de herdar
+        # e por isso vale `{}`.
+        sombra_perfil, erros_sp = normalizar_sombra(
+            pcfg.get("sombra"), f"perfis.{nome}.sombra")
+        erros.extend(erros_sp)
         catalogo: list[dict[str, Any]] = []
         vistos: set[str] = set()
         if not isinstance(pcfg.get("catalogo"), list):
@@ -1411,6 +1421,9 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
             # Sem nada declarado nao se grava `analise` vazia: a ausencia da
             # chave e o que significa "herda tudo do global".
             **(lambda a: {"analise": a} if a else {})(panalise),
+            # Sem bloco declarado nao se grava `sombra`: a ausencia e o que
+            # significa "herda o interruptor do global".
+            **(lambda s: {"sombra": s} if s else {})(sombra_perfil),
             "catalogo": catalogo,
         }
     return saida, erros
@@ -2099,6 +2112,29 @@ def perfil_config(cfg: dict[str, Any], perfil: str) -> dict[str, Any] | None:
     saida["estrategia_origem"] = ("proprio" if isinstance(cru_est, dict) and cru_est
                                   else "herdado" if isinstance(global_est, dict) and global_est
                                   else "padrao")
+    # Ensaio em sombra: funde-se **chave a chave** na leitura, como a estrategia.
+    # O global e o valor por omissao de todos; o perfil que declara uma chave
+    # ganha-a e herda as outras. Sem esta fusao o interruptor do perfil era
+    # escrito e ignorado, e o unico interruptor que existia era o global — que
+    # e precisamente o que impedia desligar o ensaio num perfil sem o desligar
+    # nos tres. `sombra_origem` e o que o painel e o CLI mostram para nao
+    # confundir "herdou" com "escolheu".
+    global_sombra = cfg.get("sombra")
+    sombra_efectiva_bloco: dict[str, Any] = {}
+    if isinstance(global_sombra, dict):
+        sombra_efectiva_bloco.update(
+            {k: v for k, v in global_sombra.items() if k in _CHAVES_SOMBRA})
+    local_sombra = saida.get("sombra")
+    if isinstance(local_sombra, dict) and local_sombra:
+        sombra_efectiva_bloco.update(
+            {k: v for k, v in local_sombra.items() if k in _CHAVES_SOMBRA})
+        saida["sombra_origem"] = "proprio"
+    elif sombra_efectiva_bloco:
+        saida["sombra_origem"] = "global"
+    else:
+        saida["sombra_origem"] = "padrao"
+    if sombra_efectiva_bloco:
+        saida["sombra"] = sombra_efectiva_bloco
     saida.pop("rodizio", None)
     return saida
 
@@ -2120,6 +2156,24 @@ def estrategia_efectiva(cfg: dict[str, Any], perfil: str) -> dict[str, str]:
     return {"modo": str(est.get("modo") or "rodizio"),
             "por": str(est.get("por") or "sessao"),
             "origem": str(pcfg.get("estrategia_origem") or "padrao")}
+
+
+def sombra_efectiva(cfg: dict[str, Any], perfil: str) -> dict[str, Any]:
+    """Interruptor do ensaio em sombra que este perfil usa, com a origem.
+
+    Tres camadas: global -> `perfis.<perfil>.sombra` -> `perfis.*.sombra` (o
+    curinga que o `perfil_config` ja aplica). A origem distingue `proprio` de
+    `global`, porque um perfil que herda parece ter escolhido e o dono muda o
+    global sem perceber por que aquele perfil nao mudou.
+    """
+    pcfg = perfil_config(cfg, perfil) or {}
+    cru = pcfg.get("sombra")
+    bloco: dict[str, Any] = cru if isinstance(cru, dict) else {}
+    return {
+        "activo": bool(bloco.get("activo", SOMBRA_PADRAO["activo"])),
+        "vida_ttl_h": bloco.get("vida_ttl_h", SOMBRA_PADRAO["vida_ttl_h"]),
+        "origem": str(pcfg.get("sombra_origem") or "padrao"),
+    }
 
 
 def tarefa_persistente_efectiva(cfg: dict[str, Any], perfil: str) -> dict[str, Any]:

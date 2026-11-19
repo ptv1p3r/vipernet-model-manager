@@ -293,7 +293,8 @@ def _sombra_estado(cfg: dict[str, Any]) -> dict[str, Any]:
     com numeros que ja nao sao os declarados, e o painel tem de o mostrar em vez
     de apresentar os bracos como se estivessem aprovados.
     """
-    bloco = cfg.get("sombra") if isinstance(cfg.get("sombra"), dict) else {}
+    _cru_sombra = cfg.get("sombra")
+    bloco: dict[str, Any] = _cru_sombra if isinstance(_cru_sombra, dict) else {}
     registo, caminho = _pre_registo_actual()
 
     # O ficheiro mais recente pode estar corrompido: le-se na mesma para que o
@@ -363,7 +364,39 @@ def _sombra_estado(cfg: dict[str, Any]) -> dict[str, Any]:
             "todos_vivos": vida.get("todos_vivos"),
             "sha_registo": vida.get("sha_registo"),
         },
+        # Interruptor por perfil: o global vale para todos, e o perfil que
+        # declara sobrepoe-se chave a chave. O painel precisa dos dois — sem o
+        # efectivo por perfil so mostrava o global e o dono nao tinha como ver
+        # que o trabalho estava desligado sem desligar os outros dois (nem o
+        # contrario). `declarado` distingue "escolheu" de "herdou": um perfil
+        # sem bloco aparece com `declarado: {}` e `origem: global`.
+        "global": {
+            "activo": bool(bloco.get("activo", False)),
+            "vida_ttl_h": bloco.get("vida_ttl_h"),
+        },
+        "perfis": _sombra_por_perfil(cfg),
     }
+
+
+def _sombra_por_perfil(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Interruptor efectivo e declarado de cada perfil, para o cartao do painel."""
+    _cru_perfis = cfg.get("perfis")
+    perfis: dict[str, Any] = _cru_perfis if isinstance(_cru_perfis, dict) else {}
+    saida: dict[str, Any] = {}
+    for nome in perfis:
+        try:
+            efectivo = gestor.sombra_efectiva(cfg, nome)
+        except Exception:  # noqa: BLE001 - o painel nunca parte por um perfil
+            continue
+        _cru_alvo = perfis[nome]
+        bruto = _cru_alvo.get("sombra") if isinstance(_cru_alvo, dict) else None
+        saida[str(nome)] = {
+            "activo": bool(efectivo.get("activo")),
+            "vida_ttl_h": efectivo.get("vida_ttl_h"),
+            "origem": str(efectivo.get("origem") or "padrao"),
+            "declarado": dict(bruto) if isinstance(bruto, dict) else {},
+        }
+    return saida
 
 
 # Um motivo de configuracao sem trafego que o renove envelhece: ao fim de duas
@@ -1268,12 +1301,36 @@ def sombra_post(corpo: Any = Body(default=None)) -> JSONResponse:
     """
     corpo = _corpo_objeto(corpo)
     rev = str(corpo.get("rev") or "")
+    perfil = str(corpo.get("perfil") or "").strip()
+    herdar = bool(corpo.get("herdar"))
     tem_activo = "activo" in corpo
     tem_ttl = "vida_ttl_h" in corpo
-    if not tem_activo and not tem_ttl:
+    if not tem_activo and not tem_ttl and not (perfil and herdar):
         raise HTTPException(status_code=400, detail=t("indique 'activo' e/ou 'vida_ttl_h'"))
 
     def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
+        if perfil:
+            # Interruptor do perfil: o global fica intacto. E o que permite
+            # desligar o ensaio no trabalho sem o desligar nos tres perfis.
+            # `herdar` apaga a declaracao do perfil e devolve-o ao global — sem
+            # isso nao havia como voltar atras sem editar o ficheiro a mao.
+            perfis = cfg.get("perfis")
+            if not isinstance(perfis, dict) or perfil not in perfis:
+                raise ValueError(t("perfil desconhecido: {p0}", p0=perfil))
+            alvo = perfis[perfil]
+            if not isinstance(alvo, dict):
+                raise ValueError(t("perfis.{p0} nao e um objecto", p0=perfil))
+            if herdar:
+                alvo.pop("sombra", None)
+                return cfg
+            bloco = alvo.get("sombra")
+            bloco = dict(bloco) if isinstance(bloco, dict) else {}
+            if tem_activo:
+                bloco["activo"] = bool(corpo.get("activo"))
+            if tem_ttl:
+                bloco["vida_ttl_h"] = corpo.get("vida_ttl_h")
+            alvo["sombra"] = bloco
+            return cfg
         bloco = cfg.get("sombra")
         bloco = dict(bloco) if isinstance(bloco, dict) else {}
         if tem_activo:

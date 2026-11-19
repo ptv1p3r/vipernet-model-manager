@@ -251,20 +251,39 @@ def _chamar_modelo(provider: str, modelo: str) -> dict[str, Any]:
 def cmd_sombra(args) -> int:
     """Estado, sonda de vida e interruptor do ensaio em sombra."""
     acao = getattr(args, "acao", None) or "estado"
+    perfil_alvo = str(getattr(args, "perfil", "") or "").strip()
     if acao in ("on", "off"):
         cfg, _ = _cfg()
         rev_lido = g.rev(cfg)
-        bloco = cfg.get("sombra")
-        if not isinstance(bloco, dict):
-            bloco = {}
-        bloco["activo"] = acao == "on"
-        bloco.setdefault("vida_ttl_h", 24)
-        cfg["sombra"] = bloco
+        if perfil_alvo:
+            # Interruptor do perfil: grava-se SO a chave `activo` no bloco do
+            # perfil, para o `vida_ttl_h` continuar a herdar do global. Copiar o
+            # ttl para aqui fixava o perfil ao numero do dia — o mesmo defeito
+            # que a `analise` evita ao gravar apenas o delta.
+            perfis = cfg.get("perfis")
+            if not isinstance(perfis, dict) or perfil_alvo not in perfis:
+                return _erro(_t('perfil desconhecido: {v0}', v0=perfil_alvo), 2)
+            alvo = perfis[perfil_alvo]
+            if not isinstance(alvo, dict):
+                return _erro(_t('perfis.{v0} nao e um objecto', v0=perfil_alvo))
+            bloco = alvo.get("sombra")
+            bloco = dict(bloco) if isinstance(bloco, dict) else {}
+            bloco["activo"] = acao == "on"
+            alvo["sombra"] = bloco
+        else:
+            bloco = cfg.get("sombra")
+            if not isinstance(bloco, dict):
+                bloco = {}
+            bloco["activo"] = acao == "on"
+            bloco.setdefault("vida_ttl_h", 24)
+            cfg["sombra"] = bloco
         try:
             _gravar_cas(cfg, rev_lido)
         except ValueError as exc:
             return _erro(_t('config recusada: {v0}', v0=exc))
-        print(_t('ensaio em sombra: {v0}', v0=_t('ligado') if acao == 'on' else _t('desligado')))
+        onde = _t('no perfil {v0}', v0=perfil_alvo) if perfil_alvo else _t('no global')
+        print(_t('ensaio em sombra {v0}: {v1}', v0=onde,
+                 v1=_t('ligado') if acao == 'on' else _t('desligado')))
         if acao == "on":
             print(_t('um braco sem vida medido mantem o ensaio parado (vmm sombra vida).'))
         return 0
@@ -308,6 +327,23 @@ def cmd_sombra(args) -> int:
     print(_t('braco a = {v0} | braco b = {v1}', v0=registo.get('braco_a'), v1=registo.get('braco_b')))
     print(_t('n por braco = {v0} | margem = {v1}', v0=registo.get('n_por_braco'), v1=registo.get('margem_nao_inferioridade')))
     print(_t('interruptor: {v0}', v0=_t('ligado') if bloco.get('activo') else _t('desligado')))
+    # O interruptor efectivo de cada perfil: e a pergunta verdadeira, porque o
+    # global vale para todos e o perfil que declara sobrepoe-se chave a chave.
+    # Mostrar so o global foi o que fez o dono acreditar que desligava o ensaio
+    # no trabalho quando estava a desliga-lo em tres perfis.
+    perfis = cfg.get("perfis") if isinstance(cfg.get("perfis"), dict) else {}
+    if perfis:
+        print(_t('por perfil (efectivo, origem):'))
+        for nome in sorted(perfis):
+            try:
+                ef = g.sombra_efectiva(cfg, nome)
+            except Exception:  # noqa: BLE001 - diagnostico nunca parte o comando
+                continue
+            print(_t('  {v0}: {v1} ({v2}) ttl {v3}h',
+                     v0=nome,
+                     v1=_t('ligado') if ef.get('activo') else _t('desligado'),
+                     v2=ef.get('origem'),
+                     v3=ef.get('vida_ttl_h')))
     vida = {}
     caminho_vida = base / "vida.json"
     if caminho_vida.exists():
@@ -1405,6 +1441,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("sombra", help="ensaio A/B: pre-registo, vida dos bracos, interruptor")
     s.add_argument("acao", nargs="?", default="estado",
                    choices=["estado", "vida", "on", "off"])
+    s.add_argument("--perfil", default="",
+                   help=_t("interruptor so deste perfil (on/off); sem isto e o global"))
     s.set_defaults(func=cmd_sombra)
 
     s = sub.add_parser("retencao", help="ledger: tamanho e compactacao do detalhe antigo")
