@@ -291,16 +291,29 @@ def testes() -> None:
         # O `alterar` valida a config INTEIRA: uma escrita cirurgica que
         # apagasse o resto passaria despercebida no painel e rebentaria ao
         # gravar. Prova-se que os outros blocos continuam la.
+        vivo_cfg = json.loads(Path(os.environ.get("VMM_CONFIG_VIVA")
+                                   or "/opt/data/plugin-data/vipernet-model-manager/config.json"
+                                   ).read_text(encoding="utf-8"))
         check("interruptor: nao mexe no resto da config",
               cfg_disco.get("analise", {}).get("limiares")
-              and list(cfg_disco.get("perfis", {})) == ["default", "pessoal", "trabalho"],
-              json.dumps({"perfis": list(cfg_disco.get("perfis", {}))}))
+              and list(cfg_disco.get("perfis", {})) == list(vivo_cfg.get("perfis", {})),
+              json.dumps({"perfis": list(cfg_disco.get("perfis", {})),
+                          "vivos": list(vivo_cfg.get("perfis", {}))}))
         check("interruptor: a sonda de vida fica intacta",
               cfg_disco["sombra"].get("vida_ttl_h") == 24,
               json.dumps(cfg_disco.get("sombra")))
-        check("interruptor: so o bloco sombra mudou de tamanho",
-              set(cfg_disco["sombra"]) == {"activo", "vida_ttl_h"},
+        # O interruptor global passou a ter casa propria: `global_control` com o
+        # valor, o instante e o autor. E a unica chave nova que o gesto escreve.
+        check("interruptor: o bloco sombra ganha global_control e nada mais",
+              set(cfg_disco["sombra"]) == {"activo", "vida_ttl_h", "global_control"},
               json.dumps(sorted(cfg_disco.get("sombra", {}))))
+        _ctrl = cfg_disco["sombra"].get("global_control") or {}
+        check("interruptor: global_control diz o valor, o instante e o autor",
+              _ctrl.get("activo") is False and _ctrl.get("por") == "painel"
+              and bool(_ctrl.get("ts")), json.dumps(_ctrl, ensure_ascii=False))
+        check("interruptor: activo e global_control.activo concordam",
+              cfg_disco["sombra"].get("activo") == _ctrl.get("activo"),
+              json.dumps(cfg_disco.get("sombra"), ensure_ascii=False))
 
         # -------------------------------------------------- 8. booleano honesto
         check("_verdadeiro: 'false' nao e verdadeiro", api._verdadeiro("false") is False)

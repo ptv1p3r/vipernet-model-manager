@@ -23,7 +23,9 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -249,14 +251,36 @@ def _chamar_modelo(provider: str, modelo: str) -> dict[str, Any]:
 
 
 def cmd_sombra(args) -> int:
-    """Estado, sonda de vida e interruptor do ensaio em sombra."""
+    """Estado, sonda de vida, interruptor (global e por perfil) e ledger de controlo."""
     acao = getattr(args, "acao", None) or "estado"
     perfil_alvo = str(getattr(args, "perfil", "") or "").strip()
-    if acao in ("on", "off"):
+    motivo = str(getattr(args, "motivo", "") or "").strip()
+    if acao == "controlo":
+        quantos = max(1, int(getattr(args, "n", 20) or 20))
+        entradas = g.ler_controlo_sombra(quantos)
+        if not entradas:
+            print(_t('sem controlos registados em {v0}', v0=g.dir_sombra() / g.FICHEIRO_CONTROLO_SOMBRA))
+            return 0
+        for entrada in entradas:
+            print(_t('{v0} | {v1} | {v2} | {v3} -> {v4} | por {v5} | rev {v6}',
+                     v0=entrada.get('ts'), v1=entrada.get('acao'),
+                     v2=entrada.get('ambito'),
+                     v3=_t('ligado') if (entrada.get('antes') or {}).get('activo') else _t('desligado'),
+                     v4=_t('ligado') if (entrada.get('depois') or {}).get('activo') else _t('desligado'),
+                     v5=entrada.get('por'), v6=entrada.get('rev') or '-'))
+        return 0
+    if acao in ("on", "off", "herdar"):
+        if acao == "herdar" and not perfil_alvo:
+            return _erro(_t('herdar precisa de --perfil: o global herda-se de si proprio'), 2)
         cfg, _ = _cfg()
         rev_lido = g.rev(cfg)
+        antecedente = g.sombra_efectiva(cfg, perfil_alvo) if perfil_alvo else {
+            "activo": g.sombra_ligada(cfg.get("sombra")),
+            "vida_ttl_h": (cfg.get("sombra") or {}).get("vida_ttl_h"),
+            "origem": "global",
+        }
         if perfil_alvo:
-            # Interruptor do perfil: grava-se SO a chave `activo` no bloco do
+            # Interruptor do perfil: grava-se SO o que foi decidido no bloco do
             # perfil, para o `vida_ttl_h` continuar a herdar do global. Copiar o
             # ttl para aqui fixava o perfil ao numero do dia — o mesmo defeito
             # que a `analise` evita ao gravar apenas o delta.
@@ -266,15 +290,33 @@ def cmd_sombra(args) -> int:
             alvo = perfis[perfil_alvo]
             if not isinstance(alvo, dict):
                 return _erro(_t('perfis.{v0} nao e um objecto', v0=perfil_alvo))
-            bloco = alvo.get("sombra")
-            bloco = dict(bloco) if isinstance(bloco, dict) else {}
-            bloco["activo"] = acao == "on"
+            bruto = alvo.get("sombra")
+            bloco = dict(bruto) if isinstance(bruto, dict) else {}
+            bloco.pop("global_control", None)  # o interruptor global nao se copia
+            if acao == "herdar":
+                # Heranca explicita: o perfil passa a obedecer ao interruptor
+                # global. `activo` sai do bloco — dois interruptores no mesmo
+                # sitio e o que fez o dono desligar o errado.
+                bloco.pop("activo", None)
+                bloco["herda"] = True
+            else:
+                bloco["activo"] = acao == "on"
+                bloco.pop("herda", None)  # escolha explicita ganha a heranca
             alvo["sombra"] = bloco
         else:
-            bloco = cfg.get("sombra")
-            if not isinstance(bloco, dict):
-                bloco = {}
+            bruto = cfg.get("sombra")
+            bloco = dict(bruto) if isinstance(bruto, dict) else {}
+            agora = datetime.now().astimezone().replace(microsecond=0).isoformat()
             bloco["activo"] = acao == "on"
+            # O interruptor global passa a ter casa, instante e autor. `activo`
+            # mantem-se porque ha config antiga e leitores que so olham para ele,
+            # e a validacao recusa as duas chaves a discordarem.
+            bloco["global_control"] = {
+                "activo": acao == "on",
+                "ts": agora,
+                "por": f"cli:{os.environ.get('USER') or 'sombra'}",
+                "motivo": motivo,
+            }
             bloco.setdefault("vida_ttl_h", 24)
             cfg["sombra"] = bloco
         try:
@@ -282,8 +324,34 @@ def cmd_sombra(args) -> int:
         except ValueError as exc:
             return _erro(_t('config recusada: {v0}', v0=exc))
         onde = _t('no perfil {v0}', v0=perfil_alvo) if perfil_alvo else _t('no global')
-        print(_t('ensaio em sombra {v0}: {v1}', v0=onde,
-                 v1=_t('ligado') if acao == 'on' else _t('desligado')))
+        depois_cfg, _ = _cfg()
+        posteriores = g.sombra_efectiva(depois_cfg, perfil_alvo) if perfil_alvo else {
+            "activo": g.sombra_ligada(depois_cfg.get("sombra")),
+            "vida_ttl_h": (depois_cfg.get("sombra") or {}).get("vida_ttl_h"),
+            "origem": "global",
+        }
+        # O ledger de controlo escreve-se depois da gravacao confirmada: um gesto
+        # que nao chegou ao ficheiro nao pode ficar registado como feito.
+        try:
+            entrada = g.registar_controlo_sombra(
+                acao=acao, ambito=("global" if not perfil_alvo else f"perfil:{perfil_alvo}"),
+                antes=antecedente, depois=posteriores,
+                por=f"cli:{os.environ.get('USER') or 'sombra'}",
+                perfil=perfil_alvo, rev_cfg=g.rev(depois_cfg))
+        except OSError as exc:  # noqa: BLE001 - o interruptor ja valeu; o rasto e que falhou
+            entrada = None
+            print(_t('aviso: controlo nao registado no ledger: {v0}', v0=exc), file=sys.stderr)
+        if acao == "herdar":
+            print(_t('ensaio em sombra {v0}: herda o interruptor global', v0=onde))
+        else:
+            print(_t('ensaio em sombra {v0}: {v1}', v0=onde,
+                     v1=_t('ligado') if acao == 'on' else _t('desligado')))
+        if entrada:
+            print(_t('registado em {v0}: {v1} ({v2} -> {v3})',
+                     v0=g.dir_sombra() / g.FICHEIRO_CONTROLO_SOMBRA,
+                     v1=entrada['ts'],
+                     v2=_t('ligado') if (entrada['antes'] or {}).get('activo') else _t('desligado'),
+                     v3=_t('ligado') if (entrada['depois'] or {}).get('activo') else _t('desligado')))
         if acao == "on":
             print(_t('um braco sem vida medido mantem o ensaio parado (vmm sombra vida).'))
         return 0
@@ -326,7 +394,18 @@ def cmd_sombra(args) -> int:
     print(_t('ensaio: {v0} | unidade: {v1}', v0=registo.get('ensaio'), v1=registo.get('unidade_de_randomizacao')))
     print(_t('braco a = {v0} | braco b = {v1}', v0=registo.get('braco_a'), v1=registo.get('braco_b')))
     print(_t('n por braco = {v0} | margem = {v1}', v0=registo.get('n_por_braco'), v1=registo.get('margem_nao_inferioridade')))
-    print(_t('interruptor: {v0}', v0=_t('ligado') if bloco.get('activo') else _t('desligado')))
+    print(_t('interruptor global: {v0}',
+             v0=_t('ligado') if g.sombra_ligada(bloco) else _t('desligado')))
+    controlo = bloco.get('global_control') if isinstance(bloco.get('global_control'), dict) else {}
+    if controlo:
+        linha_controlo = _t('  global_control: activo={v0} ts={v1} por={v2} motivo={v3}',
+                            v0=controlo.get('activo'), v1=controlo.get('ts') or '-',
+                            v2=controlo.get('por') or '-',
+                            v3=controlo.get('motivo') or '-')
+        print(linha_controlo)
+    else:
+        print(_t('  sem global_control: o interruptor e o `activo` do topo do bloco '
+                 '(vmm sombra on/off escreve-o)'))
     # O interruptor efectivo de cada perfil: e a pergunta verdadeira, porque o
     # global vale para todos e o perfil que declara sobrepoe-se chave a chave.
     # Mostrar so o global foi o que fez o dono acreditar que desligava o ensaio
@@ -1440,9 +1519,13 @@ def build_parser() -> argparse.ArgumentParser:
     # para o CLI e o job agendado usarem o mesmo numero.
     s = sub.add_parser("sombra", help="ensaio A/B: pre-registo, vida dos bracos, interruptor")
     s.add_argument("acao", nargs="?", default="estado",
-                   choices=["estado", "vida", "on", "off"])
+                   choices=["estado", "vida", "on", "off", "herdar", "controlo"])
     s.add_argument("--perfil", default="",
-                   help=_t("interruptor so deste perfil (on/off); sem isto e o global"))
+                   help=_t("interruptor so deste perfil (on/off/herdar); sem isto e o global"))
+    s.add_argument("--motivo", default="",
+                   help=_t("porque se ligou/desligou (fica no ledger de controlo)"))
+    s.add_argument("--n", type=int, default=20,
+                   help=_t("quantas entradas do ledger de controlo mostrar (com 'controlo')"))
     s.set_defaults(func=cmd_sombra)
 
     s = sub.add_parser("retencao", help="ledger: tamanho e compactacao do detalhe antigo")

@@ -441,6 +441,10 @@ def _sombra_config(config: dict[str, Any] | None,
     inteiro obrigava cada perfil a repetir o bloco todo, e o primeiro campo
     esquecido voltava ao valor por omissao em silencio.
 
+    O interruptor GLOBAL vive em `sombra.global_control` e manda sobre o `activo`
+    do topo (que continua a ser lido para a config escrita antes dele). Um perfil
+    com `herda: true` obedece ao global mesmo que traga um `activo` proprio.
+
     Ausente ou malformado vale `{}` — desligado. Nao se usa `perfil_config`
     aqui porque isto corre a cada turno e nao precisa do `deepcopy` inteiro.
     """
@@ -449,6 +453,9 @@ def _sombra_config(config: dict[str, Any] | None,
     global_s = cfg.get("sombra")
     if isinstance(global_s, dict):
         bloco.update(global_s)
+        controlo = global_s.get("global_control")
+        if isinstance(controlo, dict) and isinstance(controlo.get("activo"), bool):
+            bloco["activo"] = bool(controlo["activo"])
     perfis = cfg.get("perfis")
     if perfil and isinstance(perfis, dict):
         local: Any = None
@@ -461,7 +468,18 @@ def _sombra_config(config: dict[str, Any] | None,
             if isinstance(curinga, dict):
                 local = curinga.get("sombra")
         if isinstance(local, dict):
+            if local.get("herda") is True:
+                # Heranca explicita: nada do bloco local se aplica. Um `activo`
+                # antigo no mesmo bloco nao pode ganhar ao interruptor global.
+                bloco.pop("herda", None)
+                return bloco
             bloco.update(local)
+            if "activo" in local:
+                # O perfil declarou o interruptor: ganha ao global, e o
+                # `global_control` herdado sai do bloco para nao ganhar-lhe na
+                # leitura seguinte (dois interruptores, uma resposta so).
+                bloco.pop("global_control", None)
+                bloco["activo"] = bool(local["activo"])
     return bloco
 
 

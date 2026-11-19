@@ -9,6 +9,37 @@ what that reviewer reads first.
 Older history (before 3.45.0) lives in `git log` — the repository was published
 with one automatic commit per change, each with a per-file summary.
 
+## 3.47.20 — 2026-11-19
+
+- **O interruptor do ensaio em sombra ganha casa global (`sombra.global_control`) e rasto em ledger.**
+  O bloco `sombra` tinha um `activo` anónimo: ligava-se e desligava-se sem ficar registado quem, quando
+  e de que valor para que valor, e o painel e o CLI podiam responder coisas diferentes sobre o mesmo
+  interruptor. `global_control` guarda `{activo, ts, por, motivo}` e passa a ser a casa do interruptor
+  **global**; o `activo` do topo continua a ser lido (config antiga e perfis que só declaram o
+  interruptor) e a validação **recusa** as duas chaves a discordarem, em vez de desempatar pela ordem de
+  leitura. Uma só regra de leitura (`gestor.sombra_ligada`) serve o CLI, o painel e o middleware.
+- **Herança por perfil explícita, com `herda: true`.** Ausente = o perfil declara o que quiser, como
+  sempre; `herda: true` = o perfil obedece ao interruptor global **mesmo que traga um `activo` próprio**
+  de uma versão anterior. Um perfil que declara `activo` ganha ao global e o `global_control` herdado sai
+  do bloco fundido — sem esse corte, um perfil ligado explicitamente aparecia desligado porque o bloco
+  global dizia o contrário (defeito apanhado pelo teste, não pelo uso).
+- **Ledger de controlo, append-only, em `aprendiz/sombra/controlo.jsonl`.** Uma linha por gesto — `ts`,
+  `acao` (`on`/`off`/`herdar`/`ttl`), `ambito` (`global` ou `perfil:<nome>`), `antes`, `depois`, `por`,
+  `rev` da config — escrita com `flock` e `fsync` **depois** da gravação confirmada: um gesto que não
+  chegou ao ficheiro não pode ficar registado como feito. `vmm sombra controlo --n N` lê-o de volta, e
+  linha ilegível é ignorada em vez de esconder as outras (é no dia do acidente que se lê isto).
+- **CLI:** `vmm sombra on|off [--perfil P] [--motivo M]`, `vmm sombra herdar --perfil P`,
+  `vmm sombra controlo [--n N]`. O `estado` mostra o `global_control` e a origem efectiva de cada perfil
+  (`global`, `proprio`, `herdado`, `padrao`). **Painel:** o `POST /sombra` escreve o mesmo bloco e regista
+  o mesmo ledger, e o cartão expõe os últimos 5 controlos.
+- **Config aplicada:** `sombra.global_control = {activo: true, ts: 2026-11-19T01:31:32+00:00,
+  por: passagem:vmm}` — preserva o `activo=true` que já estava em vigor — e `perfis.trabalho.sombra =
+  {herda: true}`. Medido: `vmm sombra off` no global põe os quatro perfis a `desligado`, o trabalho com
+  origem `herdado`, e `on` restitui; as duas linhas ficam no ledger.
+- Prova: `test_sombra_controlo.py` (15 testes: normalização, discordância, precedência, herança,
+  concordância CLI↔middleware sobre a config viva, ledger), `test_sombra_painel.py` 35/35,
+  `test_painel_estado.py` 120/120, `test_sombra.py` 35/35, `test_sombra_middleware.py` 25/25.
+
 ## 3.47.19 — 2026-11-19
 
 - **O orçamento de saída passa a estar garantido no fio de destino, para os dois fios do Foundry.**

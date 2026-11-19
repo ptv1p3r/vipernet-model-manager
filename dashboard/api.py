@@ -371,10 +371,18 @@ def _sombra_estado(cfg: dict[str, Any]) -> dict[str, Any]:
         # contrario). `declarado` distingue "escolheu" de "herdou": um perfil
         # sem bloco aparece com `declarado: {}` e `origem: global`.
         "global": {
-            "activo": bool(bloco.get("activo", False)),
+            # `activo` vem de `sombra_ligada`: o bloco `global_control` manda e o
+            # `activo` do topo so vale quando ele nao traz valor. Ler aqui o
+            # `activo` cru fazia o painel mostrar o interruptor antigo.
+            "activo": gestor.sombra_ligada(bloco),
             "vida_ttl_h": bloco.get("vida_ttl_h"),
+            "global_control": bloco.get("global_control") if isinstance(
+                bloco.get("global_control"), dict) else {},
         },
         "perfis": _sombra_por_perfil(cfg),
+        # Rasto do interruptor: quem o tocou, quando, e de que valor para que
+        # valor. Sem isto, o cartao mostra o estado e nao a historia dele.
+        "controlo": gestor.ler_controlo_sombra(5),
     }
 
 
@@ -1308,33 +1316,57 @@ def sombra_post(corpo: Any = Body(default=None)) -> JSONResponse:
     if not tem_activo and not tem_ttl and not (perfil and herdar):
         raise HTTPException(status_code=400, detail=t("indique 'activo' e/ou 'vida_ttl_h'"))
 
+    antes_holder: dict[str, Any] = {}
+
     def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
         if perfil:
             # Interruptor do perfil: o global fica intacto. E o que permite
             # desligar o ensaio no trabalho sem o desligar nos tres perfis.
-            # `herdar` apaga a declaracao do perfil e devolve-o ao global — sem
-            # isso nao havia como voltar atras sem editar o ficheiro a mao.
+            # `herdar` devolve o perfil ao interruptor global — sem isso nao
+            # havia como voltar atras sem editar o ficheiro a mao.
             perfis = cfg.get("perfis")
             if not isinstance(perfis, dict) or perfil not in perfis:
                 raise ValueError(t("perfil desconhecido: {p0}", p0=perfil))
             alvo = perfis[perfil]
             if not isinstance(alvo, dict):
                 raise ValueError(t("perfis.{p0} nao e um objecto", p0=perfil))
+            antes_holder.update(gestor.sombra_efectiva(cfg, perfil))
             if herdar:
-                alvo.pop("sombra", None)
+                # Heranca explicita, igual ao `vmm sombra herdar --perfil`: fica
+                # `herda: true` no bloco e o `activo` sai, para nao haver dois
+                # interruptores a responder a mesma pergunta.
+                bloco = alvo.get("sombra")
+                bloco = dict(bloco) if isinstance(bloco, dict) else {}
+                bloco.pop("activo", None)
+                bloco["herda"] = True
+                alvo["sombra"] = bloco
                 return cfg
             bloco = alvo.get("sombra")
             bloco = dict(bloco) if isinstance(bloco, dict) else {}
+            bloco.pop("herda", None)  # escolha explicita ganha a heranca
             if tem_activo:
                 bloco["activo"] = bool(corpo.get("activo"))
             if tem_ttl:
                 bloco["vida_ttl_h"] = corpo.get("vida_ttl_h")
             alvo["sombra"] = bloco
             return cfg
+        antes_holder.update({
+            "activo": gestor.sombra_ligada(cfg.get("sombra")),
+            "vida_ttl_h": (cfg.get("sombra") or {}).get("vida_ttl_h"),
+            "origem": "global",
+        })
         bloco = cfg.get("sombra")
         bloco = dict(bloco) if isinstance(bloco, dict) else {}
         if tem_activo:
             bloco["activo"] = bool(corpo.get("activo"))
+            # O interruptor global ganha casa, instante e autor, como no CLI: um
+            # ensaio ligado as escuras nao diz a ninguem quando nem por quem.
+            bloco["global_control"] = {
+                "activo": bool(corpo.get("activo")),
+                "ts": datetime.now().astimezone().replace(microsecond=0).isoformat(),
+                "por": "painel",
+                "motivo": str(corpo.get("motivo") or "").strip(),
+            }
         if tem_ttl:
             bloco["vida_ttl_h"] = corpo.get("vida_ttl_h")
         cfg["sombra"] = bloco
@@ -1353,8 +1385,34 @@ def sombra_post(corpo: Any = Body(default=None)) -> JSONResponse:
         raise HTTPException(status_code=400, detail=t("nao gravou: {erro}", erro=exc)) from exc
 
     confirmado = _cfg()
+    # Rasto do gesto: escreve-se DEPOIS da gravacao confirmada — um controlo que
+    # nao chegou ao ficheiro nao pode ficar registado como feito. Falhar aqui nao
+    # derruba a resposta: o interruptor ja vale, e o aviso e a falta de linha.
+    try:
+        if perfil:
+            posteriores = gestor.sombra_efectiva(confirmado, perfil)
+            ambito = f"perfil:{perfil}"
+        else:
+            posteriores = {
+                "activo": gestor.sombra_ligada(confirmado.get("sombra")),
+                "vida_ttl_h": (confirmado.get("sombra") or {}).get("vida_ttl_h"),
+                "origem": "global",
+            }
+            ambito = "global"
+        if perfil and herdar:
+            acao = "herdar"
+        elif tem_activo:
+            acao = "on" if bool(corpo.get("activo")) else "off"
+        else:
+            acao = "ttl"
+        gestor.registar_controlo_sombra(
+            acao=acao, ambito=ambito, antes=(antes_holder or None), depois=posteriores,
+            por="painel", perfil=perfil, rev_cfg=_rev(confirmado))
+    except OSError:
+        pass
     return JSONResponse({"ok": True, "sombra": _sombra_estado(confirmado),
-                         "rev": _rev(confirmado)})
+                         "rev": _rev(confirmado),
+                         "controlo": gestor.ler_controlo_sombra(5)})
 
 
 @router.get("/sombra/progresso")

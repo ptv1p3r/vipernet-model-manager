@@ -61,6 +61,7 @@ import shutil
 import sys
 import time
 import traceback
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -1013,7 +1014,63 @@ def opcoes_estrategia() -> dict[str, list[dict[str, str]]]:
 
 
 SOMBRA_PADRAO: dict[str, Any] = {"activo": False, "vida_ttl_h": 24}
-_CHAVES_SOMBRA = frozenset(SOMBRA_PADRAO)
+# `global_control` e a casa do interruptor GLOBAL: o valor e quem o mudou. O
+# `activo` no topo do bloco continua a ser lido (config escrita antes desta
+# versao e perfil que so declara o interruptor), mas quem manda e o bloco.
+CONTROLO_SOMBRA_CHAVES = ("activo", "ts", "por", "motivo")
+_CHAVES_CONTROLO_SOMBRA = frozenset(CONTROLO_SOMBRA_CHAVES)
+_CHAVES_SOMBRA = frozenset(SOMBRA_PADRAO) | {"global_control", "herda"}
+
+
+def normalizar_controlo_sombra(
+        valor: Any, campo: str = "sombra.global_control"
+) -> tuple[dict[str, Any], list[str]]:
+    """Interruptor global do ensaio: o valor, o instante e quem o tocou.
+
+    `activo` sozinho nao diz quando nem por quem foi mudado, e um ensaio ligado
+    as escuras ja meteu trafego em modelos que tinham morrido. So se grava o que
+    foi declarado, como no resto do ficheiro: chave ausente = nao declarada.
+    """
+    erros: list[str] = []
+    if valor is None:
+        return {}, erros
+    if not isinstance(valor, dict):
+        return {}, [_t("{p0} nao e um objecto", p0=campo)]
+    _recusar_desconhecidas(valor, _CHAVES_CONTROLO_SOMBRA, campo, erros)
+    saida: dict[str, Any] = {}
+    if "activo" in valor:
+        if isinstance(valor["activo"], bool):
+            saida["activo"] = bool(valor["activo"])
+        else:
+            erros.append(_t("{p0}.activo tem de ser booleano", p0=campo))
+    for chave in ("ts", "por", "motivo"):
+        if chave in valor:
+            if isinstance(valor[chave], str):
+                saida[chave] = valor[chave].strip()
+            else:
+                erros.append(_t("{p0}.{p1} tem de ser texto", p0=campo, p1=chave))
+    if "ts" in saida and saida["ts"]:
+        try:
+            datetime.fromisoformat(saida["ts"].replace("Z", "+00:00"))
+        except ValueError:
+            erros.append(_t("{p0}.ts nao e uma data ISO 8601: {p1}", p0=campo, p1=saida["ts"]))
+    return saida, erros
+
+
+def sombra_ligada(bloco: Any) -> bool:
+    """Interruptor em vigor num bloco `sombra` — uma so regra para todos.
+
+    `global_control` manda; `activo` no topo do bloco vale quando o bloco novo
+    nao traz valor. Duas leituras diferentes em sitios diferentes faziam o CLI e
+    o middleware responder a mesma pergunta com respostas opostas.
+    """
+    if not isinstance(bloco, dict):
+        return False
+    controlo = bloco.get("global_control")
+    if isinstance(controlo, dict) and isinstance(controlo.get("activo"), bool):
+        return bool(controlo["activo"])
+    return bool(bloco.get("activo"))
+
 
 
 def normalizar_sombra(valor: Any,
@@ -1045,6 +1102,30 @@ def normalizar_sombra(valor: Any,
                 erros.append(_t("{p0}.vida_ttl_h fora de 1..168 horas", p0=campo))
             else:
                 saida["vida_ttl_h"] = int(ttl) if ttl.is_integer() else ttl
+    if "herda" in valor:
+        # Heranca explicita: o perfil segue o interruptor global mesmo que traga
+        # um `activo` proprio. Ausente = o perfil declara o que quiser (regra de
+        # sempre); `true` = obedece ao global.
+        if isinstance(valor["herda"], bool):
+            saida["herda"] = bool(valor["herda"])
+        else:
+            erros.append(_t("{p0}.herda tem de ser booleano", p0=campo))
+    if "global_control" in valor:
+        controlo, erros_controlo = normalizar_controlo_sombra(
+            valor["global_control"], f"{campo}.global_control")
+        erros.extend(erros_controlo)
+        if controlo:
+            saida["global_control"] = controlo
+    # Um interruptor com duas casas tem de dizer o mesmo nas duas. Se o `activo`
+    # do topo e o `global_control.activo` discordarem, o ficheiro e ambiguo e o
+    # valor que decide trafego passaria a ser escolhido pela ordem de leitura —
+    # por isso e erro de validacao, nao um desempate silencioso.
+    if ("activo" in saida and isinstance(saida.get("global_control"), dict)
+            and "activo" in saida["global_control"]
+            and saida["global_control"]["activo"] != saida["activo"]):
+        erros.append(_t(
+            "{p0}.activo ({p1}) e {p0}.global_control.activo ({p2}) discordam",
+            p0=campo, p1=saida["activo"], p2=saida["global_control"]["activo"]))
     return saida, erros
 
 
@@ -2125,10 +2206,18 @@ def perfil_config(cfg: dict[str, Any], perfil: str) -> dict[str, Any] | None:
         sombra_efectiva_bloco.update(
             {k: v for k, v in global_sombra.items() if k in _CHAVES_SOMBRA})
     local_sombra = saida.get("sombra")
+    herda_sombra = isinstance(local_sombra, dict) and local_sombra.get("herda") is True
     if isinstance(local_sombra, dict) and local_sombra:
-        sombra_efectiva_bloco.update(
-            {k: v for k, v in local_sombra.items() if k in _CHAVES_SOMBRA})
-        saida["sombra_origem"] = "proprio"
+        if herda_sombra:
+            # Heranca explicita: o bloco do perfil obedece ao global. Nao se funde
+            # nada do local — um `activo` antigo no mesmo bloco nao pode
+            # ressuscitar por cima de um interruptor global desligado.
+            sombra_efectiva_bloco["herda"] = True
+            saida["sombra_origem"] = "herdado"
+        else:
+            sombra_efectiva_bloco.update(
+                {k: v for k, v in local_sombra.items() if k in _CHAVES_SOMBRA})
+            saida["sombra_origem"] = "proprio"
     elif sombra_efectiva_bloco:
         saida["sombra_origem"] = "global"
     else:
@@ -2161,19 +2250,128 @@ def estrategia_efectiva(cfg: dict[str, Any], perfil: str) -> dict[str, str]:
 def sombra_efectiva(cfg: dict[str, Any], perfil: str) -> dict[str, Any]:
     """Interruptor do ensaio em sombra que este perfil usa, com a origem.
 
-    Tres camadas: global -> `perfis.<perfil>.sombra` -> `perfis.*.sombra` (o
-    curinga que o `perfil_config` ja aplica). A origem distingue `proprio` de
-    `global`, porque um perfil que herda parece ter escolhido e o dono muda o
-    global sem perceber por que aquele perfil nao mudou.
+    Tres camadas, pela ordem que o resto do `gestor` ja usa: `config.sombra`
+    (o interruptor **global**, cuja casa e `sombra.global_control`),
+    `perfis.<perfil>.sombra` e `perfis.*.sombra` (o curinga). A origem distingue
+    `proprio` de `global` e de `herdado`: um perfil que herda parece ter
+    escolhido, e o dono muda o global sem perceber por que aquele perfil nao
+    mudou.
+
+    O bloco do perfil funde-se **chave a chave**. Com `herda: true` o perfil
+    obedece ao global mesmo que traga um `activo` proprio — e a forma de dizer
+    "este perfil segue o interruptor de cima" sem apagar o resto do bloco.
     """
     pcfg = perfil_config(cfg, perfil) or {}
-    cru = pcfg.get("sombra")
-    bloco: dict[str, Any] = cru if isinstance(cru, dict) else {}
+    nome_cfg = str(pcfg.get("origem_config") or perfil)
+    cru = ((cfg.get("perfis") or {}).get(nome_cfg) or {}).get("sombra")
+    proprio = cru if isinstance(cru, dict) else {}
+    cru_global = cfg.get("sombra")
+    global_bloco = cru_global if isinstance(cru_global, dict) else {}
+
+    herda = proprio.get("herda") is True
+    bloco: dict[str, Any] = dict(global_bloco)
+    if proprio and not herda:
+        bloco.update(proprio)
+        if "activo" in proprio:
+            # O perfil declarou o interruptor: o `global_control` herdado nao
+            # pode ganhar-lhe. Sem este corte, um perfil ligado explicitamente
+            # aparecia desligado porque o bloco global dizia o contrario — dois
+            # interruptores a responder a mesma pergunta.
+            bloco.pop("global_control", None)
+    if herda:
+        origem = "herdado"
+    elif proprio:
+        origem = "proprio"
+    elif global_bloco:
+        origem = "global"
+    else:
+        origem = "padrao"
+    ttl = bloco.get("vida_ttl_h", SOMBRA_PADRAO["vida_ttl_h"])
+    cru_controlo = bloco.get("global_control")
+    controlo: dict[str, Any] = cru_controlo if isinstance(cru_controlo, dict) else {}
     return {
-        "activo": bool(bloco.get("activo", SOMBRA_PADRAO["activo"])),
-        "vida_ttl_h": bloco.get("vida_ttl_h", SOMBRA_PADRAO["vida_ttl_h"]),
-        "origem": str(pcfg.get("sombra_origem") or "padrao"),
+        "activo": sombra_ligada(bloco),
+        "vida_ttl_h": ttl,
+        "origem": origem,
+        # De onde veio o valor do interruptor: o bloco novo ou o `activo` legado.
+        # Sem isto, um ficheiro com as duas chaves nao diz qual delas obedeceu.
+        "interruptor": "global_control" if isinstance(controlo.get("activo"), bool) else "activo",
+        "controlo": controlo,
     }
+
+
+FICHEIRO_CONTROLO_SOMBRA = "controlo.jsonl"
+
+
+def dir_sombra() -> Path:
+    """Pasta do ensaio: `aprendiz/sombra` — a mesma que o middleware e o CLI leem."""
+    return directorio() / "aprendiz" / "sombra"
+
+
+def registar_controlo_sombra(*, acao: str, ambito: str, antes: Any, depois: Any,
+                             por: str = "", perfil: str = "",
+                             rev_cfg: str = "") -> dict[str, Any]:
+    """Grava **uma** linha no ledger de controlo do ensaio, append-only.
+
+    O interruptor do ensaio nao tinha rasto: ligava-se e desligava-se sem ficar
+    registado quem, quando e de que valor para que valor — e um ensaio ligado as
+    escuras ja meteu trafego em modelos mortos. Uma linha por gesto, com o estado
+    antes e depois, e o que torna o interruptor auditavel.
+
+    Nunca levanta por si: quem chama decide o que fazer. Mas a escrita e feita
+    com `flock` e `fsync` porque o CLI, o painel e o agente podem tocar ao mesmo
+    tempo, e uma linha partida ao meio estragava o ficheiro inteiro.
+    """
+    agora = datetime.now().astimezone().replace(microsecond=0).isoformat()
+    entrada: dict[str, Any] = {
+        "ts": agora,
+        "acao": str(acao),
+        "ambito": str(ambito),
+        "perfil": (str(perfil) or None),
+        "antes": antes,
+        "depois": depois,
+        "por": str(por or "desconhecido"),
+        "rev": str(rev_cfg or ""),
+    }
+    destino = dir_sombra() / FICHEIRO_CONTROLO_SOMBRA
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    with open(destino, "a", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            fh.write(json.dumps(entrada, ensure_ascii=False, sort_keys=True) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    return entrada
+
+
+def ler_controlo_sombra(n: int = 20) -> list[dict[str, Any]]:
+    """Ultimas `n` linhas do ledger de controlo, da mais antiga para a mais nova.
+
+    Linha ilegivel e ignorada em vez de rebentar a leitura: um registo de auditoria
+    serve para ser lido depois de um acidente, e e precisamente nesse dia que uma
+    linha mal escrita nao pode esconder as outras.
+    """
+    caminho = dir_sombra() / FICHEIRO_CONTROLO_SOMBRA
+    if not caminho.exists():
+        return []
+    try:
+        linhas = caminho.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    saida: list[dict[str, Any]] = []
+    for linha in linhas[-max(1, int(n)):]:
+        linha = linha.strip()
+        if not linha:
+            continue
+        try:
+            dados = json.loads(linha)
+        except ValueError:
+            continue
+        if isinstance(dados, dict):
+            saida.append(dados)
+    return saida
 
 
 def tarefa_persistente_efectiva(cfg: dict[str, Any], perfil: str) -> dict[str, Any]:
