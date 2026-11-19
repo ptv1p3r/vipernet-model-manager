@@ -9,6 +9,26 @@ what that reviewer reads first.
 Older history (before 3.45.0) lives in `git log` — the repository was published
 with one automatic commit per change, each with a per-file summary.
 
+## 3.47.19 — 2026-11-19
+
+- **O orçamento de saída passa a estar garantido no fio de destino, para os dois fios do Foundry.**
+  A reconstrução do payload (`_payload_na_forma_do_destino`) cobre a troca de fio, mas só quando
+  consegue reconstruir: um construtor que falhe (fail-open), um payload vindo de outro caminho ou um
+  orçamento ausente no próprio fio deixavam a chamada sem `max_tokens` — e a Messages da Anthropic
+  recusa-se a chamar sem ele (`TypeError: Messages.stream() missing 1 required keyword-only argument:
+  'max_tokens'`), que o classificador do core lê como `context_overflow` e resolve reiniciando a
+  sessão. A guarda nova, `_garantir_orcamento_saida`, corre **depois** do esforço e antes da
+  resposta, nos três caminhos que devolvem um pedido (troca, troca só de modelo, rota já activa):
+  `max_tokens` positivo para `anthropic_messages`, `max_output_tokens` positivo para
+  `codex_responses`, os campos do outro fio removidos, e o valor herdado (`agent.max_tokens`, o
+  orçamento do fio anterior) respeitado em vez de inventado. Tecto de recurso: 128 000, medido a
+  2026-11-19 nos deployments — `/anthropic/v1/messages` responde 200 com 8 192, 64 000 e 128 000 e
+  `/openai/v1/responses` responde 200 com `max_output_tokens` 128 000. O evento `troca` do ledger
+  ganha `orcamento` quando o campo é preenchido (antes era um defeito silencioso). Provado ponta a
+  ponta contra os dois deployments com o payload real do construtor do core: 200 nos quatro casos
+  (claude directo, gpt directo, gpt→claude, claude→gpt); 12 verificações novas em
+  `selftest.py::testes_orcamento_saida` (235/235 `PASS`).
+
 ## 3.47.18 — 2026-11-18
 
 - **`key_cmd` passa a resolver credenciais de provider custom.** `seams.py::_de_config_custom`

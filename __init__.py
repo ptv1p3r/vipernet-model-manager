@@ -1228,6 +1228,71 @@ def _payload_na_forma_do_destino(agente: Any, pedido: dict[str, Any],
     return novo, {"de": de or "desconhecido", "para": para, "reconstruido": True}
 
 
+#: Orcamento de saida por familia de fio do destino: (campo, tecto). Medido a
+#: 2026-11-19 nos deployments do Foundry: `/anthropic/v1/messages` responde 200
+#: com `max_tokens` 8192, 64 000 e 128 000, e `/openai/v1/responses` responde 200
+#: com `max_output_tokens` 128 000 — e tambem sem campo nenhum. O tecto so entra
+#: quando o payload chega sem orcamento valido; um orcamento ja presente (o que o
+#: core pos) respeita-se.
+_ORCAMENTO_SAIDA = {
+    "anthropic_messages": ("max_tokens", 128_000),
+    "codex_responses": ("max_output_tokens", 128_000),
+}
+#: Campos de orcamento das outras familias: um payload que muda de fio conserva
+#: os do fio anterior, e o destino recusa-os (a Responses responde 400 a
+#: `max_tokens`; a Messages exige `max_tokens`, nao `max_completion_tokens`).
+_ORCAMENTO_ALHEIO = ("max_tokens", "max_completion_tokens", "max_output_tokens")
+
+
+def _orcamento_valido(valor: Any) -> int:
+    """``valor`` como inteiro positivo, ou 0 quando nao serve de orcamento."""
+    if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+        return 0
+    try:
+        inteiro = int(valor)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return inteiro if inteiro > 0 else 0
+
+
+def _garantir_orcamento_saida(pedido: dict[str, Any], modo: Any,
+                              agente: Any = None) -> tuple[dict[str, Any], str]:
+    """Payload com o campo de orcamento que o fio de destino exige.
+
+    A Messages da Anthropic exige `max_tokens` e recusa-se a chamar sem ele
+    (`TypeError: Messages.stream() missing 1 required keyword-only argument:
+    'max_tokens'`), e o classificador do core le a palavra nua `max_tokens` como
+    contexto excedido — o turno morre a reiniciar a sessao em vez de repetir.
+    Medido a 2026-11-18 nos dois fios do Foundry. A Responses dos GPT usa
+    `max_output_tokens` e responde 400 a `max_tokens` (medido a 2026-11-18).
+
+    A reconstrucao (`_payload_na_forma_do_destino`) cobre a troca de fio; esta
+    guarda cobre o resto — reconstrucao que falhou em fail-open, payload vindo de
+    outro construtor, ou orcamento ausente no proprio fio de destino. Devolve
+    `(pedido, campo_preenchido)`; `campo_preenchido` vazio significa intacto.
+    """
+    alvo = _ORCAMENTO_SAIDA.get(str(modo or "").strip().lower())
+    if not alvo:
+        return pedido, ""
+    campo, tecto = alvo
+    if _orcamento_valido(pedido.get(campo)):
+        return pedido, ""
+    herdado = _orcamento_valido(getattr(agente, "max_tokens", None))
+    if not herdado:
+        # Um payload do fio anterior traz o orcamento no campo do outro fio; o
+        # valor e a intencao do turno e nao se inventa outro.
+        outro = "max_output_tokens" if campo == "max_tokens" else "max_tokens"
+        herdado = _orcamento_valido(pedido.get(outro)) or _orcamento_valido(
+            pedido.get("max_completion_tokens"))
+    novo = dict(pedido)
+    for chave in _ORCAMENTO_ALHEIO:
+        if chave != campo:
+            novo.pop(chave, None)
+    novo[campo] = herdado or tecto
+    return novo, campo
+
+
+
 def _trocar(agente: Any, entrada: dict[str, Any], rota: dict[str, Any],
             perfil: str, sessao: str) -> dict[str, Any]:
     alvo_provider = rota["provider"] or entrada["provider"].lower()
@@ -1767,10 +1832,13 @@ def middleware_llm_request(
                 return None
             pedido, esforco_fio = _pedido_com_esforco(
                 {**request, "model": entrada["modelo"]}, entrada, rota, session_id)
+            pedido, orcamento = _garantir_orcamento_saida(
+                pedido, rota.get("api_mode") or entrada.get("api_mode"), agente)
             _registar({**resumo_de(base), "evento": "troca_so_modelo", "de": atual["modelo"],
                        "para": entrada["modelo"], "entrada": entrada["id"],
                        "acesso": entrada.get("acesso", ""),
                        "esforco": esforco_fio or "nao_aplicado",
+                       **(({"orcamento": orcamento} if orcamento else {})),
                        "ms": round((time.monotonic() - inicio) * 1000, 1)}, registar=registar)
             return {"request": pedido, "source": NOME,
                     "reason": f"{perfil}:complexidade={nivel}->{entrada['modelo']}"}
@@ -1781,6 +1849,8 @@ def middleware_llm_request(
             # repoe-se quando a entrada nao declara nenhum).
             esforco_agente = _aplicar_esforco(agente, entrada, session_id)
             pedido, esforco_fio = _pedido_com_esforco(request, entrada, rota, session_id)
+            pedido, orcamento = _garantir_orcamento_saida(
+                pedido, rota.get("api_mode") or entrada.get("api_mode"), agente)
             # Aqui escrevia-se o evento `sem_troca` — em cada chamada de API, com
             # o mesmo rasto. O rasto viaja agora na linha `resposta` (uma vez por
             # turno, e de novo quando a decisao muda), e o desfecho "nao trocou"
@@ -1788,6 +1858,9 @@ def middleware_llm_request(
             if esforco_fio:
                 return {"request": pedido, "source": NOME,
                         "reason": f"{perfil}:complexidade={nivel}:esforco={esforco_fio}"}
+            if orcamento:
+                return {"request": pedido, "source": NOME,
+                        "reason": f"{perfil}:complexidade={nivel}:orcamento={orcamento}"}
             return None
         try:
             aplicado = _trocar(agente, entrada, rota, perfil, session_id)
@@ -1837,14 +1910,17 @@ def middleware_llm_request(
             rota.get("api_mode") or entrada.get("api_mode"))
         pedido, esforco_fio = _pedido_com_esforco(
             pedido_bruto, entrada, rota, session_id)
+        pedido, orcamento = _garantir_orcamento_saida(
+            pedido, rota.get("api_mode") or entrada.get("api_mode"), agente)
         _registar({**resumo_de(base), "evento": "troca", "entrada": entrada["id"], "de": destino,
                    "acesso": entrada.get("acesso", ""),
                    "para": aplicado, "fonte_credencial": rota.get("source", ""),
                    "esforco": esforco_agente or "nao_declarado",
                    **({"preteridas": list(dict.fromkeys(falhadas))} if falhadas else {}),
                    **({"fio": fio} if fio else {}),
+                   **({"orcamento": orcamento} if orcamento else {}),
                    "ms": round((time.monotonic() - inicio) * 1000, 1)}, registar=registar)
-        if entrada["modelo"] != request.get("model") or esforco_fio or fio:
+        if entrada["modelo"] != request.get("model") or esforco_fio or fio or orcamento:
             return {"request": pedido, "source": NOME,
                     "reason": f"{perfil}:complexidade={nivel}->{aplicado['provider']}:{entrada['modelo']}"}
         return None

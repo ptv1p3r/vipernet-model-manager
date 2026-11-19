@@ -1715,6 +1715,80 @@ def testes_fio_do_payload() -> None:
           fio_sem is None and sem_mensagens.get("model") == "x")
 
 
+def testes_orcamento_saida() -> None:
+    """`max_tokens`/`max_output_tokens` presentes no fio de destino (Foundry).
+
+    Medido a 2026-11-18: a Messages da Anthropic recusa a chamada sem
+    `max_tokens` (`TypeError: ... missing 1 required keyword-only argument`) e a
+    Responses dos GPT responde 400 quando o payload leva `max_tokens`. A guarda
+    corre depois da reconstrucao, no payload que sai da middleware.
+    """
+    print("\n== orcamento de saida no fio de destino ==")
+    plugin = _mod("vmm_plugin_orcamento", AQUI / "__init__.py")
+
+    class Agente:
+        def __init__(self, max_tokens=None) -> None:
+            self.max_tokens = max_tokens
+
+    # Anthropic: o campo em falta e preenchido com o tecto medido.
+    novo, campo = plugin._garantir_orcamento_saida(
+        {"model": "claude-fable-5-2", "messages": [{"role": "user", "content": "ola"}]},
+        "anthropic_messages", Agente())
+    check("orcamento: anthropic sem max_tokens ganha o tecto",
+          campo == "max_tokens" and novo.get("max_tokens") == 128_000, str(novo))
+
+    # Orcamento declarado pelo core nao se sobrepoe.
+    igual, campo = plugin._garantir_orcamento_saida(
+        {"model": "claude-fable-5-2", "max_tokens": 8192}, "anthropic_messages", Agente())
+    check("orcamento: max_tokens do core respeita-se",
+          campo == "" and igual.get("max_tokens") == 8192)
+
+    # Zero/negativo nao servem de orcamento.
+    for invalido in (0, -1, "8192", None, True):
+        corrigido, campo = plugin._garantir_orcamento_saida(
+            {"model": "claude-fable-5-2", "max_tokens": invalido},
+            "anthropic_messages", Agente())
+        check(f"orcamento: max_tokens={invalido!r} e substituido",
+              campo == "max_tokens" and corrigido.get("max_tokens") == 128_000,
+              str(corrigido))
+
+    # `agent.max_tokens` ganha ao tecto, e o campo do outro fio nunca fica ao lado.
+    herdado, campo = plugin._garantir_orcamento_saida(
+        {"model": "claude-fable-5-2", "max_completion_tokens": 4096},
+        "anthropic_messages", Agente(max_tokens=16000))
+    check("orcamento: agent.max_tokens e a primeira escolha",
+          campo == "max_tokens" and herdado.get("max_tokens") == 16000
+          and "max_completion_tokens" not in herdado, str(herdado))
+
+    # Payload de chat que chega ao fio anthropic: o valor migra, a chave alheia sai.
+    migrado, campo = plugin._garantir_orcamento_saida(
+        {"model": "claude-fable-5-2", "max_completion_tokens": 777},
+        "anthropic_messages", Agente())
+    check("orcamento: valor do fio anterior migra para max_tokens",
+          campo == "max_tokens" and migrado.get("max_tokens") == 777
+          and "max_completion_tokens" not in migrado, str(migrado))
+
+    # Responses: o campo e `max_output_tokens`, e `max_tokens` sai.
+    gpt, campo = plugin._garantir_orcamento_saida(
+        {"model": "gpt-6.2-astra", "input": "ola", "max_tokens": 512},
+        "codex_responses", Agente())
+    check("orcamento: codex move max_tokens para max_output_tokens",
+          campo == "max_output_tokens" and gpt.get("max_output_tokens") == 512
+          and "max_tokens" not in gpt, str(gpt))
+
+    gpt_novo, campo = plugin._garantir_orcamento_saida(
+        {"model": "gpt-6.1-terra", "input": "ola"}, "codex_responses", Agente())
+    check("orcamento: codex sem cap ganha o tecto medido",
+          campo == "max_output_tokens" and gpt_novo.get("max_output_tokens") == 128_000,
+          str(gpt_novo))
+
+    # Fio desconhecido (chat/completions, bedrock) fica intacto.
+    for modo in ("", "chat_completions", "bedrock_converse", None):
+        pedido = {"model": "deepseek-flash", "messages": []}
+        intacto, campo = plugin._garantir_orcamento_saida(pedido, modo, Agente())
+        check(f"orcamento: {modo!r} nao e tocado", campo == "" and intacto is pedido)
+
+
 def main() -> int:
     testes_gestor()
     testes_plugin()
@@ -1725,6 +1799,7 @@ def main() -> int:
     testes_indicador_analise()
     testes_esforco()
     testes_fio_do_payload()
+    testes_orcamento_saida()
     testes_cli()
     testes_verificar()
     testes_recarga_de_modulo()
