@@ -47,6 +47,8 @@ def _carregar_plugin():
     spec = importlib.util.spec_from_file_location(
         "vmm_reconstrucao", RAIZ / "__init__.py",
         submodule_search_locations=[str(RAIZ)])
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"sem spec de importacao para {RAIZ / '__init__.py'}")
     modulo = importlib.util.module_from_spec(spec)
     sys.modules["vmm_reconstrucao"] = modulo
     spec.loader.exec_module(modulo)
@@ -225,6 +227,74 @@ class ReconstrucaoDoFio(unittest.TestCase):
         papeis = [m["role"] for m in convertidas]
         self.assertEqual(papeis, ["system", "user", "assistant"])
         self.assertEqual(convertidas[-1]["content"], "Bom dia")
+
+    def test_api_mode_vazio_infere_a_forma_do_corpo(self):
+        """Sem kwarg e sem `api_mode` na rota, o corpo diz o fio de origem.
+
+        Medido a 2026-11-19 13:35:42 no `default`: `api_mode` chegou vazio e a
+        rota de destino nao declarava fio, e a troca ficou com `fio: null` — o
+        turno morreu no SDK de destino exatamente como antes da correcao.
+        """
+        self.assertEqual(vmm._fio_do_payload(_responses()), "codex_responses")
+        self.assertEqual(vmm._fio_do_payload(_anthropic()), "anthropic_messages")
+        self.assertEqual(vmm._fio_do_payload(_chat(CONVERSA)), "chat_completions")
+
+        observadas: list = []
+        agente = _AgenteFalso("", "deepseek-flash", observadas)
+        agente.api_mode = "chat_completions"
+        novo, fio = vmm._payload_na_forma_do_destino(
+            agente, _responses(), "", "")
+        self.assertIsNotNone(fio, "a inferencia tinha de reconstruir")
+        self.assertEqual(fio["de"], "codex_responses")
+        self.assertEqual(fio["para"], "chat_completions")
+        self.assertIn("messages", novo)
+
+    def test_agente_sem_api_mode_nao_inventa_destino(self):
+        agente = _AgenteFalso("", "deepseek-flash", [])
+        pedido = _responses()
+        novo, fio = vmm._payload_na_forma_do_destino(agente, pedido, "", "")
+        self.assertIsNone(fio)
+        self.assertIs(novo, pedido)
+
+    def test_reconstrucao_para_deepseek_devolve_reasoning_content(self):
+        """O pad do `reasoning_content` tem de ser reaplicado apos reconstruir.
+
+        Medido a 2026-11-19 13:42:01 no perfil `trabalho`: a sessao alterna
+        `deepseek-flash` e `claude-fable-5-2`; depois de uma troca Anthropic ->
+        chat, o DeepSeek respondeu 400 «The `reasoning_content` in the thinking
+        mode must be passed back to the API». O core aplica este pad em
+        `build_request_payload`; a reconstrucao acontece por fora desse caminho.
+        """
+        from agent.message_sanitization import reapply_reasoning_echo
+
+        class AgenteThinking(_AgenteFalso):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.pad = 0
+
+            def _reapply_reasoning_echo_for_provider(self, mensagens):
+                self.pad += reapply_reasoning_echo(mensagens, True, None)
+
+        agente = AgenteThinking("chat_completions", "deepseek-flash", [])
+        novo, fio = vmm._payload_na_forma_do_destino(
+            agente, _anthropic(), "anthropic_messages", "chat_completions")
+        self.assertIsNotNone(fio)
+        self.assertTrue(agente.pad > 0, "o pad nao foi pedido ao agente")
+        assistentes = [m for m in novo["messages"] if m.get("role") == "assistant"]
+        self.assertTrue(assistentes)
+        for mensagem in assistentes:
+            self.assertIn("reasoning_content", mensagem)
+
+    def test_reparador_que_rebenta_nao_parte_a_reconstrucao(self):
+        class AgenteMau(_AgenteFalso):
+            def _reapply_reasoning_echo_for_provider(self, mensagens):
+                raise RuntimeError("boom")
+
+        agente = AgenteMau("chat_completions", "deepseek-flash", [])
+        novo, fio = vmm._payload_na_forma_do_destino(
+            agente, _responses(), "codex_responses", "chat_completions")
+        self.assertIsNotNone(fio)
+        self.assertIn("messages", novo)
 
 
 if __name__ == "__main__":

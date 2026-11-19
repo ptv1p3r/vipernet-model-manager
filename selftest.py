@@ -1694,10 +1694,39 @@ def testes_fio_do_payload() -> None:
     check("fio: mesma forma nao reconstroi",
           fio_mesmo is None and mesmo is pedido)
 
-    inverso, fio_inverso = plugin._payload_na_forma_do_destino(
-        Agente(), pedido, "anthropic_messages", "chat_completions")
-    check("fio: anthropic -> chat fica para o core (sem construtor aqui)",
-          fio_inverso is None and inverso is pedido)
+    # anthropic -> chat: reconstruido desde a 3.47.24, com a conversao do fio de
+    # origem. Antes, o destino chat recebia `system` e blocos `tool_use`, que o
+    # SDK recusa (`Completions.create() got an unexpected keyword argument
+    # 'system'`) — um erro por troca, recuperado no passo seguinte do laco.
+    pedido_anthropic = {
+        "model": "claude-fable-5-2", "max_tokens": 8192, "stream": True,
+        "system": "Es o assistente de teste.",
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "ola"}]},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "vou correr"},
+                {"type": "tool_use", "id": "t1", "name": "terminal",
+                 "input": {"command": "ls"}}]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "a.txt"}]},
+        ],
+    }
+    agente_chat = Agente()
+    invertido, fio_inverso = plugin._payload_na_forma_do_destino(
+        agente_chat, pedido_anthropic, "anthropic_messages", "chat_completions")
+    recebidas = agente_chat.recebidas[0] if agente_chat.recebidas else []
+    check("fio: anthropic -> chat reconstroi o payload",
+          bool(fio_inverso) and fio_inverso.get("de") == "anthropic_messages"
+          and fio_inverso.get("para") == "chat_completions", str(fio_inverso))
+    check("fio: anthropic -> chat leva o `system` como mensagem de sistema",
+          bool(recebidas) and recebidas[0].get("role") == "system"
+          and "assistente de teste" in str(recebidas[0].get("content")),
+          str(recebidas[:1]))
+    check("fio: anthropic -> chat converte `tool_use` em `tool_calls`",
+          any(m.get("tool_calls") for m in recebidas), str(recebidas))
+    check("fio: anthropic -> chat converte `tool_result` em mensagem de ferramenta",
+          any(m.get("role") == "tool" and m.get("tool_call_id") == "t1"
+              for m in recebidas), str(recebidas))
 
     destino_vazio, fio_vazio = plugin._payload_na_forma_do_destino(
         Agente(), pedido, "chat_completions", "")

@@ -9,6 +9,30 @@ what that reviewer reads first.
 Older history (before 3.45.0) lives in `git log` — the repository was published
 with one automatic commit per change, each with a per-file summary.
 
+## 3.47.24 — 2026-11-19
+
+- **A troca de fio passa a ser reconstruida nos dois sentidos.** Um turno cuja base fala o fio
+  `codex_responses` (o `gpt-6.2-astra` do `default`) e que caia num modelo de chat
+  (`deepseek-flash`, `north-mini-code:free`) morria com `TypeError: Missing required arguments;
+  Expected either ('messages' and 'model') ...`: o corpo ia com `input`/`instructions` e sem
+  `messages`. Medido a 2026-11-19 no `default`, 6 de 12 turnos trocados nesse sentido desde o dia
+  anterior. Era o que prendia o flash ao fundo do catalogo — a config aceitava a ordem e o primeiro
+  turno de cada sessao falhava.
+- **A conversao e do fio de origem, nao do destino.** `_mensagens_de_responses` traz `instructions`
+  para uma mensagem de sistema e converte `function_call`/`function_call_output` em `tool_calls` e
+  mensagens de ferramenta; `_mensagens_de_anthropic` faz o mesmo com `system` e com os blocos
+  `tool_use`/`tool_result`. Antes, so as mensagens eram passadas ao construtor e o prompt de sistema
+  perdia-se — a razao por que `_FIOS_RECONSTRUIVEIS` excluia `chat_completions`.
+- **`api_mode` vazio deixa de desligar a reconstrucao.** O catalogo nao declara `api_mode` e ha rotas
+  cujo `api_mode` nao vem no kwarg: a troca ficava com `fio: null` e o erro era o mesmo de antes. A
+  forma do corpo (`input`/`instructions`, `system`, `messages`) diz o fio de origem e o `api_mode` do
+  agente ja trocado diz o de destino. Sem nenhum dos dois, nada se inventa.
+- **A gordura do fio anterior nao viaja.** O construtor do core reconstroi o corpo do zero, por isso
+  `reasoning_effort`, `store` e o orcamento de saida do fio antigo desaparecem com a troca.
+- Testes: `test_reconstrucao_fio.py` (8 verificacoes, com ida e volta pelos transports reais do core)
+  e quatro verificacoes novas no `selftest.py` substituem a que dava o caso `anthropic -> chat` como
+  «fica para o core».
+
 ## 3.47.23 — 2026-11-19
 
 - **A tabela de modelos de cada perfil sai pela `ordem` declarada.** No cartão do perfil, a rota com a

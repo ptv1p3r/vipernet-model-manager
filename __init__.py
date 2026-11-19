@@ -1353,9 +1353,12 @@ def _mensagens_de_responses(pedido: dict[str, Any]) -> list[Any]:
             if isinstance(ultima, dict) and ultima.get("role") == "assistant":
                 ultima.setdefault("tool_calls", []).append(chamada)
                 if not ultima.get("content"):
-                    ultima["content"] = None
+                    # `""` e nao `None`: os providers de chat aceitam os dois,
+                    # mas o proxy de um deles recusa `null` num turno com
+                    # ferramentas — e o texto vazio ja diz o mesmo.
+                    ultima["content"] = ""
             else:
-                mensagens.append({"role": "assistant", "content": None,
+                mensagens.append({"role": "assistant", "content": "",
                                   "tool_calls": [chamada]})
         elif tipo == "function_call_output":
             call_id = str(item.get("call_id") or item.get("id") or "").strip()
@@ -1417,7 +1420,7 @@ def _mensagens_de_anthropic(pedido: dict[str, Any]) -> list[Any]:
             if blocos is None:
                 corpo: Any = conteudo if isinstance(conteudo, str) else ""
             else:
-                corpo = "\n".join(textos) if textos else None
+                corpo = "\n".join(textos) if textos else ""
             nova: dict[str, Any] = {"role": "assistant", "content": corpo}
             if chamadas:
                 nova["tool_calls"] = chamadas
@@ -1472,6 +1475,27 @@ def _mensagens_para_reconstruir(pedido: dict[str, Any], de: str) -> list[Any]:
     return _mensagens(pedido)
 
 
+def _fio_do_payload(pedido: dict[str, Any]) -> str:
+    """Fio de origem inferido do corpo, para quando o `api_mode` vem vazio.
+
+    A middleware recebe `api_mode` no kwarg, mas nem sempre: no perfil `default`
+    com a base declarada como provider custom, o kwarg chegou e a rota de destino
+    nao declarava `api_mode` no catalogo — e a troca ficou sem reconstrucao com
+    `fio: null` no ledger (medido a 2026-11-19, 13:35:42). O corpo diz o que o
+    kwarg calou: `input`+`instructions` e Responses, `system` e Anthropic, e
+    `messages` e chat. Inferencia so de forma, nunca de intencao.
+    """
+    if not isinstance(pedido, dict):
+        return ""
+    if "input" in pedido or "instructions" in pedido:
+        return "codex_responses"
+    if "system" in pedido:
+        return "anthropic_messages"
+    if "messages" in pedido:
+        return "chat_completions"
+    return ""
+
+
 def _payload_na_forma_do_destino(agente: Any, pedido: dict[str, Any],
                                  modo_anterior: Any, modo_novo: Any
                                  ) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -1495,8 +1519,12 @@ def _payload_na_forma_do_destino(agente: Any, pedido: dict[str, Any],
     o prompt de sistema vive em `instructions`/`system` e os blocos de ferramenta
     nao tem a forma chat, por isso passar so `messages`/`input` perdia-o.
     """
-    de = str(modo_anterior or "").strip().lower()
+    de = str(modo_anterior or "").strip().lower() or _fio_do_payload(pedido)
     para = str(modo_novo or "").strip().lower()
+    if not para and agente is not None:
+        # A rota pode nao declarar `api_mode` no catalogo; o agente, ja trocado,
+        # sabe qual resolveu (`switch_model` -> `determine_api_mode`).
+        para = str(getattr(agente, "api_mode", "") or "").strip().lower()
     if not para or de == para or para not in _FIOS_RECONSTRUIVEIS:
         return pedido, None
     construtor = getattr(agente, "_build_api_kwargs", None)
@@ -1505,6 +1533,20 @@ def _payload_na_forma_do_destino(agente: Any, pedido: dict[str, Any],
     mensagens = _mensagens_para_reconstruir(pedido, de)
     if not mensagens:
         return pedido, None
+    # O core reconcilia o `reasoning_content` com a rota *antes* de construir o
+    # corpo (`build_request_payload` -> `_reapply_reasoning_echo_for_provider`).
+    # Como a reconstrucao acontece por fora desse caminho, tem de se repetir: um
+    # `deepseek-flash` em modo thinking responde 400 «The `reasoning_content` in
+    # the thinking mode must be passed back to the API» quando o historico veio
+    # de outro fio (medido a 2026-11-19, 13:42:01, sessao do perfil `trabalho`
+    # que alterna flash e Fable). Idempotente; fail-open.
+    reparador = getattr(agente, "_reapply_reasoning_echo_for_provider", None)
+    if callable(reparador):
+        try:
+            reparador(mensagens)
+        except Exception as exc:  # noqa: BLE001 - o pad nao pode partir o turno
+            _falha(f"reasoning_content na reconstrucao para {para}: "
+                   f"{type(exc).__name__}: {exc}")
     try:
         novo = construtor(mensagens)
     except Exception as exc:  # noqa: BLE001 - o payload antigo segue como antes
@@ -2202,7 +2244,8 @@ def middleware_llm_request(
         pedido, esforco_fio = _pedido_com_esforco(
             pedido_bruto, entrada, rota, session_id)
         pedido, orcamento = _garantir_orcamento_saida(
-            pedido, rota.get("api_mode") or entrada.get("api_mode"), agente)
+            pedido, (fio or {}).get("para") or rota.get("api_mode") or entrada.get("api_mode"),
+            agente)
         _registar({**resumo_de(base), "evento": "troca", "entrada": entrada["id"], "de": destino,
                    "acesso": entrada.get("acesso", ""),
                    "para": aplicado, "fonte_credencial": rota.get("source", ""),
