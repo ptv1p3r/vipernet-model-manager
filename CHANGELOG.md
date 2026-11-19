@@ -29,7 +29,12 @@ with one automatic commit per change, each with a per-file summary.
   agente ja trocado diz o de destino. Sem nenhum dos dois, nada se inventa.
 - **A gordura do fio anterior nao viaja.** O construtor do core reconstroi o corpo do zero, por isso
   `reasoning_effort`, `store` e o orcamento de saida do fio antigo desaparecem com a troca.
-- Testes: `test_reconstrucao_fio.py` (8 verificacoes, com ida e volta pelos transports reais do core)
+- **O `reasoning_content` e reconciliado depois de reconstruir.** O core aplica esse pad em
+  `build_request_payload`; a reconstrucao acontece por fora desse caminho e o `deepseek-flash` em modo
+  thinking respondia 400 «The `reasoning_content` in the thinking mode must be passed back to the API»
+  numa sessao que alterna flash e Fable (medido no `trabalho`, 13:42:01). Chama-se
+  `_reapply_reasoning_echo_for_provider` sobre as mensagens convertidas, idempotente e fail-open.
+- Testes: `test_reconstrucao_fio.py` (10 verificacoes, com ida e volta pelos transports reais do core)
   e quatro verificacoes novas no `selftest.py` substituem a que dava o caso `anthropic -> chat` como
   «fica para o core».
 
