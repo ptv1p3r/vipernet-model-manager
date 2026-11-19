@@ -443,6 +443,19 @@ def test_remover_modelo(tmp: Path) -> None:
     gestor.ficheiro_config = lambda: tmp  # type: ignore[assignment]
     gestor.directorio = lambda: tmp.parent  # type: ignore[assignment]
     try:
+        # A rota alvo e criada pelo teste, nao herdada do catalogo vivo. Depender
+        # de uma entrada real faz a suite falhar quando o dono remove um modelo
+        # (foi o que aconteceu ao `lightning-free`) — e essa falha nao e do
+        # codigo, e o teste deixa de medir o que diz medir.
+        doc_fixture = json.loads(tmp.read_text(encoding="utf-8"))
+        catalogo_pessoal = doc_fixture["perfis"]["pessoal"]["catalogo"]
+        alvo = "teste-rota-livre"
+        if not any(e.get("id") == alvo for e in catalogo_pessoal):
+            modelo_livre = dict(catalogo_pessoal[0])
+            modelo_livre.update({"id": alvo, "modelo": "teste/rota-livre", "ordem": 99})
+            catalogo_pessoal.append(modelo_livre)
+            tmp.write_text(json.dumps(doc_fixture, indent=2), encoding="utf-8")
+
         cliente = _app(tmp)
         base = "/api/plugins/vipernet-model-manager"
 
@@ -450,7 +463,6 @@ def test_remover_modelo(tmp: Path) -> None:
         doc = json.loads(tmp.read_text(encoding="utf-8"))
         # (a) rota livre no perfil `pessoal` — nenhuma superficie lhe chama.
         antes = [e["id"] for e in doc["perfis"]["pessoal"]["catalogo"]]
-        alvo = "lightning-free"
         verificar("remover: a fixture tem a rota livre", alvo in antes, str(antes))
         sha_antes = hashlib.sha256(tmp.read_bytes()).hexdigest()
 
@@ -517,12 +529,95 @@ def test_remover_modelo(tmp: Path) -> None:
         gestor.directorio = original_dir  # type: ignore[assignment]
 
 
+def test_ordem_no_estado(tmp: Path) -> None:
+    """O `/estado` leva a `ordem` de cada rota, na posicao do ficheiro.
+
+    O cartao do perfil ordena a tabela de modelos pela `ordem` declarada (regra
+    do dono, 3.47.23). Medido a 2026-11-19 no `/estado` vivo: as entradas do
+    catalogo traziam so `id`, `provider`, `modelo`, `complexidade`, `tarefas` e
+    `acesso` — a `ordem` nunca saia do servidor e o cartao nao tinha por onde
+    ordenar. Aqui prova-se que sai, que o servidor NAO reordena (a posicao no
+    ficheiro e o desempate do painel) e que uma ordem gravada pela pagina do
+    modelo aparece no `/estado` seguinte.
+
+    As rotas sao criadas pelo teste num perfil escolhido por leitura da copia:
+    um teste preso ao nome ou a ordem de uma rota viva fica vermelho no dia em
+    que o dono a muda.
+    """
+    original_fc = gestor.ficheiro_config
+    original_dir = gestor.directorio
+    gestor.ficheiro_config = lambda: tmp  # type: ignore[assignment]
+    gestor.directorio = lambda: tmp.parent  # type: ignore[assignment]
+    try:
+        doc = json.loads(tmp.read_text(encoding="utf-8"))
+        perfil = next(n for n, p in doc["perfis"].items()
+                      if isinstance(p, dict) and (p.get("catalogo") or []))
+        molde = dict(doc["perfis"][perfil]["catalogo"][0])
+        molde.pop("ordem", None)
+        declaradas = [("teste-ordem-c", 3), ("teste-ordem-sem", None),
+                      ("teste-ordem-a", 1), ("teste-ordem-b", 2)]
+        for ident, ordem in declaradas:
+            rota = dict(molde)
+            rota.update({"id": ident, "modelo": "teste/" + ident})
+            if ordem is not None:
+                rota["ordem"] = ordem
+            doc["perfis"][perfil]["catalogo"].append(rota)
+        tmp.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        ids_ficheiro = [e["id"] for e in doc["perfis"][perfil]["catalogo"]]
+
+        cliente = _app(tmp)
+        base = "/api/plugins/vipernet-model-manager"
+
+        r = cliente.get(base + "/estado")
+        verificar("ordem no estado: 200", r.status_code == 200, str(r.status_code))
+        catalogo = r.json()["perfis"][perfil]["catalogo"]
+        verificar("ordem no estado: todas as rotas trazem a chave `ordem`",
+                  all("ordem" in e for e in catalogo),
+                  str(sorted({k for e in catalogo for k in e})))
+        por_id = {e["id"]: e.get("ordem", "AUSENTE") for e in catalogo}
+        verificar("ordem no estado: o valor e o declarado no ficheiro",
+                  [por_id.get(i) for i, _ in declaradas] == [3, None, 1, 2],
+                  str([por_id.get(i) for i, _ in declaradas]))
+        verificar("ordem no estado: quem nao declara ordem sai como null, nao como 0",
+                  por_id.get("teste-ordem-sem") is None, repr(por_id.get("teste-ordem-sem")))
+        verificar("ordem no estado: o servidor nao reordena — vai a posicao do ficheiro",
+                  [e["id"] for e in catalogo] == ids_ficheiro,
+                  str([e["id"] for e in catalogo]))
+
+        # Gravar uma ordem pela rota que a pagina do modelo usa: o `/estado`
+        # seguinte ja a traz, e a rota fica onde estava no ficheiro.
+        rev = cliente.get(base + "/config").json()["rev"]
+        entrada = dict(molde)
+        entrada.update({"id": "teste-ordem-sem", "modelo": "teste/teste-ordem-sem", "ordem": 0})
+        r = cliente.post(base + "/modelo", json={"perfil": perfil, "id": "teste-ordem-sem",
+                                                 "entrada": entrada, "rev": rev})
+        verificar("ordem no estado: gravar a ordem pela pagina do modelo da 200",
+                  r.status_code == 200, str(r.status_code) + " " + r.text[:200])
+        catalogo = cliente.get(base + "/estado").json()["perfis"][perfil]["catalogo"]
+        por_id = {e["id"]: e.get("ordem", "AUSENTE") for e in catalogo}
+        verificar("ordem no estado: a ordem gravada sai no estado seguinte (0 e ordem, nao ausencia)",
+                  por_id.get("teste-ordem-sem") == 0 and por_id.get("teste-ordem-sem") is not None
+                  and por_id.get("teste-ordem-sem") is not False,
+                  repr(por_id.get("teste-ordem-sem")))
+        verificar("ordem no estado: gravar nao muda a posicao da rota no ficheiro",
+                  [e["id"] for e in catalogo] == ids_ficheiro,
+                  str([e["id"] for e in catalogo]))
+    finally:
+        gestor.ficheiro_config = original_fc  # type: ignore[assignment]
+        gestor.directorio = original_dir  # type: ignore[assignment]
+
+
 def main() -> int:
     test_rev()
     test_conflito()
     test_idade()
     test_decidir_rasto()
     test_identidade()
+    with tempfile.TemporaryDirectory() as td:
+        origem = Path("/opt/data/plugin-data/vipernet-model-manager/config.json")
+        tmp = Path(td) / "config.json"
+        tmp.write_bytes(origem.read_bytes())
+        test_ordem_no_estado(tmp)
     with tempfile.TemporaryDirectory() as td:
         origem = Path("/opt/data/plugin-data/vipernet-model-manager/config.json")
         tmp = Path(td) / "config.json"

@@ -293,7 +293,8 @@ def _sombra_estado(cfg: dict[str, Any]) -> dict[str, Any]:
     com numeros que ja nao sao os declarados, e o painel tem de o mostrar em vez
     de apresentar os bracos como se estivessem aprovados.
     """
-    bloco = cfg.get("sombra") if isinstance(cfg.get("sombra"), dict) else {}
+    _cru_sombra = cfg.get("sombra")
+    bloco: dict[str, Any] = _cru_sombra if isinstance(_cru_sombra, dict) else {}
     registo, caminho = _pre_registo_actual()
 
     # O ficheiro mais recente pode estar corrompido: le-se na mesma para que o
@@ -363,12 +364,157 @@ def _sombra_estado(cfg: dict[str, Any]) -> dict[str, Any]:
             "todos_vivos": vida.get("todos_vivos"),
             "sha_registo": vida.get("sha_registo"),
         },
+        # Interruptor por perfil: o global vale para todos, e o perfil que
+        # declara sobrepoe-se chave a chave. O painel precisa dos dois — sem o
+        # efectivo por perfil so mostrava o global e o dono nao tinha como ver
+        # que o trabalho estava desligado sem desligar os outros dois (nem o
+        # contrario). `declarado` distingue "escolheu" de "herdou": um perfil
+        # sem bloco aparece com `declarado: {}` e `origem: global`.
+        "global": {
+            # `activo` vem de `sombra_ligada`: o bloco `global_control` manda e o
+            # `activo` do topo so vale quando ele nao traz valor. Ler aqui o
+            # `activo` cru fazia o painel mostrar o interruptor antigo.
+            "activo": gestor.sombra_ligada(bloco),
+            "vida_ttl_h": bloco.get("vida_ttl_h"),
+            "global_control": bloco.get("global_control") if isinstance(
+                bloco.get("global_control"), dict) else {},
+        },
+        "perfis": _sombra_por_perfil(cfg),
+        # Rasto do interruptor: quem o tocou, quando, e de que valor para que
+        # valor. Sem isto, o cartao mostra o estado e nao a historia dele.
+        "controlo": gestor.ler_controlo_sombra(5),
     }
+
+
+def _sombra_por_perfil(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Interruptor efectivo e declarado de cada perfil, para o cartao do painel."""
+    _cru_perfis = cfg.get("perfis")
+    perfis: dict[str, Any] = _cru_perfis if isinstance(_cru_perfis, dict) else {}
+    saida: dict[str, Any] = {}
+    for nome in perfis:
+        try:
+            efectivo = gestor.sombra_efectiva(cfg, nome)
+        except Exception:  # noqa: BLE001 - o painel nunca parte por um perfil
+            continue
+        _cru_alvo = perfis[nome]
+        bruto = _cru_alvo.get("sombra") if isinstance(_cru_alvo, dict) else None
+        saida[str(nome)] = {
+            "activo": bool(efectivo.get("activo")),
+            "vida_ttl_h": efectivo.get("vida_ttl_h"),
+            "origem": str(efectivo.get("origem") or "padrao"),
+            "declarado": dict(bruto) if isinstance(bruto, dict) else {},
+        }
+    return saida
 
 
 # Um motivo de configuracao sem trafego que o renove envelhece: ao fim de duas
 # horas ja nao e estado, e uma afirmacao de ontem sobre o sistema de hoje.
 MOTIVO_VALIDADE_S = 7200
+
+
+def _vida_sombra() -> dict[str, Any]:
+    """Sonda de vida do ensaio, como esta em disco (vazio se nunca medida).
+
+    Os braços de um ensaio em sombra são modelos: um slug pode morrer no
+    provider sem nada mudar na config. `todos_vivos: false` é o que distingue
+    «ensaio a correr» de «ensaio parado» — e é a diferença entre dar uma data de
+    fim e declarar que ainda não há data.
+    """
+    try:
+        dados = json.loads((_dir_sombra() / "vida.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+    if not isinstance(dados, dict):
+        return {}
+    registo, _ = _pre_registo_actual()
+    selo = str((registo or {}).get("sha256") or "")
+    selo_vida = str(dados.get("sha_registo") or "")
+    if selo and selo_vida and selo_vida != selo:
+        # Vida medida para outro selo: os modelos dos braços mudaram de dono e o
+        # veredicto antigo daria «travado» com o motivo de um modelo que já não
+        # é deste desenho (ou, pior, «vivo» a autorizar um braço novo). Vale
+        # como nunca medida até `vmm sombra vida` voltar a sondar.
+        return {}
+    return dados
+
+
+def _linhas_ledger(caminho: Path) -> Any:
+    """Percorre o ledger linha a linha, sem o carregar inteiro em memória.
+
+    O ficheiro tem dezenas de MB e cresce a cada turno; o progresso do ensaio
+    precisa de todas as linhas desde o selo, mas não precisa delas em memória ao
+    mesmo tempo. Uma linha ilegível é salto, não excepção: um ledger truncado a
+    meio (escrita em curso) não pode partir o painel.
+    """
+    try:
+        fh = caminho.open("r", encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    with fh:
+        for linha in fh:
+            linha = linha.strip()
+            if not linha:
+                continue
+            try:
+                evento = json.loads(linha)
+            except ValueError:
+                continue
+            if isinstance(evento, dict):
+                yield evento
+
+
+# As contagens são caras (uma passagem ao ledger) e mudam só quando o ledger
+# muda: a chave é (mtime, tamanho, selo). Projectar a partir delas é barato e
+# faz-se em cada pedido, para a data de fim não ficar congelada no primeiro.
+_CACHE_CONTAGENS: dict[str, Any] = {"chave": None, "valor": None}
+
+
+def _contagens_sombra(registo: dict[str, Any]) -> dict[str, Any]:
+    caminho = gestor.caminho_ledger()
+    try:
+        st = caminho.stat()
+        chave = (str(caminho), st.st_mtime_ns, st.st_size, str(registo.get("sha256") or ""))
+    except OSError:
+        return _sombra.contagens([], registo)
+    if _CACHE_CONTAGENS.get("chave") == chave:
+        return _CACHE_CONTAGENS["valor"]  # type: ignore[no-any-return]
+    valor = _sombra.contagens(_linhas_ledger(caminho), registo)
+    _CACHE_CONTAGENS["chave"] = chave
+    _CACHE_CONTAGENS["valor"] = valor
+    return valor
+
+
+def _progresso_sombra() -> dict[str, Any]:
+    """Progresso do ensaio: percentagem por braço, ritmo e data de fim.
+
+    Três regras herdadas de `references/ensaio-sombra-ledger-e-projecao.md`:
+    o progresso lê-se do ledger na hora (nunca de um acumulado herdado), `n` é
+    por braço (o fim é o do braço que atrasa) e um braço morto não é um braço
+    lento — nesse estado não se apresenta data nenhuma.
+    """
+    registo, caminho = _pre_registo_actual()
+    if registo is None:
+        return {
+            "estado": "sem_selo",
+            "motivo": "sem pré-registo selado — o progresso não se inventa",
+            "selo": "",
+            "pre_registo": "",
+            "fim_estimado": "",
+            "unidade": _sombra.UNIDADE_CHAMADA,
+        }
+    contagem = _contagens_sombra(registo)
+    progresso = _sombra.projectar(
+        contagem,
+        registo,
+        agora=datetime.now(ZoneInfo("Europe/Lisbon")),
+        vida=_vida_sombra(),
+    )
+    progresso["pre_registo"] = caminho
+    progresso["linhas_sem_braco"] = contagem.get("linhas_sem_braco", 0)
+    progresso["turnos_marcados"] = contagem.get("turnos_marcados", 0)
+    progresso["p0"] = registo.get("p0")
+    progresso["margem"] = registo.get("margem_nao_inferioridade")
+    return progresso
 
 
 def _decidir_rasto(
@@ -750,6 +896,11 @@ def estado() -> dict[str, Any]:
                     "complexidade": entrada.get("complexidade") or [],
                     "tarefas": entrada.get("tarefas") or [],
                     "acesso": entrada.get("acesso") or "api",
+                    # A `ordem` declarada, tal como esta no ficheiro (`None` se
+                    # ausente): o cartao ordena a tabela de modelos por ela. A
+                    # lista vai na posicao do ficheiro — quem ordena e o painel,
+                    # e so a tabela; o resto do painel le o catalogo como esta.
+                    "ordem": entrada.get("ordem"),
                 }
             )
         pcfg = gestor.perfil_config(cfg, nome) or {}
@@ -1163,16 +1314,64 @@ def sombra_post(corpo: Any = Body(default=None)) -> JSONResponse:
     """
     corpo = _corpo_objeto(corpo)
     rev = str(corpo.get("rev") or "")
+    perfil = str(corpo.get("perfil") or "").strip()
+    herdar = bool(corpo.get("herdar"))
     tem_activo = "activo" in corpo
     tem_ttl = "vida_ttl_h" in corpo
-    if not tem_activo and not tem_ttl:
+    if not tem_activo and not tem_ttl and not (perfil and herdar):
         raise HTTPException(status_code=400, detail=t("indique 'activo' e/ou 'vida_ttl_h'"))
 
+    antes_holder: dict[str, Any] = {}
+
     def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
+        if perfil:
+            # Interruptor do perfil: o global fica intacto. E o que permite
+            # desligar o ensaio no trabalho sem o desligar nos tres perfis.
+            # `herdar` devolve o perfil ao interruptor global — sem isso nao
+            # havia como voltar atras sem editar o ficheiro a mao.
+            perfis = cfg.get("perfis")
+            if not isinstance(perfis, dict) or perfil not in perfis:
+                raise ValueError(t("perfil desconhecido: {p0}", p0=perfil))
+            alvo = perfis[perfil]
+            if not isinstance(alvo, dict):
+                raise ValueError(t("perfis.{p0} nao e um objecto", p0=perfil))
+            antes_holder.update(gestor.sombra_efectiva(cfg, perfil))
+            if herdar:
+                # Heranca explicita, igual ao `vmm sombra herdar --perfil`: fica
+                # `herda: true` no bloco e o `activo` sai, para nao haver dois
+                # interruptores a responder a mesma pergunta.
+                bloco = alvo.get("sombra")
+                bloco = dict(bloco) if isinstance(bloco, dict) else {}
+                bloco.pop("activo", None)
+                bloco["herda"] = True
+                alvo["sombra"] = bloco
+                return cfg
+            bloco = alvo.get("sombra")
+            bloco = dict(bloco) if isinstance(bloco, dict) else {}
+            bloco.pop("herda", None)  # escolha explicita ganha a heranca
+            if tem_activo:
+                bloco["activo"] = bool(corpo.get("activo"))
+            if tem_ttl:
+                bloco["vida_ttl_h"] = corpo.get("vida_ttl_h")
+            alvo["sombra"] = bloco
+            return cfg
+        antes_holder.update({
+            "activo": gestor.sombra_ligada(cfg.get("sombra")),
+            "vida_ttl_h": (cfg.get("sombra") or {}).get("vida_ttl_h"),
+            "origem": "global",
+        })
         bloco = cfg.get("sombra")
         bloco = dict(bloco) if isinstance(bloco, dict) else {}
         if tem_activo:
             bloco["activo"] = bool(corpo.get("activo"))
+            # O interruptor global ganha casa, instante e autor, como no CLI: um
+            # ensaio ligado as escuras nao diz a ninguem quando nem por quem.
+            bloco["global_control"] = {
+                "activo": bool(corpo.get("activo")),
+                "ts": datetime.now().astimezone().replace(microsecond=0).isoformat(),
+                "por": "painel",
+                "motivo": str(corpo.get("motivo") or "").strip(),
+            }
         if tem_ttl:
             bloco["vida_ttl_h"] = corpo.get("vida_ttl_h")
         cfg["sombra"] = bloco
@@ -1191,8 +1390,51 @@ def sombra_post(corpo: Any = Body(default=None)) -> JSONResponse:
         raise HTTPException(status_code=400, detail=t("nao gravou: {erro}", erro=exc)) from exc
 
     confirmado = _cfg()
+    # Rasto do gesto: escreve-se DEPOIS da gravacao confirmada — um controlo que
+    # nao chegou ao ficheiro nao pode ficar registado como feito. Falhar aqui nao
+    # derruba a resposta: o interruptor ja vale, e o aviso e a falta de linha.
+    try:
+        if perfil:
+            posteriores = gestor.sombra_efectiva(confirmado, perfil)
+            ambito = f"perfil:{perfil}"
+        else:
+            posteriores = {
+                "activo": gestor.sombra_ligada(confirmado.get("sombra")),
+                "vida_ttl_h": (confirmado.get("sombra") or {}).get("vida_ttl_h"),
+                "origem": "global",
+            }
+            ambito = "global"
+        if perfil and herdar:
+            acao = "herdar"
+        elif tem_activo:
+            acao = "on" if bool(corpo.get("activo")) else "off"
+        else:
+            acao = "ttl"
+        gestor.registar_controlo_sombra(
+            acao=acao, ambito=ambito, antes=(antes_holder or None), depois=posteriores,
+            por="painel", perfil=perfil, rev_cfg=_rev(confirmado))
+    except OSError:
+        pass
     return JSONResponse({"ok": True, "sombra": _sombra_estado(confirmado),
-                         "rev": _rev(confirmado)})
+                         "rev": _rev(confirmado),
+                         "controlo": gestor.ler_controlo_sombra(5)})
+
+
+@router.get("/sombra/progresso")
+def sombra_progresso() -> dict[str, Any]:
+    """Progresso do ensaio em sombra — o que o painel mostra ao lado do registo.
+
+    Devolve as duas metades na mesma resposta: `sombra` (interruptor, braços,
+    selo e vida) e `progresso` (percentagem por braço, ritmo, data de fim). O
+    painel só desenha o bloco com `sombra.activo` verdadeiro, mas o endpoint não
+    esconde nada: um progresso que só existe quando o interruptor está ligado é
+    um progresso que não se pode medir nem testar depois de desligar.
+
+    `estado` é o campo que decide o que se mostra a seguir: `a_correr` traz uma
+    data, `travado` traz o motivo e **nenhuma** data, `sem_selo` diz que não há
+    desenho selado. Um braço morto cai em `travado` — não é um braço lento.
+    """
+    return {"sombra": _sombra_estado(_cfg()), "progresso": _progresso_sombra()}
 
 
 def _proximo_nome_pre_registo() -> str:
@@ -1973,6 +2215,47 @@ def _resolver_credencial(provider: str, modelo: str) -> dict[str, Any]:
     return seams.resolver_provider(provider, modelo)
 
 
+def _familia(base: str, api_mode: str) -> str:
+    """Familia de API da rota: o `api_mode` declarado manda, o endpoint desempata.
+
+    Medido a 2026-11-18: o `foundry-edp` declara `api_mode: anthropic_messages` e
+    vive em `.../anthropic`; a sonda antiga mandava tudo a `/chat/completions` e
+    recebia `404 Resource not found` de uma rota que responde 200 pela Messages.
+    Sem `api_mode`, um `base_url` que termina em `/anthropic` ja basta.
+    """
+    modo = str(api_mode or "").strip().lower()
+    if modo:
+        return modo
+    limpo = str(base or "").strip().rstrip("/").lower()
+    if limpo.endswith("/anthropic"):
+        return "anthropic_messages"
+    # O `/openai/v1` do Azure AI Foundry so serve a API Responses: o
+    # `chat/completions` ali responde `400 Unsupported parameter: 'max_tokens'`
+    # (medido a 2026-11-18 no `gpt-6.2-astra`). Sem esta regra, uma credencial
+    # resolvida pela pool (`api_mode` vazio) fazia a sonda ir ao chat e o 400
+    # lia-se como credencial invalida.
+    if limpo.endswith("/openai/v1"):
+        return "codex_responses"
+    return "chat_completions"
+
+
+def _url_de_rota(base: str, api_mode: str = "") -> str:
+    """Endpoint da sonda a partir do `base_url` e da familia da rota."""
+    limpo = str(base or "").strip().rstrip("/")
+    familia = _familia(base, api_mode)
+    if familia == "anthropic_messages":
+        if limpo.endswith("/v1/messages") or limpo.endswith("/messages"):
+            return limpo
+        return limpo + "/v1/messages"
+    if familia == "codex_responses":
+        # Medido no Foundry a 2026-11-18: `/openai/v1/chat/completions` responde
+        # 400 (operacao nao suportada) e `/openai/v1/responses` responde 200.
+        if limpo.endswith("/responses"):
+            return limpo
+        return limpo + "/responses"
+    return _url_de_chat(limpo)
+
+
 def _url_de_chat(base: str) -> str:
     """Endpoint de chat a partir do `base_url` da rota.
 
@@ -1985,34 +2268,64 @@ def _url_de_chat(base: str) -> str:
     return limpo + "/chat/completions"
 
 
-def _http_sonda(url: str, chave: str, modelo: str, timeout: float) -> dict[str, Any]:
+def _http_sonda(url: str, chave: str, modelo: str, timeout: float,
+                api_mode: str = "") -> dict[str, Any]:
     """Uma chamada minima ao modelo. Separada para os testes trocarem o transporte.
 
     Devolve `{ok, http, ms, motivo}` e nunca inclui a chave. `max_tokens: 8` e
     uma mensagem `ping` porque o objectivo e provar que a rota responde, nao
     obter resposta — o custo tem de ser o menor que o provider aceita.
+
+    O cabecalho depende da familia: a Messages da Anthropic (Azure Foundry
+    incluido) leva `x-api-key` + `anthropic-version`; as rotas OpenAI levam
+    `Authorization: Bearer`.
     """
     import time as _tempo
     import urllib.error
     import urllib.request
 
-    corpo = json.dumps({
-        "model": modelo,
-        "messages": [{"role": "user", "content": "ping"}],
-        "max_tokens": 8,
-        "stream": False,
-    }).encode()
-    pedido = urllib.request.Request(
-        url,
-        data=corpo,
-        headers={
+    anthropic = "anthropic" in str(api_mode or "").strip().lower()
+    respostas = str(api_mode or "").strip().lower() == "codex_responses"
+    if anthropic:
+        corpo = json.dumps({
+            "model": modelo,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 8,
+        }).encode()
+        cabecalhos = {
+            "x-api-key": chave,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+            "User-Agent": "curl/8.5.0",
+        }
+    elif respostas:
+        # A API Responses recusa `messages`/`max_tokens`; o minimo e `input` +
+        # `max_output_tokens`. Medido: Bearer autentica no Foundry da EDP.
+        corpo = json.dumps({
+            "model": modelo,
+            "input": "ping",
+            "max_output_tokens": 16,
+        }).encode()
+        cabecalhos = {
+            "Authorization": "Bearer " + chave,
+            "Content-Type": "application/json",
+            "User-Agent": "curl/8.5.0",
+        }
+    else:
+        corpo = json.dumps({
+            "model": modelo,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 8,
+            "stream": False,
+        }).encode()
+        cabecalhos = {
             "Authorization": "Bearer " + chave,
             "Content-Type": "application/json",
             # O UA por omissao do urllib e recusado por varios proxies (1010),
             # que se le como «sem rede» e nao como «bloqueado na borda».
             "User-Agent": "curl/8.5.0",
-        },
-    )
+        }
+    pedido = urllib.request.Request(url, data=corpo, headers=cabecalhos)
     inicio = _tempo.monotonic()
     try:
         with urllib.request.urlopen(pedido, timeout=timeout) as resposta:  # noqa: S310
@@ -2081,7 +2394,9 @@ def sondar_rota(
             "o provider {provider} não declara endpoint HTTP (é servido por subprocesso)",
             provider=provider)
         return resultado
-    medida = dict(transporte(_url_de_chat(url_base), chave, modelo, _TIMEOUT_SONDA) or {})
+    modo = str(rota.get("api_mode") or "")
+    medida = dict(transporte(_url_de_rota(url_base, modo), chave, modelo,
+                             _TIMEOUT_SONDA, modo) or {})
     motivo = str(medida.get("motivo") or "")
     # Defesa em profundidade: se um provider ecoar a chave na mensagem de erro,
     # ela nao sai daqui — o painel e um sitio publico para o dono, nao um log.

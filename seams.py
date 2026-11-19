@@ -120,8 +120,36 @@ def _segredo(nome: str) -> str:
         return ""
 
 
+def _de_key_cmd(provider: str, entrada: dict[str, Any], origem: str) -> tuple[str, str]:
+    """Chave mintada por `key_cmd`: o provider guarda o comando, não o segredo.
+
+    Via publica `hermes_cli.auth_declared_providers.resolve_declared_api_key_provider`,
+    que mina o `key_cmd` do proprio bloco `providers.<id>` (token cacheado por
+    `(perfil, comando)` no nucleo). Sem `key_cmd`, devolve `("")` e a origem intacta.
+    Medido 2026-11-18: `foundry-edp` com `key_cmd` para o cofre resolvia no nucleo mas
+    aparecia aqui como «chave curta (0 B)», logo a rota era dada por indisponivel.
+    """
+    if not str(entrada.get("key_cmd") or "").strip():
+        return "", origem
+    try:  # superficie publica
+        from hermes_cli.auth_declared_providers import (  # noqa: PLC0415
+            resolve_declared_api_key_provider,
+        )
+
+        rt = resolve_declared_api_key_provider(provider) or {}
+    except Exception:  # noqa: BLE001
+        return "", origem
+    chave = str(rt.get("api_key") or "").strip()
+    return (chave, f"{origem}/key_cmd") if chave else ("", origem)
+
+
 def _de_config_custom(provider: str) -> dict[str, Any] | None:
-    """Provider custom declarado em `providers.<name>`: `base_url` + `key_env`.
+    """Provider custom declarado em `providers.<name>`: `base_url` + chave.
+
+    A chave vem de `api_key` (inline), `key_env`/`api_key_env` ou `key_cmd` — a
+    ordem do proprio nucleo (`key_cmd` primeiro por ser mintado por pedido; aqui
+    resolve-se so quando as outras duas nao dao chave, para nao correr o comando
+    sem necessidade).
 
     A pool de credenciais so tem o que passou por `hermes auth add`. Um provider
     custom declara a chave por `key_env` e o endpoint por `base_url` — sem esta
@@ -161,6 +189,8 @@ def _de_config_custom(provider: str) -> dict[str, Any] | None:
             chave = _segredo(str(entrada.get("key_env") or entrada.get("api_key_env") or "").strip())
             if chave:
                 origem = f"{origem}/key_env"
+        if not chave:
+            chave, origem = _de_key_cmd(alvo, entrada, origem)
         if not (base or chave):
             return None
         return {

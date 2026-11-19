@@ -76,6 +76,20 @@
           "modelo": "nvidia/nemotron-3-ultra-550b-a55b:free",
           "complexidade": "alta",
           "acesso": "api"
+        },
+        {
+          "id": "inkling-small-free",
+          "provider": "openrouter",
+          "modelo": "thinkingmachines/inkling-small-20260730:free",
+          "complexidade": "alta",
+          "acesso": "api",
+          "custo": 0.0,
+          "ordem": 5,
+          "contexto_max": 1000000,
+          "modalidades": ["texto", "imagem"],
+          "json_nativo": false,
+          "latencia_p95_ms": 3000,
+          "tarefas": ["codigo"]
         }
       ]
     },
@@ -117,6 +131,20 @@
           "modelo": "nvidia/nemotron-3-ultra-550b-a55b:free",
           "complexidade": "media",
           "acesso": "api"
+        },
+        {
+          "id": "inkling-small-free",
+          "provider": "openrouter",
+          "modelo": "thinkingmachines/inkling-small-20260730:free",
+          "complexidade": "alta",
+          "acesso": "api",
+          "custo": 0.0,
+          "ordem": 5,
+          "contexto_max": 1000000,
+          "modalidades": ["texto", "imagem"],
+          "json_nativo": false,
+          "latencia_p95_ms": 3000,
+          "tarefas": ["codigo"]
         }
       ]
     },
