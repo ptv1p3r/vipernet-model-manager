@@ -1422,6 +1422,36 @@
     return conhecidos.concat(resto);
   }
 
+  // ---- a tabela de modelos de um perfil sai pela `ordem` declarada ---------
+  // Regra do dono (3.47.23): o menor primeiro, quem nao declara ordem no fim.
+  // Le a ordem como o `gestor` a le (`_chave_ordem`): so um inteiro conta; o
+  // resto — vazio, texto, decimal — e «nao declarado» e vai para o fim, em vez
+  // de ganhar um lugar que o plugin nao lhe da.
+  function ordemDeclarada(valor) {
+    if (typeof valor === "number") return (isFinite(valor) && Math.floor(valor) === valor) ? valor : null;
+    if (typeof valor === "string" && /^\s*[+-]?\d+\s*$/.test(valor)) return parseInt(valor, 10);
+    return null;
+  }
+
+  // Devolve uma lista NOVA. O `p.catalogo` do estado fica na ordem do ficheiro:
+  // e por ela que o resto do painel o le (as regras de superficie nascem na
+  // primeira rota) e e ela que desempata aqui — duas rotas com a mesma ordem, e
+  // as que nao declaram nenhuma, ficam entre si como estao no ficheiro. A
+  // posicao vai na chave para o resultado nao depender de o `sort` do browser
+  // ser estavel.
+  function ordenarCatalogo(lista) {
+    if (!Array.isArray(lista)) return [];
+    return lista
+      .filter(function (e) { return e && typeof e === "object"; })
+      .map(function (e, i) { return { e: e, i: i, o: ordemDeclarada(e.ordem) }; })
+      .sort(function (a, b) {
+        if ((a.o === null) !== (b.o === null)) return a.o === null ? 1 : -1;
+        if (a.o !== null && a.o !== b.o) return a.o - b.o;
+        return a.i - b.i;
+      })
+      .map(function (x) { return x.e; });
+  }
+
   function numeroOuTexto(txt) {
     var limpo = String(txt == null ? "" : txt).trim();
     if (!limpo) return null;
@@ -2735,7 +2765,10 @@
           h(
             "tbody",
             null,
-            (p.catalogo || []).map(function (m) {
+            // Pela `ordem` declarada, nao pela posicao no ficheiro. Ordena-se a
+            // cada desenho, a partir do estado: depois de gravar uma rota o
+            // painel rele o `/estado` e a tabela sai logo na ordem nova.
+            ordenarCatalogo(p.catalogo).map(function (m) {
               const cx = m.complexidade || [];
               const cxLista = Array.isArray(cx) ? cx : [cx];
               return h(
@@ -5021,6 +5054,7 @@
     window.__VMM_TEST__.formParaEntrada = formParaEntrada;
     window.__VMM_TEST__.alternarOpcao = alternarOpcao;
     window.__VMM_TEST__.emOrdem = emOrdem;
+    window.__VMM_TEST__.ordenarCatalogo = ordenarCatalogo;
     window.__VMM_TEST__.BotoesOpcao = BotoesOpcao;
     window.__VMM_TEST__.PaginaModelo = PaginaModelo;
     // O que o botao de sonda escreve no ecra. Puro: o texto diz se a rota

@@ -896,6 +896,11 @@ def estado() -> dict[str, Any]:
                     "complexidade": entrada.get("complexidade") or [],
                     "tarefas": entrada.get("tarefas") or [],
                     "acesso": entrada.get("acesso") or "api",
+                    # A `ordem` declarada, tal como esta no ficheiro (`None` se
+                    # ausente): o cartao ordena a tabela de modelos por ela. A
+                    # lista vai na posicao do ficheiro — quem ordena e o painel,
+                    # e so a tabela; o resto do painel le o catalogo como esta.
+                    "ordem": entrada.get("ordem"),
                 }
             )
         pcfg = gestor.perfil_config(cfg, nome) or {}

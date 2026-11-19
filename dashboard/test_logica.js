@@ -3005,6 +3005,219 @@ async function provaDoReSelarRecusado() {
         textoPlano(m.sec).slice(-160));
 }
 
+// ------------------------------- a listagem de modelos pela `ordem` declarada
+// Regra do dono (3.47.23): em cada perfil a tabela de modelos sai ordenada pelo
+// campo `ordem` — o menor primeiro, quem nao declara ordem no fim — e uma ordem
+// alterada ve-se logo a seguir a gravar, sem recarregar a pagina. A posicao no
+// ficheiro so desempata; o ficheiro nao e reordenado.
+function idsDasLinhas(arvoreCartao) {
+  // As linhas do corpo levam `key` (o id da rota); a do cabecalho nao.
+  return comTag(arvoreCartao, "tr")
+    .filter(function (tr) { return tr.props && tr.props.key != null; })
+    .map(function (tr) { return tr.props.key; });
+}
+
+(function () {
+  const ordenar = T.ordenarCatalogo;
+  function ids(lista) {
+    if (typeof ordenar !== "function") return "ordenarCatalogo nao existe";
+    try { return ordenar(lista).map(function (e) { return e.id; }).join(","); }
+    catch (e) { return "rebentou: " + (e && e.message); }
+  }
+  check("ordem: o menor primeiro e quem nao declara ordem no fim",
+        ids([{ id: "c", ordem: 3 }, { id: "x" }, { id: "a", ordem: 1 }, { id: "b", ordem: 2 }]) === "a,b,c,x",
+        ids([{ id: "c", ordem: 3 }, { id: "x" }, { id: "a", ordem: 1 }, { id: "b", ordem: 2 }]));
+  check("ordem: e numerica, nao alfabetica (10 depois de 9)",
+        ids([{ id: "dez", ordem: 10 }, { id: "nove", ordem: 9 }, { id: "dois", ordem: 2 }]) === "dois,nove,dez",
+        ids([{ id: "dez", ordem: 10 }, { id: "nove", ordem: 9 }, { id: "dois", ordem: 2 }]));
+  check("ordem: 0 e uma ordem declarada e vem antes do 1",
+        ids([{ id: "um", ordem: 1 }, { id: "sem" }, { id: "zero", ordem: 0 }]) === "zero,um,sem",
+        ids([{ id: "um", ordem: 1 }, { id: "sem" }, { id: "zero", ordem: 0 }]));
+  check("ordem: empate mantem a posicao do ficheiro",
+        ids([{ id: "p", ordem: 2 }, { id: "q", ordem: 1 }, { id: "r", ordem: 2 }, { id: "s", ordem: 1 }]) === "q,s,p,r",
+        ids([{ id: "p", ordem: 2 }, { id: "q", ordem: 1 }, { id: "r", ordem: 2 }, { id: "s", ordem: 1 }]));
+  check("ordem: os que nao declaram ficam entre si pela posicao do ficheiro",
+        ids([{ id: "z" }, { id: "m", ordem: 1 }, { id: "a" }, { id: "k", ordem: null }]) === "m,z,a,k",
+        ids([{ id: "z" }, { id: "m", ordem: 1 }, { id: "a" }, { id: "k", ordem: null }]));
+  check("ordem: um inteiro escrito como texto conta como numero",
+        ids([{ id: "t9", ordem: "9" }, { id: "t10", ordem: " 10 " }, { id: "n2", ordem: 2 }]) === "n2,t9,t10",
+        ids([{ id: "t9", ordem: "9" }, { id: "t10", ordem: " 10 " }, { id: "n2", ordem: 2 }]));
+  // O que o `gestor` nao le como ordem (`int()` falha) tambem nao ordena aqui.
+  check("ordem: valor que nao e inteiro conta como nao declarado",
+        ids([{ id: "txt", ordem: "abc" }, { id: "vazio", ordem: "" }, { id: "meio", ordem: 1.5 },
+             { id: "bool", ordem: true }, { id: "nan", ordem: NaN }, { id: "ok", ordem: 7 }])
+          === "ok,txt,vazio,meio,bool,nan",
+        ids([{ id: "txt", ordem: "abc" }, { id: "vazio", ordem: "" }, { id: "meio", ordem: 1.5 },
+             { id: "bool", ordem: true }, { id: "nan", ordem: NaN }, { id: "ok", ordem: 7 }]));
+  check("ordem: lista ausente ou que nao e lista da lista vazia, sem rebentar",
+        ids(null) === "" && ids(undefined) === "" && ids("abc") === "" && ids({}) === "",
+        [ids(null), ids(undefined), ids("abc"), ids({})].join("|"));
+  check("ordem: uma entrada que nao e objecto nao chega a tabela",
+        ids([null, { id: "b", ordem: 2 }, "lixo", { id: "a", ordem: 1 }]) === "a,b",
+        ids([null, { id: "b", ordem: 2 }, "lixo", { id: "a", ordem: 1 }]));
+  const original = [{ id: "c", ordem: 3 }, { id: "a", ordem: 1 }, { id: "b", ordem: 2 }];
+  const copia = JSON.stringify(original);
+  ids(original);
+  check("ordem: ordenar nao mexe na lista que recebeu",
+        JSON.stringify(original) === copia, JSON.stringify(original));
+
+  // O cartao: a tabela sai pela ordem declarada, com o catalogo do `/estado`
+  // na ordem do ficheiro (forma medida a 2026-11-19 no perfil `pessoal`).
+  const catFicheiro = [
+    { id: "deepseek-flash", provider: "p", modelo: "m1", complexidade: ["leve"], tarefas: [], acesso: "api", ordem: 4 },
+    { id: "north-code-free", provider: "p", modelo: "m2", complexidade: ["leve"], tarefas: [], acesso: "api", ordem: 3 },
+    { id: "claude-fable-5-2", provider: "p", modelo: "m3", complexidade: ["alta"], tarefas: [], acesso: "api", ordem: 1 },
+    { id: "gpt-6.2-astra", provider: "p", modelo: "m4", complexidade: ["alta"], tarefas: [], acesso: "api", ordem: 2 },
+    { id: "gpt-6.1-terra", provider: "p", modelo: "m5", complexidade: ["media"], tarefas: [], acesso: "api", ordem: null },
+  ];
+  const cartao = tentar("ordem: o cartao com ordens declaradas nao rebenta", function () {
+    return T.CartaoPerfil({ nome: "pessoal", mais: {}, aGravar: false,
+                            dados: { activo: true, catalogo: catFicheiro, tarefas: {}, estrategia: {}, analise: {} },
+                            onToggle: function () {}, onModelo: function () {}, onPerfil: function () {},
+                            onNovoModelo: function () {} });
+  });
+  check("ordem: a tabela do cartao sai pela ordem declarada, sem ordem no fim",
+        idsDasLinhas(cartao).join(",")
+          === "claude-fable-5-2,gpt-6.2-astra,north-code-free,deepseek-flash,gpt-6.1-terra",
+        idsDasLinhas(cartao).join(","));
+  check("ordem: o cartao desenha as cinco rotas, nenhuma a mais nem a menos",
+        idsDasLinhas(cartao).length === 5, String(idsDasLinhas(cartao).length));
+  check("ordem: a linha diz a ordem de quem a declara e cala a de quem nao declara",
+        (function () {
+          const linhas = comTag(cartao, "tr").filter(function (tr) { return tr.props.key != null; });
+          const txt = {};
+          linhas.forEach(function (tr) { txt[tr.props.key] = textoPlano(tr); });
+          return /ordem 1(?!\d)/.test(txt["claude-fable-5-2"] || "")
+            && /ordem 4(?!\d)/.test(txt["deepseek-flash"] || "")
+            && !/ordem/.test(txt["gpt-6.1-terra"] || "x ordem");
+        })());
+  check("ordem: o cartao nao reordena o catalogo que recebeu do estado",
+        catFicheiro.map(function (e) { return e.id; }).join(",")
+          === "deepseek-flash,north-code-free,claude-fable-5-2,gpt-6.2-astra,gpt-6.1-terra");
+})();
+
+async function provaDaOrdemDepoisDeGravar() {
+  // Servidor falso com estado, como o verdadeiro: gravar substitui a rota NO
+  // LUGAR (a posicao no ficheiro nao muda) e o `/estado` seguinte ja traz a
+  // ordem nova. O painel so mostra a ordem certa se reler e reordenar.
+  const servidor = {
+    rev: 1,
+    catalogo: [
+      { id: "a", provider: "p", modelo: "ma", complexidade: ["leve"], tarefas: [], acesso: "api", ordem: 3 },
+      { id: "b", provider: "p", modelo: "mb", complexidade: ["leve"], tarefas: [], acesso: "api", ordem: 2 },
+      { id: "c", provider: "p", modelo: "mc", complexidade: ["leve"], tarefas: [], acesso: "api" },
+      { id: "d", provider: "p", modelo: "md", complexidade: ["leve"], tarefas: [], acesso: "api", ordem: 4 },
+    ],
+  };
+  function responder(p) {
+    if (p.url === "/estado") {
+      return { rev: "rev-" + servidor.rev, idioma: "pt", activo: true,
+               sombra: { activo: false, perfis: {} },
+               perfis: { pessoal: { activo: true, tarefas: {}, estrategia: {}, analise: {},
+                                    // So os campos que o `/estado` verdadeiro manda.
+                                    catalogo: servidor.catalogo.map(function (e) {
+                                      return { id: e.id, provider: e.provider, modelo: e.modelo,
+                                               complexidade: e.complexidade, tarefas: e.tarefas,
+                                               acesso: e.acesso, ordem: e.ordem == null ? null : e.ordem };
+                                    }) } },
+               opcoes: {}, erros_config: [] };
+    }
+    if (p.url.indexOf("/log") === 0) return { linhas: [] };
+    if (p.url === "/config") return { config: { perfis: {} }, rev: "rev-" + servidor.rev };
+    if (p.url.indexOf("/modelo?") === 0 && p.metodo === "GET") {
+      const id = decodeURIComponent((p.url.split("&id=")[1] || ""));
+      const entrada = servidor.catalogo.filter(function (e) { return e.id === id; })[0];
+      return { perfil: "pessoal", id: id, novo: false, entrada: clonar(entrada),
+               opcoes: { niveis: ["leve", "media", "alta"], tarefas: [], modalidades: [] },
+               rev: "rev-" + servidor.rev };
+    }
+    if (p.url === "/modelo" && p.metodo === "POST") {
+      if (p.corpo.validar) return { ok: true, erros: [] };
+      const pos = servidor.catalogo.map(function (e) { return e.id; }).indexOf(p.corpo.id);
+      servidor.catalogo[pos] = clonar(p.corpo.entrada);
+      servidor.rev += 1;
+      return { ok: true, id: p.corpo.entrada.id, rev: "rev-" + servidor.rev };
+    }
+    throw new Error("pedido inesperado: " + p.metodo + " " + p.url);
+  }
+
+  const painel = carregarVivo(responder);
+  function linhasDoPainel() {
+    const raiz = painel.render();
+    const no = comTag(raiz, "CartaoPerfil").filter(function (n) { return n.props.nome === "pessoal"; })[0];
+    if (!no) return { raiz: raiz, ids: null, cartao: null };
+    const cartao = painel.filho("CartaoPerfil", no.props);
+    return { raiz: raiz, ids: idsDasLinhas(cartao).join(","), cartao: cartao };
+  }
+  // O botao do SDK falso pode sair como `button` ou como `Button`.
+  function botoes(arvore) { return comTag(arvore, "button").concat(comTag(arvore, "Button")); }
+  // O gesto como no ecra: ✎ na linha, escrever no campo «ordem», «Gravar e voltar».
+  async function mudarOrdem(id, valor) {
+    const antes = linhasDoPainel();
+    botoes(antes.cartao).filter(function (b) {
+      return b.props.title === "Editar as opções de " + id;
+    })[0].props.onClick();
+    await painel.assentar();
+    let raiz = painel.render();
+    if (raiz.tag !== "PaginaModelo") throw new Error("a pagina do modelo nao abriu: " + raiz.tag);
+    let pagina = painel.filho("PaginaModelo", raiz.props);
+    comTag(pagina, "EntradaTexto").filter(function (n) { return n.props.rotulo === "ordem"; })[0]
+      .props.onChange(valor);
+    raiz = painel.render();
+    pagina = painel.filho("PaginaModelo", raiz.props);
+    const gravar = botoes(pagina).filter(function (b) {
+      return /Gravar e voltar/.test(textoPlano(b.filhos));
+    })[0];
+    if (gravar.props.disabled) throw new Error("o botao de gravar esta preso");
+    const marca = painel.pedidos.length;
+    gravar.props.onClick();
+    await painel.assentar();
+    return painel.pedidos.slice(marca).map(function (p) {
+      return p.metodo + " " + p.url + (p.corpo && p.corpo.validar ? " (validar)" : "");
+    });
+  }
+
+  painel.render();
+  await painel.assentar();
+  let l = linhasDoPainel();
+  check("ordem/gravar: ao abrir, a tabela sai pela ordem declarada e nao pela do ficheiro",
+        l.ids === "b,a,d,c", String(l.ids));
+
+  // `c` nao tinha ordem; passa a ser a primeira.
+  let pedidos = await mudarOrdem("c", "1");
+  l = linhasDoPainel();
+  check("ordem/gravar: o gesto valida, grava e rele o estado, por esta sequencia",
+        pedidos.indexOf("POST /modelo (validar)") === 0 && pedidos.indexOf("POST /modelo") === 1
+          && pedidos.indexOf("GET /estado") > 1,
+        JSON.stringify(pedidos));
+  check("ordem/gravar: o servidor ficou com a ordem escrita, na mesma posicao do ficheiro",
+        servidor.catalogo.map(function (e) { return e.id + ":" + (e.ordem == null ? "-" : e.ordem); }).join(",")
+          === "a:3,b:2,c:1,d:4",
+        JSON.stringify(servidor.catalogo.map(function (e) { return [e.id, e.ordem]; })));
+  check("ordem/gravar: a pagina fecha e a tabela ja mostra a ordem nova, sem outro gesto",
+        l.raiz.tag !== "PaginaModelo" && l.ids === "c,b,a,d", l.raiz.tag + " " + String(l.ids));
+  check("ordem/gravar: a linha gravada diz «ordem 1»",
+        (function () {
+          const tr = comTag(l.cartao, "tr").filter(function (n) { return n.props.key === "c"; })[0];
+          return !!tr && /ordem 1(?!\d)/.test(textoPlano(tr));
+        })());
+
+  // Apagar a ordem devolve a rota ao fim da lista.
+  pedidos = await mudarOrdem("b", "");
+  l = linhasDoPainel();
+  check("ordem/gravar: apagar a ordem manda a rota para o fim, logo a seguir a gravar",
+        l.ids === "c,a,d,b" && !("ordem" in servidor.catalogo[1]),
+        String(l.ids) + " " + JSON.stringify(servidor.catalogo[1]));
+
+  // Empate: `d` passa a 1, como `c`. Desempata a posicao no ficheiro (c antes de d).
+  pedidos = await mudarOrdem("d", "1");
+  l = linhasDoPainel();
+  check("ordem/gravar: duas rotas com a mesma ordem ficam pela posicao do ficheiro",
+        l.ids === "c,d,a,b", String(l.ids));
+  check("ordem/gravar: nenhum erro ficou no ecra depois das tres gravacoes",
+        !l.raiz.props || !l.raiz.props.erro, String(l.raiz.props && l.raiz.props.erro));
+}
+
 function fechar() {
   console.log("");
   if (falhas) {
@@ -3021,5 +3234,9 @@ provaDoGestoPorPerfil()
   .then(provaDoReSelarRecusado)
   .catch(function (e) {
     check("re-selar: a prova de ponta a ponta correu ate ao fim", false, String(e && e.stack ? e.stack : e));
+  })
+  .then(provaDaOrdemDepoisDeGravar)
+  .catch(function (e) {
+    check("ordem/gravar: a prova de ponta a ponta correu ate ao fim", false, String(e && e.stack ? e.stack : e));
   })
   .then(fechar);
