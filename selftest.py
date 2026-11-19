@@ -1651,6 +1651,173 @@ def testes_recarga_de_modulo() -> None:
         pass
 
 
+def testes_fio_do_payload() -> None:
+    """Payload reconstruido quando a troca muda de fio (chat/codex -> anthropic).
+
+    O `api_kwargs` chega a middleware ja construido para a rota anterior. Sem
+    reconstrucao, a Messages da Anthropic recebia um payload de chat/completions e
+    respondia `TypeError: ... 'max_tokens'` — que o core le como
+    `context_overflow` e resolve reiniciando a sessao. Medido a 2026-11-18.
+    """
+    print("\n== payload na forma do fio de destino ==")
+    plugin = _mod("vmm_plugin_fio", AQUI / "__init__.py")
+
+    class Agente:
+        def __init__(self, rebenta: bool = False) -> None:
+            self.rebenta = rebenta
+            self.recebidas: list = []
+
+        def _build_api_kwargs(self, mensagens, tools_for_api=None):
+            self.recebidas.append(mensagens)
+            if self.rebenta:
+                raise RuntimeError("boom")
+            return {"model": "claude-fable-5-2", "messages": mensagens,
+                    "max_tokens": 8192, "stream": True}
+
+    pedido = {"model": "gpt-6.1-terra", "stream": True, "reasoning_effort": "low",
+              "messages": [{"role": "user", "content": "ola"}]}
+
+    for origem in ("chat_completions", "codex_responses"):
+        agente = Agente()
+        novo, fio = plugin._payload_na_forma_do_destino(
+            agente, pedido, origem, "anthropic_messages")
+        check(f"fio: {origem} -> anthropic reconstroi o payload",
+              bool(fio) and fio.get("reconstruido") is True and novo.get("max_tokens") == 8192,
+              str(fio))
+        check(f"fio: {origem} -> anthropic leva as mensagens ao construtor",
+              agente.recebidas == [pedido["messages"]], str(agente.recebidas))
+        check(f"fio: {origem} -> anthropic perde a forma do provider anterior",
+              "reasoning_effort" not in novo, str(novo))
+
+    mesmo, fio_mesmo = plugin._payload_na_forma_do_destino(
+        Agente(), pedido, "anthropic_messages", "anthropic_messages")
+    check("fio: mesma forma nao reconstroi",
+          fio_mesmo is None and mesmo is pedido)
+
+    # anthropic -> chat: reconstruido desde a 3.47.24, com a conversao do fio de
+    # origem. Antes, o destino chat recebia `system` e blocos `tool_use`, que o
+    # SDK recusa (`Completions.create() got an unexpected keyword argument
+    # 'system'`) — um erro por troca, recuperado no passo seguinte do laco.
+    pedido_anthropic = {
+        "model": "claude-fable-5-2", "max_tokens": 8192, "stream": True,
+        "system": "Es o assistente de teste.",
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "ola"}]},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "vou correr"},
+                {"type": "tool_use", "id": "t1", "name": "terminal",
+                 "input": {"command": "ls"}}]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "a.txt"}]},
+        ],
+    }
+    agente_chat = Agente()
+    invertido, fio_inverso = plugin._payload_na_forma_do_destino(
+        agente_chat, pedido_anthropic, "anthropic_messages", "chat_completions")
+    recebidas = agente_chat.recebidas[0] if agente_chat.recebidas else []
+    check("fio: anthropic -> chat reconstroi o payload",
+          bool(fio_inverso) and fio_inverso.get("de") == "anthropic_messages"
+          and fio_inverso.get("para") == "chat_completions", str(fio_inverso))
+    check("fio: anthropic -> chat leva o `system` como mensagem de sistema",
+          bool(recebidas) and recebidas[0].get("role") == "system"
+          and "assistente de teste" in str(recebidas[0].get("content")),
+          str(recebidas[:1]))
+    check("fio: anthropic -> chat converte `tool_use` em `tool_calls`",
+          any(m.get("tool_calls") for m in recebidas), str(recebidas))
+    check("fio: anthropic -> chat converte `tool_result` em mensagem de ferramenta",
+          any(m.get("role") == "tool" and m.get("tool_call_id") == "t1"
+              for m in recebidas), str(recebidas))
+
+    destino_vazio, fio_vazio = plugin._payload_na_forma_do_destino(
+        Agente(), pedido, "chat_completions", "")
+    check("fio: destino sem api_mode nao reconstroi",
+          fio_vazio is None and destino_vazio is pedido)
+
+    intacto, fio_falha = plugin._payload_na_forma_do_destino(
+        Agente(rebenta=True), pedido, "chat_completions", "anthropic_messages")
+    check("fio: construtor que rebenta devolve o pedido intacto (fail-open)",
+          fio_falha is None and intacto is pedido)
+
+    sem_mensagens, fio_sem = plugin._payload_na_forma_do_destino(
+        Agente(), {"model": "x", "stream": True}, "chat_completions", "anthropic_messages")
+    check("fio: pedido sem mensagens nao reconstroi",
+          fio_sem is None and sem_mensagens.get("model") == "x")
+
+
+def testes_orcamento_saida() -> None:
+    """`max_tokens`/`max_output_tokens` presentes no fio de destino (Foundry).
+
+    Medido a 2026-11-18: a Messages da Anthropic recusa a chamada sem
+    `max_tokens` (`TypeError: ... missing 1 required keyword-only argument`) e a
+    Responses dos GPT responde 400 quando o payload leva `max_tokens`. A guarda
+    corre depois da reconstrucao, no payload que sai da middleware.
+    """
+    print("\n== orcamento de saida no fio de destino ==")
+    plugin = _mod("vmm_plugin_orcamento", AQUI / "__init__.py")
+
+    class Agente:
+        def __init__(self, max_tokens=None) -> None:
+            self.max_tokens = max_tokens
+
+    # Anthropic: o campo em falta e preenchido com o tecto medido.
+    novo, campo = plugin._garantir_orcamento_saida(
+        {"model": "claude-fable-5-2", "messages": [{"role": "user", "content": "ola"}]},
+        "anthropic_messages", Agente())
+    check("orcamento: anthropic sem max_tokens ganha o tecto",
+          campo == "max_tokens" and novo.get("max_tokens") == 128_000, str(novo))
+
+    # Orcamento declarado pelo core nao se sobrepoe.
+    igual, campo = plugin._garantir_orcamento_saida(
+        {"model": "claude-fable-5-2", "max_tokens": 8192}, "anthropic_messages", Agente())
+    check("orcamento: max_tokens do core respeita-se",
+          campo == "" and igual.get("max_tokens") == 8192)
+
+    # Zero/negativo nao servem de orcamento.
+    for invalido in (0, -1, "8192", None, True):
+        corrigido, campo = plugin._garantir_orcamento_saida(
+            {"model": "claude-fable-5-2", "max_tokens": invalido},
+            "anthropic_messages", Agente())
+        check(f"orcamento: max_tokens={invalido!r} e substituido",
+              campo == "max_tokens" and corrigido.get("max_tokens") == 128_000,
+              str(corrigido))
+
+    # `agent.max_tokens` ganha ao tecto, e o campo do outro fio nunca fica ao lado.
+    herdado, campo = plugin._garantir_orcamento_saida(
+        {"model": "claude-fable-5-2", "max_completion_tokens": 4096},
+        "anthropic_messages", Agente(max_tokens=16000))
+    check("orcamento: agent.max_tokens e a primeira escolha",
+          campo == "max_tokens" and herdado.get("max_tokens") == 16000
+          and "max_completion_tokens" not in herdado, str(herdado))
+
+    # Payload de chat que chega ao fio anthropic: o valor migra, a chave alheia sai.
+    migrado, campo = plugin._garantir_orcamento_saida(
+        {"model": "claude-fable-5-2", "max_completion_tokens": 777},
+        "anthropic_messages", Agente())
+    check("orcamento: valor do fio anterior migra para max_tokens",
+          campo == "max_tokens" and migrado.get("max_tokens") == 777
+          and "max_completion_tokens" not in migrado, str(migrado))
+
+    # Responses: o campo e `max_output_tokens`, e `max_tokens` sai.
+    gpt, campo = plugin._garantir_orcamento_saida(
+        {"model": "gpt-6.2-astra", "input": "ola", "max_tokens": 512},
+        "codex_responses", Agente())
+    check("orcamento: codex move max_tokens para max_output_tokens",
+          campo == "max_output_tokens" and gpt.get("max_output_tokens") == 512
+          and "max_tokens" not in gpt, str(gpt))
+
+    gpt_novo, campo = plugin._garantir_orcamento_saida(
+        {"model": "gpt-6.1-terra", "input": "ola"}, "codex_responses", Agente())
+    check("orcamento: codex sem cap ganha o tecto medido",
+          campo == "max_output_tokens" and gpt_novo.get("max_output_tokens") == 128_000,
+          str(gpt_novo))
+
+    # Fio desconhecido (chat/completions, bedrock) fica intacto.
+    for modo in ("", "chat_completions", "bedrock_converse", None):
+        pedido = {"model": "deepseek-flash", "messages": []}
+        intacto, campo = plugin._garantir_orcamento_saida(pedido, modo, Agente())
+        check(f"orcamento: {modo!r} nao e tocado", campo == "" and intacto is pedido)
+
+
 def main() -> int:
     testes_gestor()
     testes_plugin()
@@ -1660,6 +1827,8 @@ def main() -> int:
     testes_heranca_classificador()
     testes_indicador_analise()
     testes_esforco()
+    testes_fio_do_payload()
+    testes_orcamento_saida()
     testes_cli()
     testes_verificar()
     testes_recarga_de_modulo()

@@ -26,6 +26,11 @@ Este ficheiro prova, cada ponto com o seu caso negativo:
    nos bracos.
 8. `_verdadeiro` nao confunde a string "false" com verdadeiro — `bool("false")`
    e `True`, e isso ligaria o ensaio ao desligar.
+9. `POST /sombra` com `perfil` no corpo (o botao da pagina de um perfil) mexe so
+   nesse perfil: o global e os outros ficam como estavam, o gesto deixa uma linha
+   no ledger com o ambito do perfil, o proprio ganha ao global nos dois sentidos,
+   `herdar` devolve o perfil ao global, e perfil desconhecido ou `rev` velho sao
+   recusados sem escrever. Gravar o formulario do perfil a seguir nao apaga o bloco.
 
 Uso: python3 test_sombra_painel.py  ->  rc 0 se tudo passar.
 """
@@ -291,22 +296,188 @@ def testes() -> None:
         # O `alterar` valida a config INTEIRA: uma escrita cirurgica que
         # apagasse o resto passaria despercebida no painel e rebentaria ao
         # gravar. Prova-se que os outros blocos continuam la.
+        vivo_cfg = json.loads(Path(os.environ.get("VMM_CONFIG_VIVA")
+                                   or "/opt/data/plugin-data/vipernet-model-manager/config.json"
+                                   ).read_text(encoding="utf-8"))
         check("interruptor: nao mexe no resto da config",
               cfg_disco.get("analise", {}).get("limiares")
-              and list(cfg_disco.get("perfis", {})) == ["default", "pessoal", "trabalho"],
-              json.dumps({"perfis": list(cfg_disco.get("perfis", {}))}))
+              and list(cfg_disco.get("perfis", {})) == list(vivo_cfg.get("perfis", {})),
+              json.dumps({"perfis": list(cfg_disco.get("perfis", {})),
+                          "vivos": list(vivo_cfg.get("perfis", {}))}))
         check("interruptor: a sonda de vida fica intacta",
               cfg_disco["sombra"].get("vida_ttl_h") == 24,
               json.dumps(cfg_disco.get("sombra")))
-        check("interruptor: so o bloco sombra mudou de tamanho",
-              set(cfg_disco["sombra"]) == {"activo", "vida_ttl_h"},
+        # O interruptor global passou a ter casa propria: `global_control` com o
+        # valor, o instante e o autor. E a unica chave nova que o gesto escreve.
+        check("interruptor: o bloco sombra ganha global_control e nada mais",
+              set(cfg_disco["sombra"]) == {"activo", "vida_ttl_h", "global_control"},
               json.dumps(sorted(cfg_disco.get("sombra", {}))))
+        _ctrl = cfg_disco["sombra"].get("global_control") or {}
+        check("interruptor: global_control diz o valor, o instante e o autor",
+              _ctrl.get("activo") is False and _ctrl.get("por") == "painel"
+              and bool(_ctrl.get("ts")), json.dumps(_ctrl, ensure_ascii=False))
+        check("interruptor: activo e global_control.activo concordam",
+              cfg_disco["sombra"].get("activo") == _ctrl.get("activo"),
+              json.dumps(cfg_disco.get("sombra"), ensure_ascii=False))
 
         # -------------------------------------------------- 8. booleano honesto
         check("_verdadeiro: 'false' nao e verdadeiro", api._verdadeiro("false") is False)
         check("_verdadeiro: 'true' e verdadeiro", api._verdadeiro("true") is True)
         check("_verdadeiro: booleano passa tal e qual",
               api._verdadeiro(True) is True and api._verdadeiro(False) is False)
+
+        # -------------------------------------------------- 9. interruptor por perfil
+        # O botao da pagina de um perfil manda `POST /sombra` com `perfil` no
+        # corpo. Prova-se aqui o que esse corpo faz ao ficheiro: mexe so no
+        # perfil pedido, deixa o global e os outros perfis como estavam, deixa
+        # rasto no ledger com o ambito do perfil e recusa sem escrever quando o
+        # perfil nao existe ou o `rev` e velho.
+        #
+        # Os perfis sao os da config copiada, lidos em vez de nomeados: uma
+        # assercao pelo nome de um perfil vivo fica vermelha no dia em que o dono
+        # usa o interruptor nesse perfil.
+        import hashlib
+
+        def _disco() -> dict[str, Any]:
+            return json.loads((base / "config.json").read_text(encoding="utf-8"))
+
+        def _sha_disco() -> str:
+            return hashlib.sha256((base / "config.json").read_bytes()).hexdigest()
+
+        def _linhas_ledger() -> list[dict[str, Any]]:
+            ficheiro = base / "aprendiz" / "sombra" / "controlo.jsonl"
+            if not ficheiro.exists():
+                return []
+            return [json.loads(x) for x in ficheiro.read_text(encoding="utf-8").splitlines()
+                    if x.strip()]
+
+        def _post(corpo: dict[str, Any]) -> dict[str, Any]:
+            return json.loads(bytes(api.sombra_post(corpo=corpo).body).decode("utf-8"))
+
+        nomes = [n for n in (_disco().get("perfis") or {}) if n != "*"]
+        check("perfil: a config copiada tem pelo menos dois perfis", len(nomes) >= 2,
+              json.dumps(nomes))
+        alvo, outros = nomes[0], nomes[1:]
+
+        # Ponto de partida conhecido: global ligado, todos a seguir o global.
+        _post({"activo": True})
+        for _n in nomes:
+            _post({"perfil": _n, "herdar": True})
+        partida = _post({"activo": True})["sombra"]
+        check("perfil: partida — global ligado e todos a segui-lo",
+              partida["global"]["activo"] is True
+              and all(partida["perfis"][n]["activo"] is True
+                      and partida["perfis"][n]["origem"] == "herdado" for n in nomes),
+              json.dumps(partida["perfis"]))
+
+        # 9a. desligar SO no alvo.
+        ledger_antes = len(_linhas_ledger())
+        r9 = _post({"perfil": alvo, "activo": False, "rev": api._rev(api._cfg())})
+        check("perfil: desligar responde ok", r9.get("ok") is True, json.dumps(r9)[:200])
+        check("perfil: o alvo fica desligado por escolha propria",
+              r9["sombra"]["perfis"][alvo]["activo"] is False
+              and r9["sombra"]["perfis"][alvo]["origem"] == "proprio",
+              json.dumps(r9["sombra"]["perfis"][alvo]))
+        check("perfil: os outros perfis continuam ligados",
+              all(r9["sombra"]["perfis"][n]["activo"] is True for n in outros),
+              json.dumps({n: r9["sombra"]["perfis"][n] for n in outros}))
+        check("perfil: o interruptor global nao mexeu",
+              r9["sombra"]["global"]["activo"] is True and r9["sombra"]["activo"] is True,
+              json.dumps(r9["sombra"]["global"]))
+        d9 = _disco()
+        check("perfil: no ficheiro, o bloco do alvo e {activo: false} (sem herda)",
+              d9["perfis"][alvo].get("sombra") == {"activo": False},
+              json.dumps(d9["perfis"][alvo].get("sombra")))
+        check("perfil: no ficheiro, o global_control continua ligado",
+              (d9["sombra"].get("global_control") or {}).get("activo") is True
+              and d9["sombra"].get("activo") is True,
+              json.dumps(d9.get("sombra"), ensure_ascii=False))
+        check("perfil: nenhum global_control copiado para dentro do perfil",
+              "global_control" not in (d9["perfis"][alvo].get("sombra") or {}))
+        check("perfil: o rev devolvido e o do ficheiro gravado",
+              r9.get("rev") == api._rev(api._cfg()), str(r9.get("rev")))
+
+        # 9b. rasto no ledger de controlo.
+        linhas9 = _linhas_ledger()
+        ultima = linhas9[-1] if linhas9 else {}
+        check("perfil: o gesto deixa UMA linha no ledger",
+              len(linhas9) == ledger_antes + 1, f"{ledger_antes} -> {len(linhas9)}")
+        check("perfil: a linha diz off, o ambito do perfil e o autor",
+              ultima.get("acao") == "off" and ultima.get("ambito") == f"perfil:{alvo}"
+              and ultima.get("por") == "painel" and ultima.get("perfil") == alvo,
+              json.dumps(ultima, ensure_ascii=False)[:300])
+        check("perfil: a linha guarda o antes e o depois",
+              (ultima.get("antes") or {}).get("activo") is True
+              and (ultima.get("depois") or {}).get("activo") is False
+              and ultima.get("rev") == r9.get("rev"),
+              json.dumps({"antes": ultima.get("antes"), "depois": ultima.get("depois")}))
+
+        # 9c. o proprio ganha ao global nos dois sentidos.
+        g_off = _post({"activo": False})["sombra"]
+        check("perfil: com o global desligado, os que herdam desligam",
+              all(g_off["perfis"][n]["activo"] is False for n in outros),
+              json.dumps(g_off["perfis"]))
+        r9c = _post({"perfil": alvo, "activo": True})
+        check("perfil: ligado no perfil corre mesmo com o global desligado",
+              r9c["sombra"]["perfis"][alvo]["activo"] is True
+              and r9c["sombra"]["perfis"][alvo]["origem"] == "proprio"
+              and r9c["sombra"]["global"]["activo"] is False
+              and all(r9c["sombra"]["perfis"][n]["activo"] is False for n in outros),
+              json.dumps(r9c["sombra"]["perfis"]))
+        check("perfil: ligar no perfil nao liga o global no ficheiro",
+              (_disco()["sombra"].get("global_control") or {}).get("activo") is False)
+
+        # 9d. «Seguir o global» devolve o perfil ao interruptor de cima.
+        r9d = _post({"perfil": alvo, "herdar": True})
+        check("perfil: herdar poe o alvo a seguir o global (desligado agora)",
+              r9d["sombra"]["perfis"][alvo]["activo"] is False
+              and r9d["sombra"]["perfis"][alvo]["origem"] == "herdado",
+              json.dumps(r9d["sombra"]["perfis"][alvo]))
+        check("perfil: no ficheiro fica {herda: true}, sem activo",
+              _disco()["perfis"][alvo].get("sombra") == {"herda": True},
+              json.dumps(_disco()["perfis"][alvo].get("sombra")))
+        check("perfil: a linha do ledger diz herdar",
+              _linhas_ledger()[-1].get("acao") == "herdar"
+              and _linhas_ledger()[-1].get("ambito") == f"perfil:{alvo}",
+              json.dumps(_linhas_ledger()[-1], ensure_ascii=False)[:200])
+        g_on = _post({"activo": True})["sombra"]
+        check("perfil: religado o global, o alvo que herda volta a ligar",
+              g_on["perfis"][alvo]["activo"] is True
+              and g_on["perfis"][alvo]["origem"] == "herdado",
+              json.dumps(g_on["perfis"][alvo]))
+
+        # 9e. recusas: nada se escreve.
+        sha_antes, ledger_n = _sha_disco(), len(_linhas_ledger())
+        try:
+            api.sombra_post(corpo={"perfil": "perfil-que-nao-existe", "activo": False})
+            recusou, detalhe = False, "gravou"
+        except HTTPException as exc:
+            recusou, detalhe = exc.status_code == 400, f"{exc.status_code} {exc.detail}"
+        check("perfil: perfil desconhecido e recusado (400)", recusou, detalhe)
+        try:
+            api.sombra_post(corpo={"perfil": alvo, "activo": False, "rev": "rev-velho"})
+            recusou, detalhe = False, "gravou"
+        except HTTPException as exc:
+            recusou, detalhe = exc.status_code == 409, f"{exc.status_code} {exc.detail}"
+        check("perfil: rev velho e recusado (409)", recusou, detalhe)
+        check("perfil: as duas recusas nao tocaram no ficheiro nem no ledger",
+              _sha_disco() == sha_antes and len(_linhas_ledger()) == ledger_n,
+              f"sha igual={_sha_disco() == sha_antes} ledger {ledger_n}->{len(_linhas_ledger())}")
+
+        # 9f. o «Gravar e voltar» do formulario do perfil nao apaga o interruptor.
+        _post({"perfil": alvo, "activo": False})
+        rev_form = api._rev(api._cfg())
+        rp = api.perfil_post(corpo={
+            "perfil": alvo, "rev": rev_form,
+            "activo": bool(_disco()["perfis"][alvo].get("activo", True)),
+        })
+        corpo_p = json.loads(bytes(rp.body).decode("utf-8"))
+        check("perfil: o formulario grava com o rev devolvido pelo interruptor",
+              rp.status_code == 200 and corpo_p.get("ok") is True,
+              f"{rp.status_code} {json.dumps(corpo_p)[:200]}")
+        check("perfil: gravar o formulario preserva o bloco sombra do perfil",
+              _disco()["perfis"][alvo].get("sombra") == {"activo": False},
+              json.dumps(_disco()["perfis"][alvo].get("sombra")))
 
     # ------------------------------------------------------------------ rc
     falhas = [r for r in _RESULTADOS if not r[1]]

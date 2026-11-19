@@ -1069,12 +1069,12 @@ def main() -> int:
     original_transporte = getattr(mod, "_http_sonda")
     original_resolver = getattr(mod, "_resolver_credencial")
 
-    def _transporte_ok(url, chave, modelo, timeout):
-        chamadas.append((url, chave, modelo, timeout))
+    def _transporte_ok(url, chave, modelo, timeout, api_mode=""):
+        chamadas.append((url, chave, modelo, timeout, api_mode))
         return {"ok": True, "http": 200, "ms": 137, "motivo": ""}
 
     def _transporte_fixo(resultado):
-        def _t(url, chave, modelo, timeout):
+        def _t(url, chave, modelo, timeout, api_mode=""):
             return dict(resultado)
         return _t
 
@@ -1109,6 +1109,67 @@ def main() -> int:
         check("/modelo/testar nao devolve a chave", "chave-secreta-de-teste" not in r.text,
               r.text[:200])
 
+        # Familia Anthropic: o `api_mode` da rota decide o endpoint. Medido a
+        # 2026-11-18 no `foundry-edp`, cuja `base_url` termina em `/anthropic`:
+        # `/chat/completions` dava 404 e a Messages da Anthropic respondia 200.
+        def _resolver_anthropic(provider, modelo):
+            return {"api_key": "chave-secreta-de-teste",
+                    "base_url": "https://exemplo.invalid/anthropic",
+                    "api_mode": "anthropic_messages", "source": "teste"}
+
+        setattr(mod, "_resolver_credencial", _resolver_anthropic)
+        chamadas.clear()
+        r = cli.post("/modelo/testar", json={"provider": "exemplo", "modelo": "claude-x"})
+        check("/modelo/testar anthropic vai a /v1/messages",
+              bool(chamadas) and chamadas[0][0] == "https://exemplo.invalid/anthropic/v1/messages",
+              str(chamadas[:1]))
+        check("/modelo/testar anthropic leva o api_mode",
+              bool(chamadas) and chamadas[0][4] == "anthropic_messages", str(chamadas[:1]))
+        check("/modelo/testar anthropic nao devolve a chave",
+              "chave-secreta-de-teste" not in r.text, r.text[:200])
+
+        # Familia Responses (GPT do Foundry): `/chat/completions` responde 400 e
+        # `/responses` responde 200 — a sonda tem de ir pela segunda.
+        def _resolver_respostas(provider, modelo):
+            return {"api_key": "chave-secreta-de-teste",
+                    "base_url": "https://exemplo.invalid/openai/v1",
+                    "api_mode": "codex_responses", "source": "teste"}
+
+        setattr(mod, "_resolver_credencial", _resolver_respostas)
+        chamadas.clear()
+        r = cli.post("/modelo/testar", json={"provider": "exemplo", "modelo": "gpt-x"})
+        check("/modelo/testar responses vai a /responses",
+              bool(chamadas) and chamadas[0][0] == "https://exemplo.invalid/openai/v1/responses",
+              str(chamadas[:1]))
+
+        # Sem `api_mode` (credencial vinda da pool, que nao o carrega), o
+        # endpoint `/openai/v1` e' o desempate: mandar ao chat dava
+        # `400 Unsupported parameter: 'max_tokens'` no Foundry.
+        def _resolver_respostas_sem_modo(provider, modelo):
+            return {"api_key": "chave-secreta-de-teste",
+                    "base_url": "https://exemplo.invalid/openai/v1",
+                    "api_mode": "", "source": "pool"}
+
+        setattr(mod, "_resolver_credencial", _resolver_respostas_sem_modo)
+        chamadas.clear()
+        r = cli.post("/modelo/testar", json={"provider": "exemplo", "modelo": "gpt-x"})
+        check("/modelo/testar /openai/v1 sem api_mode vai a /responses",
+              bool(chamadas) and chamadas[0][0] == "https://exemplo.invalid/openai/v1/responses",
+              str(chamadas[:1]))
+
+        def _resolver_anthropic_sem_modo(provider, modelo):
+            return {"api_key": "chave-secreta-de-teste",
+                    "base_url": "https://exemplo.invalid/anthropic",
+                    "api_mode": "", "source": "pool"}
+
+        setattr(mod, "_resolver_credencial", _resolver_anthropic_sem_modo)
+        chamadas.clear()
+        r = cli.post("/modelo/testar", json={"provider": "exemplo", "modelo": "claude-x"})
+        check("/modelo/testar /anthropic sem api_mode vai a /v1/messages",
+              bool(chamadas) and chamadas[0][0] == "https://exemplo.invalid/anthropic/v1/messages",
+              str(chamadas[:1]))
+        setattr(mod, "_resolver_credencial", _resolver_fixo)
+
         setattr(mod, "_http_sonda", _transporte_fixo(
             {"ok": False, "http": 401, "ms": 42, "motivo": "Incorrect API key provided"}))
         r = cli.post("/modelo/testar", json={"provider": "exemplo", "modelo": "m-1"})
@@ -1119,7 +1180,7 @@ def main() -> int:
               and "Incorrect API key" in str(corpo.get("motivo")), str(corpo))
 
         # Um provider que ecoe a chave na mensagem de erro nao a pode publicar.
-        def _transporte_eco(url, chave, modelo, timeout):
+        def _transporte_eco(url, chave, modelo, timeout, api_mode=""):
             return {"ok": False, "http": 400, "ms": 1,
                     "motivo": "key " + chave + " invalida"}
 

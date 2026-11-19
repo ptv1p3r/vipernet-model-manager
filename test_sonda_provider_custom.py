@@ -36,11 +36,12 @@ class _UnscopedSecretError(Exception):
     """Marca o mesmo caso que `agent.secret_scope.UnscopedSecretError`."""
 
 
-def _instalar(entrada=None, segredos=None, erro=None):
+def _instalar(entrada=None, segredos=None, erro=None, key_cmd_chave=""):
     """Instala modulos falsos do nucleo em `sys.modules` e devolve-os.
 
     `seams` importa dentro da funcao, portanto o que estiver em `sys.modules`
     no momento da chamada e' o que vale. Nao se toca em rede nem em config real.
+    `key_cmd_chave` e' o que o mint do `key_cmd` devolve (vazio = mint falhou).
     """
     mod_cfg = types.ModuleType("hermes_cli.config")
 
@@ -53,6 +54,16 @@ def _instalar(entrada=None, segredos=None, erro=None):
         return [valor]
 
     mod_cfg.get_compatible_custom_providers = get_compatible_custom_providers
+
+    mod_decl = types.ModuleType("hermes_cli.auth_declared_providers")
+
+    def resolve_declared_api_key_provider(provider_id):
+        if not key_cmd_chave:
+            raise RuntimeError("mint do key_cmd falhou")
+        return {"provider": provider_id, "api_key": key_cmd_chave,
+                "base_url": "", "source": "key_cmd"}
+
+    mod_decl.resolve_declared_api_key_provider = resolve_declared_api_key_provider
 
     mod_scope = types.ModuleType("agent.secret_scope")
     mod_scope.UnscopedSecretError = _UnscopedSecretError
@@ -72,12 +83,14 @@ def _instalar(entrada=None, segredos=None, erro=None):
     sys.modules["agent.secret_scope"] = mod_scope
     sys.modules["hermes_cli"] = pacote_cli
     sys.modules["hermes_cli.config"] = mod_cfg
+    sys.modules["hermes_cli.auth_declared_providers"] = mod_decl
     return mod_cfg, mod_scope
 
 
 class ProviderCustomTest(unittest.TestCase):
     def tearDown(self) -> None:
-        for nome in ("hermes_cli.config", "hermes_cli", "agent.secret_scope", "agent"):
+        for nome in ("hermes_cli.auth_declared_providers", "hermes_cli.config",
+                     "hermes_cli", "agent.secret_scope", "agent"):
             sys.modules.pop(nome, None)
 
     def test_key_env_resolve(self) -> None:
@@ -135,6 +148,36 @@ class ProviderCustomTest(unittest.TestCase):
         pacote.__path__ = []
         sys.modules["agent"] = pacote
         self.assertIsNone(seams._de_config_custom("inception"))
+
+    def test_key_cmd_resolve(self) -> None:
+        """Provider que guarda o COMANDO da chave (cofre), nao a chave."""
+        _instalar(entrada={
+            "name": "Foundry EDP", "provider_key": "foundry-edp",
+            "base_url": "https://exemplo/anthropic",
+            "api_mode": "anthropic_messages",
+            "key_cmd": "python3 tools/foundry/chave-cofre.py"},
+            key_cmd_chave="chave-do-cofre")
+        rota = seams._de_config_custom("foundry-edp")
+        self.assertIsNotNone(rota)
+        self.assertEqual(rota["api_key"], "chave-do-cofre")
+        self.assertEqual(rota["source"], "providers.foundry-edp/key_cmd")
+
+    def test_key_cmd_que_falha_nao_inventa_chave(self) -> None:
+        _instalar(entrada={"name": "x", "provider_key": "x",
+                           "base_url": "https://a/v1", "key_cmd": "falso"},
+                  key_cmd_chave="")
+        rota = seams._de_config_custom("x")
+        self.assertEqual(rota["api_key"], "")
+        self.assertEqual(rota["source"], "providers.x")
+
+    def test_key_env_ganha_ao_key_cmd(self) -> None:
+        """Uma chave estatica ja resolvida nao paga o custo de correr o comando."""
+        _instalar(entrada={"name": "x", "provider_key": "x", "base_url": "https://a/v1",
+                           "key_env": "VMM_CHAVE", "key_cmd": "falso"},
+                  segredos={"VMM_CHAVE": "estatica"}, key_cmd_chave="do-comando")
+        rota = seams._de_config_custom("x")
+        self.assertEqual(rota["api_key"], "estatica")
+        self.assertEqual(rota["source"], "providers.x/key_env")
 
     def test_via_esta_na_ordem_do_resolvedor(self) -> None:
         """A via nova tem de estar no laco do resolvedor, senao nada disto serve."""

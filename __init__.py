@@ -429,10 +429,58 @@ def _braco_da_resposta(modelo: str, provider: str = "") -> str | None:
 _sombra_vida_cache: dict[str, Any] = {}
 
 
-def _sombra_config(config: dict[str, Any] | None) -> dict[str, Any]:
-    """Bloco `sombra` da config; desligado quando ausente ou malformado."""
-    bloco = (config or {}).get("sombra")
-    return bloco if isinstance(bloco, dict) else {}
+def _sombra_config(config: dict[str, Any] | None,
+                   perfil: str = "") -> dict[str, Any]:
+    """Bloco `sombra` em vigor NESTE perfil: o global fundido com o do perfil.
+
+    Tres camadas, pela ordem que o resto do `gestor` ja usa: `config.sombra`
+    (global), `config.perfis.<perfil>.sombra` e `config.perfis.*.sombra` (o
+    curinga). Funde-se **chave a chave** e nao por substituicao: um perfil que
+    declare so `{"activo": false}` tem de herdar o `vida_ttl_h` do global, e um
+    que declare so o `vida_ttl_h` tem de herdar o interruptor. Substituir por
+    inteiro obrigava cada perfil a repetir o bloco todo, e o primeiro campo
+    esquecido voltava ao valor por omissao em silencio.
+
+    O interruptor GLOBAL vive em `sombra.global_control` e manda sobre o `activo`
+    do topo (que continua a ser lido para a config escrita antes dele). Um perfil
+    com `herda: true` obedece ao global mesmo que traga um `activo` proprio.
+
+    Ausente ou malformado vale `{}` — desligado. Nao se usa `perfil_config`
+    aqui porque isto corre a cada turno e nao precisa do `deepcopy` inteiro.
+    """
+    cfg = config or {}
+    bloco: dict[str, Any] = {}
+    global_s = cfg.get("sombra")
+    if isinstance(global_s, dict):
+        bloco.update(global_s)
+        controlo = global_s.get("global_control")
+        if isinstance(controlo, dict) and isinstance(controlo.get("activo"), bool):
+            bloco["activo"] = bool(controlo["activo"])
+    perfis = cfg.get("perfis")
+    if perfil and isinstance(perfis, dict):
+        local: Any = None
+        proprio = perfis.get(perfil)
+        if isinstance(proprio, dict):
+            local = proprio.get("sombra")
+        if not isinstance(local, dict):
+            # Mesma regra do `perfil_config`: perfil ausente cai no curinga.
+            curinga = perfis.get("*")
+            if isinstance(curinga, dict):
+                local = curinga.get("sombra")
+        if isinstance(local, dict):
+            if local.get("herda") is True:
+                # Heranca explicita: nada do bloco local se aplica. Um `activo`
+                # antigo no mesmo bloco nao pode ganhar ao interruptor global.
+                bloco.pop("herda", None)
+                return bloco
+            bloco.update(local)
+            if "activo" in local:
+                # O perfil declarou o interruptor: ganha ao global, e o
+                # `global_control` herdado sai do bloco para nao ganhar-lhe na
+                # leitura seguinte (dois interruptores, uma resposta so).
+                bloco.pop("global_control", None)
+                bloco["activo"] = bool(local["activo"])
+    return bloco
 
 
 def _sombra_vida() -> dict[str, Any]:
@@ -507,7 +555,7 @@ def _sombra_do_turno(
     e um que trocasse o modelo que a regra de superficie fixou estaria a apagar
     uma ordem explicita com um sorteio.
     """
-    bloco = _sombra_config(config)
+    bloco = _sombra_config(config, perfil)
     if not bloco.get("activo"):
         return None
     registo = _pre_registo_ensaio()
@@ -1185,6 +1233,399 @@ def _pedido_com_esforco(pedido: dict[str, Any], entrada: dict[str, Any],
     return novo, esforco
 
 
+#: Fios cujo payload deixa de servir ao destino depois de uma troca.
+#:
+#: `chat_completions` entrou a 2026-11-19, com medicao: um turno do perfil
+#: `default` (base `gpt-6.2-astra`, fio `codex_responses`) que caia no
+#: `deepseek-flash` ou no `north-mini-code:free` morria com `TypeError: Missing
+#: required arguments; Expected either ('messages' and 'model') or ('messages',
+#: 'model' and 'stream')` — o payload ia com `input`/`instructions` e sem
+#: `messages`. Seis de doze turnos trocados nesse sentido entre 2026-11-18 e
+#: 2026-11-19 acabaram assim, e no `default` era o que impedia o flash de ficar
+#: em primeiro no catalogo.
+_FIOS_RECONSTRUIVEIS = ("anthropic_messages", "codex_responses", "chat_completions")
+
+#: Tipos de bloco de texto dos dois fios que nao sao OpenAI: `input_text` e
+#: `output_text` (Responses), `text` (ambos) e `summary_text` (resumos).
+_TIPOS_TEXTO_FIO = frozenset({"input_text", "output_text", "text", "summary_text"})
+
+
+def _partes_para_chat(partes: Any) -> Any:
+    """Blocos de conteudo de outro fio -> conteudo de mensagem chat.
+
+    Texto vira `str` quando nao ha nada alem de texto (a forma que os providers
+    aceitam sem discusso, `deepseek` incluido) e lista de blocos quando ha
+    imagens. Blocos de tipo desconhecido caem; um bloco com `text` vale pelo
+    texto, porque e o que a mensagem transporta.
+    """
+    if isinstance(partes, str):
+        return partes
+    if not isinstance(partes, list):
+        return ""
+    saida: list[dict[str, Any]] = []
+    for parte in partes:
+        if isinstance(parte, str):
+            if parte:
+                saida.append({"type": "text", "text": parte})
+            continue
+        if not isinstance(parte, dict):
+            continue
+        tipo = str(parte.get("type") or "").strip().lower()
+        if tipo in _TIPOS_TEXTO_FIO or parte.get("text"):
+            texto = parte.get("text")
+            if isinstance(texto, str) and texto:
+                saida.append({"type": "text", "text": texto})
+            continue
+        if tipo == "input_image":
+            url = parte.get("image_url") or parte.get("url")
+            if isinstance(url, dict):
+                url = url.get("url")
+            if url:
+                bloco: dict[str, Any] = {"type": "image_url", "image_url": {"url": str(url)}}
+                if parte.get("detail"):
+                    bloco["image_url"]["detail"] = str(parte["detail"])
+                saida.append(bloco)
+    if not saida:
+        return ""
+    if all(bloco.get("type") == "text" for bloco in saida):
+        return "\n".join(str(bloco.get("text") or "") for bloco in saida)
+    return saida
+
+
+def _argumentos_json(valor: Any) -> str:
+    """`arguments` de uma chamada de ferramenta sempre como string JSON."""
+    if isinstance(valor, str):
+        return valor or "{}"
+    if valor is None:
+        return "{}"
+    try:
+        return json.dumps(valor, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return "{}"
+
+
+def _mensagens_de_responses(pedido: dict[str, Any]) -> list[Any]:
+    """Payload `codex_responses` -> mensagens no formato interno (chat).
+
+    O fio Responses move o prompt de sistema para `instructions` e achata a
+    conversa em `input`: mensagens tipadas, `function_call` e
+    `function_call_output`. Sem esta conversao o destino chat recebe `input` e
+    nenhumas `messages` — o SDK levanta `TypeError` antes de sair (medido a
+    2026-11-19). Os itens que nao tem equivalente (`reasoning`, `compaction`,
+    chamadas de ferramentas do servidor) caem: sao estado do fio anterior, nao
+    conversa.
+    """
+    mensagens: list[Any] = []
+    instrucoes = pedido.get("instructions")
+    if isinstance(instrucoes, str) and instrucoes.strip():
+        mensagens.append({"role": "system", "content": instrucoes})
+    itens = pedido.get("input")
+    if isinstance(itens, str):
+        if itens.strip():
+            mensagens.append({"role": "user", "content": itens})
+        return mensagens
+    if not isinstance(itens, list):
+        return mensagens
+    for item in itens:
+        if isinstance(item, str):
+            mensagens.append({"role": "user", "content": item})
+            continue
+        if not isinstance(item, dict):
+            continue
+        tipo = str(item.get("type") or ("message" if item.get("role") else "")).strip().lower()
+        if tipo == "message":
+            papel = str(item.get("role") or "").strip().lower()
+            if papel == "developer":
+                papel = "system"
+            if papel not in ("system", "user", "assistant"):
+                continue
+            mensagens.append({"role": papel,
+                              "content": _partes_para_chat(item.get("content"))})
+        elif tipo == "function_call":
+            call_id = str(item.get("call_id") or item.get("id") or "").strip()
+            nome = str(item.get("name") or "").strip()
+            if not (call_id and nome):
+                continue
+            chamada = {"id": call_id, "type": "function",
+                       "function": {"name": nome,
+                                    "arguments": _argumentos_json(item.get("arguments"))}}
+            ultima = mensagens[-1] if mensagens else None
+            if isinstance(ultima, dict) and ultima.get("role") == "assistant":
+                ultima.setdefault("tool_calls", []).append(chamada)
+                if not ultima.get("content"):
+                    # `""` e nao `None`: os providers de chat aceitam os dois,
+                    # mas o proxy de um deles recusa `null` num turno com
+                    # ferramentas — e o texto vazio ja diz o mesmo.
+                    ultima["content"] = ""
+            else:
+                mensagens.append({"role": "assistant", "content": "",
+                                  "tool_calls": [chamada]})
+        elif tipo == "function_call_output":
+            call_id = str(item.get("call_id") or item.get("id") or "").strip()
+            if not call_id:
+                continue
+            saida = item.get("output")
+            if isinstance(saida, list):
+                saida = _partes_para_chat(saida)
+                if isinstance(saida, list):
+                    saida = "\n".join(str(p.get("text") or "") for p in saida)
+            if not isinstance(saida, str):
+                saida = "" if saida is None else _argumentos_json(saida)
+            mensagens.append({"role": "tool", "tool_call_id": call_id,
+                              "content": saida})
+    return mensagens
+
+
+def _mensagens_de_anthropic(pedido: dict[str, Any]) -> list[Any]:
+    """Payload `anthropic_messages` -> mensagens no formato interno (chat).
+
+    Como no Responses, o prompt de sistema vive fora das mensagens (`system`) e
+    as ferramentas vem em blocos (`tool_use` na resposta, `tool_result` no
+    turno do utilizador). Medido a 2026-11-19 no codigo do core: sem esta
+    conversao, um destino chat recebia `system` e blocos que o SDK nao conhece
+    (`Completions.create() got an unexpected keyword argument 'system'`).
+    """
+    mensagens: list[Any] = []
+    sistema = pedido.get("system")
+    if isinstance(sistema, str) and sistema.strip():
+        mensagens.append({"role": "system", "content": sistema})
+    elif isinstance(sistema, list):
+        texto = _partes_para_chat(sistema)
+        if texto:
+            mensagens.append({"role": "system", "content": texto})
+    for mensagem in pedido.get("messages") or []:
+        if not isinstance(mensagem, dict):
+            continue
+        papel = str(mensagem.get("role") or "").strip().lower()
+        conteudo = mensagem.get("content")
+        blocos = conteudo if isinstance(conteudo, list) else None
+        if papel == "assistant":
+            textos: list[str] = []
+            chamadas: list[dict[str, Any]] = []
+            for bloco in blocos or []:
+                if not isinstance(bloco, dict):
+                    continue
+                tipo = str(bloco.get("type") or "").strip().lower()
+                if tipo in _TIPOS_TEXTO_FIO or bloco.get("text"):
+                    if isinstance(bloco.get("text"), str) and bloco["text"]:
+                        textos.append(bloco["text"])
+                elif tipo == "tool_use":
+                    nome = str(bloco.get("name") or "").strip()
+                    call_id = str(bloco.get("id") or "").strip()
+                    if nome and call_id:
+                        chamadas.append({"id": call_id, "type": "function",
+                                         "function": {"name": nome,
+                                                      "arguments": _argumentos_json(
+                                                          bloco.get("input"))}})
+            if blocos is None:
+                corpo: Any = conteudo if isinstance(conteudo, str) else ""
+            else:
+                corpo = "\n".join(textos) if textos else ""
+            nova: dict[str, Any] = {"role": "assistant", "content": corpo}
+            if chamadas:
+                nova["tool_calls"] = chamadas
+            mensagens.append(nova)
+        elif papel == "user":
+            texto_user: Any = ""
+            if blocos is None:
+                texto_user = conteudo if isinstance(conteudo, str) else ""
+            else:
+                restantes = []
+                for bloco in blocos:
+                    if not isinstance(bloco, dict):
+                        continue
+                    if str(bloco.get("type") or "").strip().lower() == "tool_result":
+                        call_id = str(bloco.get("tool_use_id") or "").strip()
+                        if not call_id:
+                            continue
+                        saida = bloco.get("content")
+                        if isinstance(saida, list):
+                            saida = _partes_para_chat(saida)
+                            if isinstance(saida, list):
+                                saida = "\n".join(str(p.get("text") or "")
+                                                  for p in saida)
+                        if not isinstance(saida, str):
+                            saida = "" if saida is None else _argumentos_json(saida)
+                        mensagens.append({"role": "tool", "tool_call_id": call_id,
+                                          "content": saida})
+                    else:
+                        restantes.append(bloco)
+                texto_user = _partes_para_chat(restantes) if restantes else ""
+            if texto_user:
+                mensagens.append({"role": "user", "content": texto_user})
+    return mensagens
+
+
+def _mensagens_para_reconstruir(pedido: dict[str, Any], de: str) -> list[Any]:
+    """Mensagens do payload **na forma do fio de origem**, prontas ao construtor.
+
+    Cada fio guarda a conversa de maneira propria; passar `input` ou `system` ao
+    construtor como se fossem `messages` perderia o prompt de sistema e deixaria
+    blocos que o destino nao conhece. A conversao e por fio de origem, nunca por
+    fio de destino: o construtor do core ja sabe escrever qualquer destino.
+    """
+    if de == "codex_responses":
+        convertidas = _mensagens_de_responses(pedido)
+        if convertidas:
+            return convertidas
+    elif de == "anthropic_messages":
+        convertidas = _mensagens_de_anthropic(pedido)
+        if convertidas:
+            return convertidas
+    return _mensagens(pedido)
+
+
+def _fio_do_payload(pedido: dict[str, Any]) -> str:
+    """Fio de origem inferido do corpo, para quando o `api_mode` vem vazio.
+
+    A middleware recebe `api_mode` no kwarg, mas nem sempre: no perfil `default`
+    com a base declarada como provider custom, o kwarg chegou e a rota de destino
+    nao declarava `api_mode` no catalogo — e a troca ficou sem reconstrucao com
+    `fio: null` no ledger (medido a 2026-11-19, 13:35:42). O corpo diz o que o
+    kwarg calou: `input`+`instructions` e Responses, `system` e Anthropic, e
+    `messages` e chat. Inferencia so de forma, nunca de intencao.
+    """
+    if not isinstance(pedido, dict):
+        return ""
+    if "input" in pedido or "instructions" in pedido:
+        return "codex_responses"
+    if "system" in pedido:
+        return "anthropic_messages"
+    if "messages" in pedido:
+        return "chat_completions"
+    return ""
+
+
+def _payload_na_forma_do_destino(agente: Any, pedido: dict[str, Any],
+                                 modo_anterior: Any, modo_novo: Any
+                                 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Payload reconstruido na forma do fio de destino quando a troca muda de fio.
+
+    O `api_kwargs` chega a middleware **ja construido** para a rota anterior
+    (`agent/turn_api_request.py`: `agent._build_api_kwargs` corre antes de
+    `apply_llm_request_middleware`). Trocar de fio deixa-o na forma do antigo, e o
+    SDK do destino recusa-o antes de sair: medido a 2026-11-18, a Messages da
+    Anthropic deu `TypeError: Messages.stream() missing 1 required keyword-only
+    argument: 'max_tokens'` com um payload de chat/completions, e o core leu essa
+    mensagem como `context_overflow` — reiniciou a sessao em vez de repetir, o que
+    fazia toda a rota `anthropic_messages` morrer no primeiro pedido do turno.
+    Medido a 2026-11-19, a direcao inversa (`codex_responses` -> chat) morria com
+    `TypeError: Missing required arguments`, o que prendia o perfil `default` ao
+    primeiro modelo do catalogo.
+
+    Reconstroi-se com o construtor do proprio core, ja com o agente trocado
+    (`agent._build_api_kwargs`, o mesmo que `turn_api_request` usa), a partir das
+    mensagens **convertidas do fio de origem** (`_mensagens_para_reconstruir`):
+    o prompt de sistema vive em `instructions`/`system` e os blocos de ferramenta
+    nao tem a forma chat, por isso passar so `messages`/`input` perdia-o.
+    """
+    de = str(modo_anterior or "").strip().lower() or _fio_do_payload(pedido)
+    para = str(modo_novo or "").strip().lower()
+    if not para and agente is not None:
+        # A rota pode nao declarar `api_mode` no catalogo; o agente, ja trocado,
+        # sabe qual resolveu (`switch_model` -> `determine_api_mode`).
+        para = str(getattr(agente, "api_mode", "") or "").strip().lower()
+    if not para or de == para or para not in _FIOS_RECONSTRUIVEIS:
+        return pedido, None
+    construtor = getattr(agente, "_build_api_kwargs", None)
+    if not callable(construtor):
+        return pedido, None
+    mensagens = _mensagens_para_reconstruir(pedido, de)
+    if not mensagens:
+        return pedido, None
+    # O core reconcilia o `reasoning_content` com a rota *antes* de construir o
+    # corpo (`build_request_payload` -> `_reapply_reasoning_echo_for_provider`).
+    # Como a reconstrucao acontece por fora desse caminho, tem de se repetir: um
+    # `deepseek-flash` em modo thinking responde 400 «The `reasoning_content` in
+    # the thinking mode must be passed back to the API» quando o historico veio
+    # de outro fio (medido a 2026-11-19, 13:42:01, sessao do perfil `trabalho`
+    # que alterna flash e Fable). Idempotente; fail-open.
+    reparador = getattr(agente, "_reapply_reasoning_echo_for_provider", None)
+    if callable(reparador):
+        try:
+            reparador(mensagens)
+        except Exception as exc:  # noqa: BLE001 - o pad nao pode partir o turno
+            _falha(f"reasoning_content na reconstrucao para {para}: "
+                   f"{type(exc).__name__}: {exc}")
+    try:
+        novo = construtor(mensagens)
+    except Exception as exc:  # noqa: BLE001 - o payload antigo segue como antes
+        _falha(f"reconstrucao do payload para {para}: {type(exc).__name__}: {exc}")
+        return pedido, None
+    if not isinstance(novo, dict) or not novo:
+        return pedido, None
+    if para == "chat_completions" and not novo.get("messages"):
+        # Uma reconstrucao sem `messages` nao serve ao destino: vale mais o
+        # payload antigo, que ao menos leva o rasto do erro ja conhecido.
+        return pedido, None
+    return novo, {"de": de or "desconhecido", "para": para, "reconstruido": True}
+
+
+#: Orcamento de saida por familia de fio do destino: (campo, tecto). Medido a
+#: 2026-11-19 nos deployments do Foundry: `/anthropic/v1/messages` responde 200
+#: com `max_tokens` 8192, 64 000 e 128 000, e `/openai/v1/responses` responde 200
+#: com `max_output_tokens` 128 000 — e tambem sem campo nenhum. O tecto so entra
+#: quando o payload chega sem orcamento valido; um orcamento ja presente (o que o
+#: core pos) respeita-se.
+_ORCAMENTO_SAIDA = {
+    "anthropic_messages": ("max_tokens", 128_000),
+    "codex_responses": ("max_output_tokens", 128_000),
+}
+#: Campos de orcamento das outras familias: um payload que muda de fio conserva
+#: os do fio anterior, e o destino recusa-os (a Responses responde 400 a
+#: `max_tokens`; a Messages exige `max_tokens`, nao `max_completion_tokens`).
+_ORCAMENTO_ALHEIO = ("max_tokens", "max_completion_tokens", "max_output_tokens")
+
+
+def _orcamento_valido(valor: Any) -> int:
+    """``valor`` como inteiro positivo, ou 0 quando nao serve de orcamento."""
+    if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+        return 0
+    try:
+        inteiro = int(valor)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return inteiro if inteiro > 0 else 0
+
+
+def _garantir_orcamento_saida(pedido: dict[str, Any], modo: Any,
+                              agente: Any = None) -> tuple[dict[str, Any], str]:
+    """Payload com o campo de orcamento que o fio de destino exige.
+
+    A Messages da Anthropic exige `max_tokens` e recusa-se a chamar sem ele
+    (`TypeError: Messages.stream() missing 1 required keyword-only argument:
+    'max_tokens'`), e o classificador do core le a palavra nua `max_tokens` como
+    contexto excedido — o turno morre a reiniciar a sessao em vez de repetir.
+    Medido a 2026-11-18 nos dois fios do Foundry. A Responses dos GPT usa
+    `max_output_tokens` e responde 400 a `max_tokens` (medido a 2026-11-18).
+
+    A reconstrucao (`_payload_na_forma_do_destino`) cobre a troca de fio; esta
+    guarda cobre o resto — reconstrucao que falhou em fail-open, payload vindo de
+    outro construtor, ou orcamento ausente no proprio fio de destino. Devolve
+    `(pedido, campo_preenchido)`; `campo_preenchido` vazio significa intacto.
+    """
+    alvo = _ORCAMENTO_SAIDA.get(str(modo or "").strip().lower())
+    if not alvo:
+        return pedido, ""
+    campo, tecto = alvo
+    if _orcamento_valido(pedido.get(campo)):
+        return pedido, ""
+    herdado = _orcamento_valido(getattr(agente, "max_tokens", None))
+    if not herdado:
+        # Um payload do fio anterior traz o orcamento no campo do outro fio; o
+        # valor e a intencao do turno e nao se inventa outro.
+        outro = "max_output_tokens" if campo == "max_tokens" else "max_tokens"
+        herdado = _orcamento_valido(pedido.get(outro)) or _orcamento_valido(
+            pedido.get("max_completion_tokens"))
+    novo = dict(pedido)
+    for chave in _ORCAMENTO_ALHEIO:
+        if chave != campo:
+            novo.pop(chave, None)
+    novo[campo] = herdado or tecto
+    return novo, campo
+
+
+
 def _trocar(agente: Any, entrada: dict[str, Any], rota: dict[str, Any],
             perfil: str, sessao: str) -> dict[str, Any]:
     alvo_provider = rota["provider"] or entrada["provider"].lower()
@@ -1238,6 +1679,7 @@ def middleware_llm_request(
                         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                         "platform": platform, "session_id": session_id,
                         "model": model, "provider": provider,
+                        "api_mode": api_mode, "base_url": base_url,
                         "turn_id": str(turn_id)[-12:] if turn_id else None,
                     }, ensure_ascii=False) + "\n")
             except Exception:  # noqa: BLE001
@@ -1723,10 +2165,13 @@ def middleware_llm_request(
                 return None
             pedido, esforco_fio = _pedido_com_esforco(
                 {**request, "model": entrada["modelo"]}, entrada, rota, session_id)
+            pedido, orcamento = _garantir_orcamento_saida(
+                pedido, rota.get("api_mode") or entrada.get("api_mode"), agente)
             _registar({**resumo_de(base), "evento": "troca_so_modelo", "de": atual["modelo"],
                        "para": entrada["modelo"], "entrada": entrada["id"],
                        "acesso": entrada.get("acesso", ""),
                        "esforco": esforco_fio or "nao_aplicado",
+                       **(({"orcamento": orcamento} if orcamento else {})),
                        "ms": round((time.monotonic() - inicio) * 1000, 1)}, registar=registar)
             return {"request": pedido, "source": NOME,
                     "reason": f"{perfil}:complexidade={nivel}->{entrada['modelo']}"}
@@ -1737,6 +2182,8 @@ def middleware_llm_request(
             # repoe-se quando a entrada nao declara nenhum).
             esforco_agente = _aplicar_esforco(agente, entrada, session_id)
             pedido, esforco_fio = _pedido_com_esforco(request, entrada, rota, session_id)
+            pedido, orcamento = _garantir_orcamento_saida(
+                pedido, rota.get("api_mode") or entrada.get("api_mode"), agente)
             # Aqui escrevia-se o evento `sem_troca` — em cada chamada de API, com
             # o mesmo rasto. O rasto viaja agora na linha `resposta` (uma vez por
             # turno, e de novo quando a decisao muda), e o desfecho "nao trocou"
@@ -1744,6 +2191,9 @@ def middleware_llm_request(
             if esforco_fio:
                 return {"request": pedido, "source": NOME,
                         "reason": f"{perfil}:complexidade={nivel}:esforco={esforco_fio}"}
+            if orcamento:
+                return {"request": pedido, "source": NOME,
+                        "reason": f"{perfil}:complexidade={nivel}:orcamento={orcamento}"}
             return None
         try:
             aplicado = _trocar(agente, entrada, rota, perfil, session_id)
@@ -1786,15 +2236,25 @@ def middleware_llm_request(
         # Depois da troca: o `switch_model` re-resolve `reasoning_config` do
         # `config.yaml` e apagaria um valor posto antes.
         esforco_agente = _aplicar_esforco(agente, entrada, session_id)
+        # O payload veio construido para o fio antigo; se a troca muda de fio e' 
+        # reconstruido aqui, senao o SDK do destino recusa-o antes de sair.
+        pedido_bruto, fio = _payload_na_forma_do_destino(
+            agente, {**request, "model": entrada["modelo"]}, api_mode,
+            rota.get("api_mode") or entrada.get("api_mode"))
         pedido, esforco_fio = _pedido_com_esforco(
-            {**request, "model": entrada["modelo"]}, entrada, rota, session_id)
+            pedido_bruto, entrada, rota, session_id)
+        pedido, orcamento = _garantir_orcamento_saida(
+            pedido, (fio or {}).get("para") or rota.get("api_mode") or entrada.get("api_mode"),
+            agente)
         _registar({**resumo_de(base), "evento": "troca", "entrada": entrada["id"], "de": destino,
                    "acesso": entrada.get("acesso", ""),
                    "para": aplicado, "fonte_credencial": rota.get("source", ""),
                    "esforco": esforco_agente or "nao_declarado",
                    **({"preteridas": list(dict.fromkeys(falhadas))} if falhadas else {}),
+                   **({"fio": fio} if fio else {}),
+                   **({"orcamento": orcamento} if orcamento else {}),
                    "ms": round((time.monotonic() - inicio) * 1000, 1)}, registar=registar)
-        if entrada["modelo"] != request.get("model") or esforco_fio:
+        if entrada["modelo"] != request.get("model") or esforco_fio or fio or orcamento:
             return {"request": pedido, "source": NOME,
                     "reason": f"{perfil}:complexidade={nivel}->{aplicado['provider']}:{entrada['modelo']}"}
         return None

@@ -601,6 +601,33 @@
     " chamadas sem braço (fora da conta)": " calls without an arm (left out of the count)",
     "vida medida em ": "liveness measured on ",
     "chamada de ferramenta medida por exit_code": "tool call measured by exit_code",
+
+    // Interruptor do ensaio em sombra POR PERFIL (pagina do perfil) e o resumo
+    // por perfil ao lado do interruptor global (pagina de configuracao).
+    "Ensaio em sombra": "Shadow trial",
+    "próprio deste perfil": "set on this profile",
+    "segue o global": "follows the global",
+    "segue o global (herança declarada)": "follows the global (declared inheritance)",
+    "padrão (nada declarado)": "default (nothing declared)",
+    "Seguir o global": "Follow the global",
+    "Desligar o ensaio em sombra só neste perfil": "Turn the shadow trial off on this profile only",
+    "Ligar o ensaio em sombra só neste perfil": "Turn the shadow trial on on this profile only",
+    "Apagar a escolha deste perfil e voltar a obedecer ao interruptor global":
+      "Drop this profile's choice and obey the global switch again",
+    "interruptor global: ": "global switch: ",
+    "o estado do ensaio neste perfil não veio no payload; sem ele não se desenha o interruptor":
+      "the trial state for this profile did not come in the payload; without it the switch is not drawn",
+    "Só afecta este perfil: os outros continuam com o que declaram ou com o global. Grava de imediato, sem esperar por «Gravar e voltar», e «Descartar» não o desfaz.":
+      "Only affects this profile: the others keep what they declare or the global. Saves at once, without waiting for \"Save and go back\", and \"Discard\" does not undo it.",
+    "Um interruptor próprio ganha ao global nos dois sentidos: ligado aqui, o ensaio corre neste perfil mesmo com o global desligado. «Seguir o global» devolve o perfil ao interruptor de cima.":
+      "A profile's own switch beats the global both ways: on here, the trial runs on this profile even with the global off. \"Follow the global\" hands the profile back to the switch above.",
+    "Vale a partir do turno seguinte: um turno em curso mantém o modelo com que começou.":
+      "Applies from the next turn: a turn in progress keeps the model it started with.",
+    "ensaio neste perfil: ": "trial on this profile: ",
+    "O interruptor do ensaio não foi gravado. ": "The trial switch was not saved. ",
+    "por perfil": "per profile",
+    "o interruptor de cada perfil está na página do perfil (⚙ no cartão)":
+      "each profile's switch is on the profile page (⚙ on the card)",
   };
   let IDIOMA = IDIOMA_PADRAO;
 
@@ -1395,6 +1422,36 @@
     return conhecidos.concat(resto);
   }
 
+  // ---- a tabela de modelos de um perfil sai pela `ordem` declarada ---------
+  // Regra do dono (3.47.23): o menor primeiro, quem nao declara ordem no fim.
+  // Le a ordem como o `gestor` a le (`_chave_ordem`): so um inteiro conta; o
+  // resto — vazio, texto, decimal — e «nao declarado» e vai para o fim, em vez
+  // de ganhar um lugar que o plugin nao lhe da.
+  function ordemDeclarada(valor) {
+    if (typeof valor === "number") return (isFinite(valor) && Math.floor(valor) === valor) ? valor : null;
+    if (typeof valor === "string" && /^\s*[+-]?\d+\s*$/.test(valor)) return parseInt(valor, 10);
+    return null;
+  }
+
+  // Devolve uma lista NOVA. O `p.catalogo` do estado fica na ordem do ficheiro:
+  // e por ela que o resto do painel o le (as regras de superficie nascem na
+  // primeira rota) e e ela que desempata aqui — duas rotas com a mesma ordem, e
+  // as que nao declaram nenhuma, ficam entre si como estao no ficheiro. A
+  // posicao vai na chave para o resultado nao depender de o `sort` do browser
+  // ser estavel.
+  function ordenarCatalogo(lista) {
+    if (!Array.isArray(lista)) return [];
+    return lista
+      .filter(function (e) { return e && typeof e === "object"; })
+      .map(function (e, i) { return { e: e, i: i, o: ordemDeclarada(e.ordem) }; })
+      .sort(function (a, b) {
+        if ((a.o === null) !== (b.o === null)) return a.o === null ? 1 : -1;
+        if (a.o !== null && a.o !== b.o) return a.o - b.o;
+        return a.i - b.i;
+      })
+      .map(function (x) { return x.e; });
+  }
+
   function numeroOuTexto(txt) {
     var limpo = String(txt == null ? "" : txt).trim();
     if (!limpo) return null;
@@ -2077,6 +2134,106 @@
     return { corpo: corpo, erro: erro };
   }
 
+  // ---- ensaio em sombra: o interruptor de UM perfil ------------------------
+  // O servidor ja resolve a heranca (`estado.sombra.perfis.<nome>`, a mesma
+  // `gestor.sombra_efectiva` que o CLI e o middleware usam): aqui so se le.
+  // `conhecido: false` quando o payload nao traz o perfil — o bloco di-lo em vez
+  // de desenhar um interruptor com um valor inventado.
+  function sombraDoPerfil(estado, perfil) {
+    const s = (estado && estado.sombra) || null;
+    const porPerfil = (s && s.perfis) || null;
+    const p = porPerfil && Object.prototype.hasOwnProperty.call(porPerfil, perfil)
+      ? porPerfil[perfil] : null;
+    const g = (s && s.global) || null;
+    return {
+      conhecido: !!(p && typeof p.activo === "boolean"),
+      activo: !!(p && p.activo === true),
+      origem: String((p && p.origem) || ""),
+      globalConhecido: !!(g && typeof g.activo === "boolean"),
+      globalActivo: !!(g && g.activo === true),
+    };
+  }
+
+  // De onde vem o valor: sem isto, um perfil que herda parece ter escolhido.
+  function rotuloOrigemSombra(origem) {
+    if (origem === "proprio") return T("próprio deste perfil");
+    if (origem === "herdado") return T("segue o global (herança declarada)");
+    if (origem === "global") return T("segue o global");
+    if (origem === "padrao") return T("padrão (nada declarado)");
+    return origem || "?";
+  }
+
+  function textoSombraDoPerfil(sp) {
+    return T(sp.activo ? "ligado" : "desligado") + " · " + rotuloOrigemSombra(sp.origem);
+  }
+
+  // O bloco da pagina do perfil. Funcao simples (sem hooks) e nao componente,
+  // como `tituloBloco`: assim a pagina desenha-o no sitio e os testes em node
+  // veem os botoes sem um React a serio.
+  //
+  // Dois gestos, os mesmos do CLI: o interruptor escreve `activo` proprio no
+  // perfil (`vmm sombra on|off --perfil`), «Seguir o global» escreve
+  // `herda: true` (`vmm sombra herdar --perfil`). O segundo so aparece quando ha
+  // uma escolha propria para largar.
+  function blocoSombraPerfil(props) {
+    const sp = sombraDoPerfil(props.estado, props.perfil || "");
+    const ocupado = !!props.aGravar;
+    const titulo = h(
+      "div",
+      { className: "vmm-bloco-titulo" },
+      h("strong", null, "Ensaio em sombra"),
+      h("span", { className: "vmm-mudo" },
+        T("  em vigor: ") + (sp.conhecido ? textoSombraDoPerfil(sp) : "—"))
+    );
+    if (!sp.conhecido) {
+      return h(
+        "div",
+        { className: "vmm-bloco vmm-bloco-sombra-perfil" },
+        titulo,
+        h("div", { className: "vmm-mudo vmm-campo-ajuda" },
+          "o estado do ensaio neste perfil não veio no payload; sem ele não se desenha o interruptor")
+      );
+    }
+    return h(
+      "div",
+      { className: "vmm-bloco vmm-bloco-sombra-perfil" },
+      titulo,
+      h(
+        "div",
+        { className: "vmm-sombra-perfil-accoes" },
+        h(Interruptor, {
+          activo: sp.activo,
+          aGravar: ocupado,
+          title: sp.activo
+            ? "Desligar o ensaio em sombra só neste perfil"
+            : "Ligar o ensaio em sombra só neste perfil",
+          onClick: function () { props.onSombraPerfil({ activo: !sp.activo }); },
+        }),
+        sp.origem === "proprio"
+          ? h(Button, {
+              size: "sm",
+              variant: "ghost",
+              disabled: ocupado,
+              title: "Apagar a escolha deste perfil e voltar a obedecer ao interruptor global",
+              onClick: function () { props.onSombraPerfil({ herdar: true }); },
+            }, "Seguir o global")
+          : null,
+        h("span", { className: "vmm-mudo" },
+          T("interruptor global: ")
+            + (sp.globalConhecido ? T(sp.globalActivo ? "ligado" : "desligado") : "—"))
+      ),
+      h("div", { className: "vmm-mudo vmm-campo-ajuda" },
+        "Só afecta este perfil: os outros continuam com o que declaram ou com o global. Grava de imediato, sem esperar por «Gravar e voltar», e «Descartar» não o desfaz."),
+      h("div", { className: "vmm-mudo vmm-campo-ajuda" },
+        "Um interruptor próprio ganha ao global nos dois sentidos: ligado aqui, o ensaio corre neste perfil mesmo com o global desligado. «Seguir o global» devolve o perfil ao interruptor de cima."),
+      h("div", { className: "vmm-mudo vmm-campo-ajuda" },
+        "Vale a partir do turno seguinte: um turno em curso mantém o modelo com que começou."),
+      props.aviso
+        ? h("div", { className: "vmm-ok", role: "status", "aria-live": "polite" }, props.aviso)
+        : null
+    );
+  }
+
   function PaginaPerfil(props) {
     const form = props.form || {};
     const opcoes = props.opcoes || {};
@@ -2462,7 +2619,23 @@
                         onChange: mudar("estPor"),
                       })))
               )
-            )
+            ),
+
+            // --- 6. ensaio em sombra ---------------------------------------
+            // Fica no fim, como na pagina de configuracao: e o unico bloco que
+            // fala do ENSAIO e nao da decisao normal. Ao contrario dos cinco de
+            // cima, NAO faz parte do formulario — grava de imediato pelo
+            // `POST /sombra`, que e o caminho que deixa rasto no ledger de
+            // controlo, e o proprio bloco diz isso a quem o usa.
+            blocoSombraPerfil({
+              estado: props.estado,
+              perfil: perfil,
+              aGravar: !!props.aGravar || !!props.sombraAGravar,
+              aviso: props.avisoSombra || "",
+              onSombraPerfil: function (campos) {
+                if (props.onSombraPerfil) props.onSombraPerfil(campos);
+              },
+            })
           )
     );
   }
@@ -2592,7 +2765,10 @@
           h(
             "tbody",
             null,
-            (p.catalogo || []).map(function (m) {
+            // Pela `ordem` declarada, nao pela posicao no ficheiro. Ordena-se a
+            // cada desenho, a partir do estado: depois de gravar uma rota o
+            // painel rele o `/estado` e a tabela sai logo na ordem nova.
+            ordenarCatalogo(p.catalogo).map(function (m) {
               const cx = m.complexidade || [];
               const cxLista = Array.isArray(cx) ? cx : [cx];
               return h(
@@ -3446,6 +3622,25 @@
     );
   }
 
+  // Resumo por perfil ao lado do interruptor GLOBAL, so de leitura: «ligado» em
+  // cima nao quer dizer ligado em todos — um perfil com escolha propria nao
+  // obedece, e sem esta linha a pagina de configuracao escondia-o. Um perfil
+  // cujo estado nao veio no payload fica de fora em vez de aparecer desligado.
+  function linhaPerfisSombra(s) {
+    const porPerfil = (s && s.perfis) || {};
+    const partes = [];
+    Object.keys(porPerfil).forEach(function (nome) {
+      const sp = sombraDoPerfil({ sombra: s }, nome);
+      if (!sp.conhecido) return;
+      partes.push(nome + ": " + T(sp.activo ? "ligado" : "desligado")
+        + " (" + rotuloOrigemSombra(sp.origem) + ")");
+    });
+    if (!partes.length) return null;
+    return h("div", { className: "vmm-mudo vmm-campo-ajuda vmm-sombra-por-perfil" },
+      T("por perfil") + " — " + partes.join("; ") + ". "
+        + T("o interruptor de cada perfil está na página do perfil (⚙ no cartão)"));
+  }
+
   // ---- ensaio A/B em sombra -----------------------------------------------
   // Os MODELOS dos dois bracos vivem no PRÉ-REGISTO SELADO, nao no config.json:
   // por isso esta seccao escreve por dois endpoints proprios (`/sombra` para o
@@ -3559,6 +3754,7 @@
         title: "Desligado, o turno volta a ser decidido pelo nível",
         onChange: function (v) { props.onSombra({ activo: v === "ligado" }); },
       }),
+      linhaPerfisSombra(s),
 
       h("div", { className: "vmm-classif-nome" }, "validade da sonda (horas)"),
       h("div", { className: "vmm-linha" },
@@ -3854,6 +4050,11 @@
     const [perfilOk, setPerfilOk] = useState(null);
     const [perfilAGravar, setPerfilAGravar] = useState(false);
     const [perfilACarregar, setPerfilACarregar] = useState(false);
+    // Interruptor do ensaio em sombra na pagina de um perfil: grava a parte do
+    // formulario, por isso tem o seu proprio "a gravar" e o seu proprio aviso —
+    // o aviso do formulario (`perfilOk`) fala de validacao, nao deste gesto.
+    const [sombraPerfilAGravar, setSombraPerfilAGravar] = useState(false);
+    const [avisoSombraPerfil, setAvisoSombraPerfil] = useState("");
 
     const carregar = useCallback(function () {
       setACarregar(true);
@@ -3992,6 +4193,46 @@
         .then(function () { setAGravar(false); });
     }
 
+    // Interruptor do ensaio em sombra de UM perfil (pagina do perfil). Usa o
+    // mesmo `POST /sombra` do interruptor global, com `perfil` no corpo: e esse
+    // o caminho que escreve `perfis.<nome>.sombra` e o ledger de controlo, igual
+    // ao `vmm sombra on|off|herdar --perfil`.
+    //
+    // O `rev` enviado e o que a pagina leu (`perfilRev`): se a config mudou
+    // entretanto o servidor recusa (409) em vez de gravar por cima. O `rev`
+    // devolvido passa a ser o da pagina — sem isso o «Gravar e voltar» a seguir
+    // acusava conflito por uma escrita que o proprio painel fez. O estado
+    // mostrado depois vem de reler o servidor (`carregar`), nunca de uma copia
+    // local do que se pediu.
+    function mudarSombraPerfil(campos) {
+      const perfil = perfilAberto;
+      if (!perfil) return Promise.resolve();
+      setAvisoSombraPerfil("");
+      setPerfilErro(null);
+      setSombraPerfilAGravar(true);
+      return pedir("/sombra", {
+        method: "POST",
+        body: Object.assign({ rev: perfilRev || "", perfil: perfil }, campos || {}),
+      })
+        .then(function (r) {
+          if (r && r.rev) setPerfilRev(String(r.rev));
+          const lido = sombraDoPerfil({ sombra: r && r.sombra }, perfil);
+          if (lido.conhecido) {
+            setAvisoSombraPerfil(T("ensaio neste perfil: ") + textoSombraDoPerfil(lido));
+          }
+          return carregar();
+        })
+        .catch(function (e) {
+          setPerfilErro(ehConflito(e)
+            ? T("O interruptor do ensaio não foi gravado. ")
+              + T("A configuração foi alterada noutro sítio desde que abriu esta página. ")
+              + T("Descartar e abrir outra vez para ver o estado actual.")
+            : T("Erro ao gravar o ensaio: ") + textoDoErro(e));
+          return carregar();
+        })
+        .then(function () { setSombraPerfilAGravar(false); });
+    }
+
     function mudarBracos(bracoA, bracoB, provA, provB) {
       setAvisoSombra("");
       setAGravar(true);
@@ -4019,9 +4260,18 @@
           return carregar();
         })
         .catch(function (e) {
-          const msg = String(e && e.message ? e.message : e);
-          setErroLocal(msg); // Set error to local state for visibility
-          return carregar();
+          // O erro local do bloco dos bracos (`erroLocal`) e estado da
+          // `SecaoSombra`, nao desta pagina: daqui nao se lhe chega. Rele-se o
+          // estado, liberta-se o «a gravar» e RELANCA-SE o motivo, para ser o
+          // `catch` de `reabrir()` a mostra-lo ao lado do botao. O `setErro` de
+          // topo nao serve: o `carregar()` que se segue limpa-o.
+          const motivo = ehConflito(e)
+            ? new Error(T("O ensaio mudou noutro sítio — recarreguei o estado. Repita a re-selagem."))
+            : e;
+          return carregar().then(function () {
+            setAGravar(false);
+            throw motivo;
+          });
         })
         .then(function () { setAGravar(false); });
     }
@@ -4370,6 +4620,7 @@
       setPerfilErros([]);
       setPerfilOk(null);
       setValidacaoOk(null);
+      setAvisoSombraPerfil("");
       setPerfilACarregar(true);
       pedir("/perfil?nome=" + encodeURIComponent(perfil))
         .then(function (r) {
@@ -4560,6 +4811,9 @@
         onValidar: validarPerfil,
         onGravar: gravarPerfil,
         onDescartar: descartarPerfil,
+        onSombraPerfil: mudarSombraPerfil,
+        sombraAGravar: sombraPerfilAGravar,
+        avisoSombra: avisoSombraPerfil,
       });
     }
 
@@ -4800,6 +5054,7 @@
     window.__VMM_TEST__.formParaEntrada = formParaEntrada;
     window.__VMM_TEST__.alternarOpcao = alternarOpcao;
     window.__VMM_TEST__.emOrdem = emOrdem;
+    window.__VMM_TEST__.ordenarCatalogo = ordenarCatalogo;
     window.__VMM_TEST__.BotoesOpcao = BotoesOpcao;
     window.__VMM_TEST__.PaginaModelo = PaginaModelo;
     // O que o botao de sonda escreve no ecra. Puro: o texto diz se a rota
@@ -4815,6 +5070,10 @@
     // ficheiro sao testadas em node, sem browser — sao o sitio onde um erro se
     // paga caro (escrevem no bloco que o middleware le).
     window.__VMM_TEST__.PaginaPerfil = PaginaPerfil;
+    window.__VMM_TEST__.sombraDoPerfil = sombraDoPerfil;
+    window.__VMM_TEST__.rotuloOrigemSombra = rotuloOrigemSombra;
+    window.__VMM_TEST__.blocoSombraPerfil = blocoSombraPerfil;
+    window.__VMM_TEST__.linhaPerfisSombra = linhaPerfisSombra;
     window.__VMM_TEST__.perfilParaForm = perfilParaForm;
     window.__VMM_TEST__.formParaPerfil = formParaPerfil;
     // Mudar a lingua grava no config; o texto do editor tem de acompanhar, senao
