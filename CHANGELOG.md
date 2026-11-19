@@ -9,6 +9,44 @@ what that reviewer reads first.
 Older history (before 3.45.0) lives in `git log` — the repository was published
 with one automatic commit per change, each with a per-file summary.
 
+## 3.47.21 — 2026-11-19
+
+- **A página de cada perfil ganha o interruptor do ensaio em sombra.** O interruptor por perfil já
+  existia no ficheiro e no CLI (`vmm sombra on|off|herdar --perfil P`), mas no painel só havia o
+  global: para desligar o ensaio num perfil era preciso a linha de comando. A página do perfil tem agora
+  um sexto bloco, «Ensaio em sombra», com um botão que liga ou desliga o ensaio **só nesse perfil** e,
+  quando o perfil tem escolha própria, um segundo botão «Seguir o global» que o devolve ao interruptor
+  de cima. O bloco mostra o estado em vigor, de onde vem (`próprio deste perfil`, `segue o global`,
+  herança declarada, padrão) e o estado do interruptor global ao lado.
+- **Não é um campo do formulário.** Grava de imediato pelo `POST /sombra` com `perfil` no corpo, o
+  mesmo caminho do interruptor global e do CLI, porque é esse que deixa a linha no ledger de controlo
+  (`aprendiz/sombra/controlo.jsonl`, âmbito `perfil:<nome>`). O bloco di-lo: não espera por «Gravar e
+  voltar» e «Descartar» não o desfaz. O `rev` enviado é o que a página leu, e o `rev` devolvido passa a
+  ser o da página, para o «Gravar e voltar» seguinte não acusar conflito por uma escrita do próprio
+  painel; num conflito a página **não** adopta o `rev` fresco do `/estado`, senão o formulário lido
+  antes da escrita alheia gravava por cima dela.
+- **Regra inalterada:** um interruptor próprio ganha ao global nos dois sentidos. Desligado num
+  perfil com o global ligado, só esse perfil pára; ligado num perfil com o global desligado, o ensaio
+  corre nesse perfil. Vale a partir do turno seguinte, porque um turno em curso mantém o modelo com que
+  começou.
+- **O interruptor global fica onde estava**, na página de configuração, e ganha por baixo uma linha
+  só de leitura com o estado de cada perfil: «ligado» no global não quer dizer ligado em todos.
+- **Sem `api.py` novo e sem reinício.** O `/estado` já trazia `sombra.perfis.<nome>` e o `POST /sombra`
+  já aceitava `perfil` e `herdar`; a alteração é do bundle e do CSS, servidos do disco a cada pedido.
+  A versão anunciada por `/api/dashboard/plugins` e o `motor` do ledger continuam a dizer 3.47.20 até o
+  contentor do painel e o gateway serem recarregados.
+- Estado em que um perfil não vem no payload: o bloco diz que não veio e não desenha botão nenhum, em
+  vez de mostrar «desligado».
+- Prova: `test_sombra_painel.py` 60/60 (25 novas: o corpo com `perfil` mexe só nesse perfil, deixa o
+  global e os outros intactos, escreve uma linha no ledger, recusa perfil desconhecido com 400 e `rev`
+  velho com 409 sem escrever, e gravar o formulário a seguir preserva o bloco);
+  `dashboard/test_logica.js` 445/445 (66 novas, entre elas a `Pagina` a correr com estado e um
+  servidor falso que regista os pedidos); 10 mutantes do bundle, 10 apanhados. Bateria 2074/2075, com
+  as duas falhas que já lá estavam antes desta versão (`test_auditoria.py`, quebra 161 por explicar na
+  cadeia de produção; `test_idioma.py`, 24 chaves do CLI da 3.47.20 sem tradução). O `sha256` do bundle
+  servido pelo dashboard é o do disco (`0d9dc2a0…`). Não foi visto num browser a sério: o cofre do
+  browser estava bloqueado nesta sessão.
+
 ## 3.47.20 — 2026-11-19
 
 - **O interruptor do ensaio em sombra ganha casa global (`sombra.global_control`) e rasto em ledger.**

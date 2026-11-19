@@ -4179,10 +4179,7 @@
       setSombraPerfilAGravar(true);
       return pedir("/sombra", {
         method: "POST",
-        body: Object.assign(
-          { rev: perfilRev || (estado && estado.rev) || "", perfil: perfil },
-          campos || {}
-        ),
+        body: Object.assign({ rev: perfilRev || "", perfil: perfil }, campos || {}),
       })
         .then(function (r) {
           if (r && r.rev) setPerfilRev(String(r.rev));

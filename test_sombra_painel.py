@@ -26,6 +26,11 @@ Este ficheiro prova, cada ponto com o seu caso negativo:
    nos bracos.
 8. `_verdadeiro` nao confunde a string "false" com verdadeiro — `bool("false")`
    e `True`, e isso ligaria o ensaio ao desligar.
+9. `POST /sombra` com `perfil` no corpo (o botao da pagina de um perfil) mexe so
+   nesse perfil: o global e os outros ficam como estavam, o gesto deixa uma linha
+   no ledger com o ambito do perfil, o proprio ganha ao global nos dois sentidos,
+   `herdar` devolve o perfil ao global, e perfil desconhecido ou `rev` velho sao
+   recusados sem escrever. Gravar o formulario do perfil a seguir nao apaga o bloco.
 
 Uso: python3 test_sombra_painel.py  ->  rc 0 se tudo passar.
 """

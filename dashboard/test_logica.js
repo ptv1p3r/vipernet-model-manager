@@ -1818,7 +1818,11 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   const titulos = comTag(arvore, "div").filter(function (x) {
     return String(x.props && x.props.className || "").indexOf("vmm-bloco-titulo") !== -1;
   });
-  check("render: a pagina tem os cinco blocos", titulos.length === 5, "blocos=" + titulos.length);
+  check("render: a pagina tem os seis blocos", titulos.length === 6, "blocos=" + titulos.length);
+  // (eram cinco ate a 3.47.21: o sexto e o interruptor do ensaio em sombra)
+  check("render: o sexto bloco e o do ensaio em sombra",
+        titulos.length === 6 && /Ensaio em sombra/.test(textoPlano(titulos[5])),
+        titulos.length ? textoPlano(titulos[titulos.length - 1]) : "sem blocos");
   const textosBotoes = comTag(arvore, "button").map(function (b) { return textoPlano(b.filhos).trim(); });
   check("render: os tres botoes do editor estao la",
         textosBotoes.some(function (t) { return t === "Validar"; })
@@ -1988,9 +1992,10 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   // A contagem e um alarme de deriva: subir a mao quando se acrescentam chaves e
   // o que obriga a olhar para o dicionario. +9 na 3.47.12 (sonda de ligacao),
   // +9 na 3.47.16 (remover uma rota do catalogo), +34 na 3.47.17 (painel do
-  // ensaio em sombra: etiquetas de estado, barras e previsao).
-  check("i18n: o dicionario tem as 531 chaves medidas",
-        chaves.length === 531, "tem " + chaves.length);
+  // ensaio em sombra: etiquetas de estado, barras e previsao), +18 na 3.47.21
+  // (interruptor do ensaio por perfil e o resumo por perfil ao lado do global).
+  check("i18n: o dicionario tem as 549 chaves medidas",
+        chaves.length === 549, "tem " + chaves.length);
   check("i18n: nenhuma traducao vazia",
         chaves.every(function (k) { return String(I.PT_EN[k]).trim() !== ""; }));
   // Nomes proprios e termos tecnicos ficam iguais nas duas linguas — o que nao
@@ -2360,9 +2365,509 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
         aCarregarTxt.indexOf("a ler o ledger do ensaio") !== -1, aCarregarTxt);
 })();
 
-console.log("");
-if (falhas) {
-  console.log(falhas + " de " + total + " verificacoes FALHARAM");
-  process.exit(1);
+// ------------------------------------- interruptor do ensaio em sombra POR PERFIL
+// O dono pediu um botao na pagina de cada perfil para ligar/desligar o ensaio so
+// nesse perfil, mantendo o global na pagina de configuracao. O que se prova:
+//   * o estado mostrado vem do payload (`sombra.perfis.<nome>`), nunca inventado;
+//   * o botao pede exactamente o que o servidor le (`activo` ou `herdar`);
+//   * «Seguir o global» so existe quando ha escolha propria para largar;
+//   * a pagina do perfil monta o bloco e entrega o gesto ao painel;
+//   * o resumo por perfil ao lado do global nao esconde quem nao obedece.
+// O fixture tem a forma do `/estado` vivo medido a 2026-11-19 (quatro perfis,
+// um de cada origem que la existia).
+const SOMBRA_PERFIS = {
+  activo: true,
+  global: { activo: true, vida_ttl_h: 24, global_control: { activo: true, por: "cli:sombra" } },
+  perfis: {
+    "default": { activo: true, vida_ttl_h: 24, origem: "global", declarado: {} },
+    pessoal: { activo: true, vida_ttl_h: 24, origem: "herdado", declarado: { herda: true } },
+    trabalho: { activo: false, vida_ttl_h: 24, origem: "proprio", declarado: { activo: false } },
+    financas: { activo: true, vida_ttl_h: 24, origem: "global", declarado: {} },
+  },
+};
+
+function clonar(x) { return JSON.parse(JSON.stringify(x)); }
+
+(function () {
+  const t = carregar();
+  const estado = { sombra: clonar(SOMBRA_PERFIS) };
+
+  // --- leitura pura -------------------------------------------------------
+  const fin = t.sombraDoPerfil(estado, "financas");
+  check("sombra/perfil: le o efectivo e a origem do payload",
+        fin.conhecido === true && fin.activo === true && fin.origem === "global"
+          && fin.globalConhecido === true && fin.globalActivo === true, JSON.stringify(fin));
+  const trab = t.sombraDoPerfil(estado, "trabalho");
+  check("sombra/perfil: perfil desligado por escolha propria",
+        trab.conhecido === true && trab.activo === false && trab.origem === "proprio",
+        JSON.stringify(trab));
+  check("sombra/perfil: perfil que nao vem no payload nao e conhecido",
+        t.sombraDoPerfil(estado, "nao-existe").conhecido === false);
+  check("sombra/perfil: sem bloco sombra nao e conhecido (payload antigo)",
+        t.sombraDoPerfil({}, "financas").conhecido === false
+          && t.sombraDoPerfil(null, "financas").conhecido === false);
+  check("sombra/perfil: `activo` que nao e booleano nao e conhecido",
+        t.sombraDoPerfil({ sombra: { perfis: { x: { origem: "global" } } } }, "x").conhecido === false
+          && t.sombraDoPerfil({ sombra: { perfis: { x: { activo: "true" } } } }, "x").conhecido === false);
+  check("sombra/perfil: nome de propriedade herdada nao passa por perfil",
+        t.sombraDoPerfil(estado, "constructor").conhecido === false
+          && t.sombraDoPerfil(estado, "toString").conhecido === false);
+  check("sombra/perfil: os quatro rotulos de origem",
+        t.rotuloOrigemSombra("proprio") === "próprio deste perfil"
+          && t.rotuloOrigemSombra("global") === "segue o global"
+          && t.rotuloOrigemSombra("herdado") === "segue o global (herança declarada)"
+          && t.rotuloOrigemSombra("padrao") === "padrão (nada declarado)");
+  check("sombra/perfil: origem desconhecida aparece tal e qual, nao some",
+        t.rotuloOrigemSombra("outra") === "outra" && t.rotuloOrigemSombra("") === "?");
+
+  // --- o bloco: botoes e o que pedem ---------------------------------------
+  function bloco(perfil, extra, est) {
+    const pedidos = [];
+    const props = Object.assign({
+      estado: est || estado, perfil: perfil, aGravar: false, aviso: "",
+      onSombraPerfil: function () { pedidos.push(Array.prototype.slice.call(arguments)); },
+    }, extra || {});
+    return { arvore: t.blocoSombraPerfil(props), pedidos: pedidos };
+  }
+  function interruptores(arvore) { return comTag(arvore, "Interruptor"); }
+  function botaoSeguir(arvore) {
+    return comTag(arvore, "button").concat(comTag(arvore, "Button")).filter(function (b) {
+      return textoPlano(b.filhos).trim() === "Seguir o global";
+    });
+  }
+
+  const bFin = bloco("financas");
+  check("sombra/perfil: perfil ligado mostra UM interruptor, ligado",
+        interruptores(bFin.arvore).length === 1
+          && interruptores(bFin.arvore)[0].props.activo === true,
+        "n=" + interruptores(bFin.arvore).length);
+  check("sombra/perfil: o titulo diz o estado em vigor e de onde vem",
+        /em vigor: ligado · segue o global/.test(textoPlano(bFin.arvore)),
+        textoPlano(bFin.arvore).slice(0, 120));
+  check("sombra/perfil: diz o estado do interruptor global",
+        /interruptor global: ligado/.test(textoPlano(bFin.arvore)));
+  interruptores(bFin.arvore)[0].props.onClick();
+  check("sombra/perfil: carregar no ligado pede desligar SO este perfil",
+        bFin.pedidos.length === 1 && bFin.pedidos[0].length === 1
+          && JSON.stringify(bFin.pedidos[0][0]) === JSON.stringify({ activo: false }),
+        JSON.stringify(bFin.pedidos));
+  check("sombra/perfil: quem segue o global nao tem «Seguir o global»",
+        botaoSeguir(bFin.arvore).length === 0);
+  check("sombra/perfil: o titulo do botao diz que e so neste perfil",
+        /só neste perfil/.test(interruptores(bFin.arvore)[0].props.title || ""),
+        interruptores(bFin.arvore)[0].props.title);
+
+  const bTrab = bloco("trabalho");
+  check("sombra/perfil: perfil desligado mostra o interruptor desligado",
+        interruptores(bTrab.arvore).length === 1
+          && interruptores(bTrab.arvore)[0].props.activo === false);
+  interruptores(bTrab.arvore)[0].props.onClick();
+  check("sombra/perfil: carregar no desligado pede ligar este perfil",
+        JSON.stringify(bTrab.pedidos[0]) === JSON.stringify([{ activo: true }]),
+        JSON.stringify(bTrab.pedidos));
+  const seguir = botaoSeguir(bTrab.arvore);
+  check("sombra/perfil: com escolha propria aparece «Seguir o global»", seguir.length === 1,
+        "n=" + seguir.length);
+  if (seguir.length === 1) {
+    seguir[0].props.onClick();
+    check("sombra/perfil: «Seguir o global» pede herdar, e so isso",
+          JSON.stringify(bTrab.pedidos[1]) === JSON.stringify([{ herdar: true }]),
+          JSON.stringify(bTrab.pedidos));
+  }
+  check("sombra/perfil: o estado do global continua a vista com o perfil desligado",
+        /em vigor: desligado · próprio deste perfil/.test(textoPlano(bTrab.arvore))
+          && /interruptor global: ligado/.test(textoPlano(bTrab.arvore)),
+        textoPlano(bTrab.arvore).slice(0, 160));
+
+  const bPes = bloco("pessoal");
+  check("sombra/perfil: heranca declarada le-se como tal e nao tem «Seguir o global»",
+        /segue o global \(herança declarada\)/.test(textoPlano(bPes.arvore))
+          && botaoSeguir(bPes.arvore).length === 0);
+
+  // Global desligado, perfil ligado por escolha propria: o caso que o texto de
+  // ajuda descreve tem de se ver no ecra, nao so no ficheiro.
+  const estGlobalOff = { sombra: clonar(SOMBRA_PERFIS) };
+  estGlobalOff.sombra.global.activo = false;
+  estGlobalOff.sombra.perfis.financas = { activo: true, origem: "proprio", declarado: { activo: true } };
+  const bOff = bloco("financas", null, estGlobalOff);
+  check("sombra/perfil: ligado no perfil com o global desligado mostra os dois",
+        /em vigor: ligado · próprio deste perfil/.test(textoPlano(bOff.arvore))
+          && /interruptor global: desligado/.test(textoPlano(bOff.arvore)),
+        textoPlano(bOff.arvore).slice(0, 160));
+
+  // Sem estado para o perfil: nenhum botao, e o bloco diz porque.
+  const bSem = bloco("financas", null, { sombra: { activo: true } });
+  check("sombra/perfil: sem estado do perfil nao ha interruptor nem botoes",
+        interruptores(bSem.arvore).length === 0 && botaoSeguir(bSem.arvore).length === 0
+          && comTag(bSem.arvore, "button").length === 0);
+  check("sombra/perfil: sem estado diz que nao veio, em vez de mostrar desligado",
+        /não veio no payload/.test(textoPlano(bSem.arvore))
+          && !/desligado ·/.test(textoPlano(bSem.arvore)),
+        textoPlano(bSem.arvore));
+
+  // A gravar: nada clicavel fica activo.
+  const bGravar = bloco("trabalho", { aGravar: true });
+  check("sombra/perfil: a gravar, o interruptor e «Seguir o global» ficam presos",
+        interruptores(bGravar.arvore)[0].props.aGravar === true
+          && botaoSeguir(bGravar.arvore)[0].props.disabled === true);
+  check("sombra/perfil: o aviso do gesto aparece no bloco",
+        /ensaio neste perfil: desligado/.test(
+          textoPlano(bloco("trabalho", { aviso: "ensaio neste perfil: desligado" }).arvore)));
+  check("sombra/perfil: o bloco diz que grava de imediato e que «Descartar» nao desfaz",
+        /Grava de imediato/.test(textoPlano(bFin.arvore))
+          && /«Descartar» não o desfaz/.test(textoPlano(bFin.arvore)));
+
+  // --- a pagina do perfil monta o bloco e entrega o gesto -------------------
+  function pagina(perfil, extra) {
+    return t.PaginaPerfil(Object.assign({
+      estado: estado, perfil: perfil, form: { activo: true, tarefas: [], cls: {}, clsHerdar: true,
+                                              tpHerdar: true, estHerdar: true },
+      opcoes: {}, rev: "abc", efectivo: {}, global: {},
+      onCampo: function () {}, onCampoCls: function () {}, onTarefa: function () {},
+      onNovaTarefa: function () {}, onRemoverTarefa: function () {},
+      onValidar: function () {}, onGravar: function () {}, onDescartar: function () {},
+    }, extra || {}));
+  }
+  const recebidos = [];
+  const pag = pagina("financas", { onSombraPerfil: function (c) { recebidos.push(c); } });
+  const blocosSombra = comTag(pag, "div").filter(function (x) {
+    return /vmm-bloco-sombra-perfil/.test(String(x.props && x.props.className || ""));
+  });
+  check("sombra/perfil: a pagina do perfil monta o bloco UMA vez", blocosSombra.length === 1,
+        "n=" + blocosSombra.length);
+  check("sombra/perfil: a pagina mostra o interruptor do perfil aberto",
+        interruptores(pag).length === 1 && interruptores(pag)[0].props.activo === true);
+  interruptores(pag)[0].props.onClick();
+  check("sombra/perfil: o gesto na pagina chega ao painel com o corpo certo",
+        JSON.stringify(recebidos) === JSON.stringify([{ activo: false }]),
+        JSON.stringify(recebidos));
+  check("sombra/perfil: a pagina de outro perfil le o estado DESSE perfil",
+        interruptores(pagina("trabalho")).length === 1
+          && interruptores(pagina("trabalho"))[0].props.activo === false);
+  let rebentou = "";
+  try { interruptores(pagina("financas"))[0].props.onClick(); } catch (e) { rebentou = String(e); }
+  check("sombra/perfil: sem handler do painel o clique nao rebenta", rebentou === "", rebentou);
+  check("sombra/perfil: enquanto o gesto grava, a pagina prende o interruptor",
+        interruptores(pagina("financas", { sombraAGravar: true }))[0].props.aGravar === true
+          && interruptores(pagina("financas", { aGravar: true }))[0].props.aGravar === true
+          && interruptores(pagina("financas"))[0].props.aGravar === false);
+  check("sombra/perfil: a ler o perfil, o bloco nao e desenhado",
+        interruptores(pagina("financas", { aCarregar: true })).length === 0);
+  // Os botoes do formulario continuam os mesmos tres: o interruptor nao e um
+  // quarto «gravar» disfarcado.
+  const rotulos = comTag(pag, "button").concat(comTag(pag, "Button"))
+    .map(function (b) { return textoPlano(b.filhos).trim(); });
+  check("sombra/perfil: o formulario mantem Validar, Gravar e voltar e Descartar",
+        rotulos.filter(function (r) { return r === "Validar" || /Gravar e voltar/.test(r) || r === "Descartar"; }).length === 3,
+        JSON.stringify(rotulos));
+
+  // --- o resumo por perfil ao lado do interruptor GLOBAL --------------------
+  const linha = t.linhaPerfisSombra(estado.sombra);
+  const txtLinha = textoPlano(linha);
+  check("sombra/global: o resumo lista os quatro perfis com estado e origem",
+        /default: ligado \(segue o global\)/.test(txtLinha)
+          && /pessoal: ligado \(segue o global \(herança declarada\)\)/.test(txtLinha)
+          && /trabalho: desligado \(próprio deste perfil\)/.test(txtLinha)
+          && /financas: ligado \(segue o global\)/.test(txtLinha), txtLinha);
+  check("sombra/global: sem perfis no payload nao ha linha",
+        t.linhaPerfisSombra({ activo: true }) === null && t.linhaPerfisSombra(null) === null);
+  check("sombra/global: perfil sem estado fica de fora em vez de aparecer desligado",
+        !/fantasma/.test(textoPlano(t.linhaPerfisSombra({
+          perfis: { fantasma: { origem: "global" }, a: { activo: true, origem: "global" } } }))));
+  const secao = t.SecaoSombra({ sombra: estado.sombra, catalogo: [], aGravar: false,
+                                onSombra: function () {}, onBracos: function () {} });
+  check("sombra/global: a seccao global mostra o resumo por perfil",
+        /trabalho: desligado \(próprio deste perfil\)/.test(textoPlano(secao)));
+  const seletoresGlobais = comTag(secao, "Seletor").filter(function (s) {
+    return s.props.rotulo === "ensaio";
+  });
+  check("sombra/global: o interruptor global continua la, um so",
+        seletoresGlobais.length === 1 && seletoresGlobais[0].props.valor === "ligado");
+  const pedidosGlobais = [];
+  t.SecaoSombra({ sombra: estado.sombra, catalogo: [], aGravar: false,
+                  onSombra: function (c) { pedidosGlobais.push(c); }, onBracos: function () {} });
+  comTag(t.SecaoSombra({ sombra: estado.sombra, catalogo: [], aGravar: false,
+                         onSombra: function (c) { pedidosGlobais.push(c); },
+                         onBracos: function () {} }), "Seletor")
+    .filter(function (s) { return s.props.rotulo === "ensaio"; })[0].props.onChange("desligado");
+  check("sombra/global: o interruptor global continua a pedir so `activo`, sem perfil",
+        JSON.stringify(pedidosGlobais) === JSON.stringify([{ activo: false }]),
+        JSON.stringify(pedidosGlobais));
+
+  // --- ingles: o bloco novo nao fica em portugues --------------------------
+  const en = carregar();
+  en.idioma.setIdioma("en");
+  const txtEn = textoPlano(en.blocoSombraPerfil({
+    estado: estado, perfil: "trabalho", aGravar: false, aviso: "", onSombraPerfil: function () {},
+  }));
+  check("sombra/perfil: em ingles o bloco sai traduzido",
+        /Shadow trial/.test(txtEn) && /in force: off · set on this profile/.test(txtEn)
+          && /Follow the global/.test(txtEn) && /global switch: on/.test(txtEn)
+          && !/Ensaio em sombra|próprio deste perfil|Seguir o global|Grava de imediato/.test(txtEn),
+        txtEn.slice(0, 260));
+  check("sombra/global: em ingles o resumo por perfil sai traduzido",
+        /per profile/.test(textoPlano(en.linhaPerfisSombra(estado.sombra)))
+          && /trabalho: off \(set on this profile\)/.test(textoPlano(en.linhaPerfisSombra(estado.sombra))),
+        textoPlano(en.linhaPerfisSombra(estado.sombra)));
+})();
+
+// ------------------------- o gesto de ponta a ponta, com a `Pagina` a correr
+// Os testes de cima provam o desenho; este prova a cablagem que um teste de
+// desenho nao ve — a `Pagina` a serio, com estado que persiste entre renders e
+// um servidor falso que regista cada pedido. E aqui que se apanha um `rev`
+// errado, um perfil trocado, ou um «gravado» que nao releu o servidor.
+function carregarVivo(responder) {
+  const estados = [];
+  const pedidos = [];
+  let cursor = 0;
+  let primeiro = true;
+  const efeitos = [];
+  const React = {
+    createElement: function (tag, props) {
+      return {
+        tag: typeof tag === "function" ? (tag.name || "Componente") : tag,
+        props: props || {},
+        filhos: Array.prototype.slice.call(arguments, 2),
+      };
+    },
+    useState: function (inicial) {
+      const i = cursor; cursor += 1;
+      if (!(i in estados)) estados[i] = inicial;
+      return [estados[i], function (v) {
+        estados[i] = typeof v === "function" ? v(estados[i]) : v;
+      }];
+    },
+    // So o primeiro render dispara efeitos: e o carregamento inicial da pagina.
+    useEffect: function (fn) { if (primeiro) efeitos.push(fn); },
+    useCallback: function (f) { return f; },
+    useMemo: function (f) { return f(); },
+    useRef: function (v) { return { current: v }; },
+    Fragment: "Fragment",
+  };
+  const registos = {};
+  const ferramentas = {};
+  const janela = {
+    __HERMES_PLUGIN_SDK__: {
+      React: React, hooks: {}, components: {},
+      fetchJSON: function (url, opts) {
+        const pedido = {
+          url: String(url).replace("/api/plugins/vipernet-model-manager", ""),
+          metodo: (opts && opts.method) || "GET",
+          corpo: opts && typeof opts.body === "string" ? JSON.parse(opts.body) : null,
+        };
+        pedidos.push(pedido);
+        try { return Promise.resolve(responder(pedido)); }
+        catch (e) { return Promise.reject(e); }
+      },
+    },
+    __HERMES_PLUGINS__: { register: function (nome, comp) { registos[nome] = comp; } },
+    __VMM_TEST__: ferramentas,
+  };
+  const contexto = { window: janela, document: { addEventListener: function () {} },
+                     console: console, JSON: JSON, Object: Object, Array: Array };
+  vm.createContext(contexto);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "dist", "index.js"), "utf-8"),
+                  contexto, { filename: "index.js" });
+  ferramentas.idioma.setIdioma("pt");
+  const Pagina = registos["vipernet-model-manager"];
+  return {
+    pedidos: pedidos,
+    render: function () {
+      cursor = 0;
+      const arvore = Pagina();
+      if (primeiro) { primeiro = false; efeitos.splice(0).forEach(function (f) { f(); }); }
+      return arvore;
+    },
+    assentar: function () {
+      // As cadeias do painel tem varios `.then`: dez voltas ao ciclo de eventos
+      // chegam para a mais comprida (pedido -> estado -> progresso -> fim).
+      let p = Promise.resolve();
+      for (let i = 0; i < 10; i += 1) {
+        p = p.then(function () { return new Promise(function (r) { setImmediate(r); }); });
+      }
+      return p;
+    },
+  };
 }
-console.log(total + "/" + total + " verificacoes OK");
+
+async function provaDoGestoPorPerfil() {
+  // Servidor falso com estado: o POST muda o que o GET seguinte devolve, como o
+  // verdadeiro. Um painel que mostrasse o que PEDIU em vez do que o servidor
+  // respondeu passava num mock sem estado e falha aqui.
+  const servidor = { rev: "rev-1", sombra: clonar(SOMBRA_PERFIS), recusar: null };
+  function responder(p) {
+    if (p.url === "/estado") {
+      return { rev: servidor.rev, idioma: "pt", activo: true, sombra: clonar(servidor.sombra),
+               perfis: { financas: { activo: true, catalogo: [], tarefas: {}, estrategia: {}, analise: {} },
+                         trabalho: { activo: true, catalogo: [], tarefas: {}, estrategia: {}, analise: {} } },
+               opcoes: {}, erros_config: [] };
+    }
+    if (p.url.indexOf("/log") === 0) return { linhas: [] };
+    if (p.url === "/config") return { config: { perfis: {} }, rev: servidor.rev };
+    if (p.url === "/sombra/progresso") return { sombra: clonar(servidor.sombra), progresso: {} };
+    if (p.url.indexOf("/perfil?nome=") === 0) {
+      return { perfil: decodeURIComponent(p.url.split("=")[1]), rev: servidor.rev,
+               declarado: { activo: true, tarefas: {} }, efectivo: {}, global: {}, opcoes: {} };
+    }
+    if (p.url === "/sombra" && p.metodo === "POST") {
+      if (servidor.recusar) {
+        const erro = new Error(servidor.recusar.mensagem);
+        erro.status = servidor.recusar.status;
+        throw erro;
+      }
+      if (p.corpo.rev !== servidor.rev) {
+        const conflito = new Error("a configuração mudou desde que este painel leu o estado");
+        conflito.status = 409;
+        throw conflito;
+      }
+      const alvo = servidor.sombra.perfis[p.corpo.perfil];
+      if (p.corpo.herdar) {
+        alvo.activo = servidor.sombra.global.activo; alvo.origem = "herdado";
+      } else {
+        alvo.activo = !!p.corpo.activo; alvo.origem = "proprio";
+      }
+      servidor.rev = "rev-" + (Number(servidor.rev.split("-")[1]) + 1);
+      return { ok: true, rev: servidor.rev, sombra: clonar(servidor.sombra), controlo: [] };
+    }
+    throw new Error("pedido inesperado: " + p.metodo + " " + p.url);
+  }
+
+  const painel = carregarVivo(responder);
+  painel.render();
+  await painel.assentar();
+  let arvore = painel.render();
+  const cartoes = comTag(arvore, "CartaoPerfil");
+  check("gesto: o painel principal desenha os cartoes dos perfis", cartoes.length === 2,
+        "n=" + cartoes.length);
+
+  // Abrir a pagina do perfil financas, como o ⚙ do cartao faz.
+  cartoes.filter(function (c) { return c.props.nome === "financas"; })[0].props.onPerfil("financas");
+  await painel.assentar();
+  arvore = painel.render();
+  check("gesto: abrir o perfil mostra a pagina do perfil",
+        arvore.tag === "PaginaPerfil" && arvore.props.perfil === "financas", arvore.tag);
+  check("gesto: a pagina recebe o handler do interruptor e o estado do painel",
+        typeof arvore.props.onSombraPerfil === "function"
+          && arvore.props.estado.sombra.perfis.financas.activo === true
+          && arvore.props.rev === "rev-1", JSON.stringify(arvore.props.rev));
+
+  // Desligar o ensaio so neste perfil.
+  const antes = painel.pedidos.length;
+  arvore.props.onSombraPerfil({ activo: false });
+  const aMeio = painel.render();
+  check("gesto: enquanto o pedido esta fora, a pagina diz que esta a gravar",
+        aMeio.props.sombraAGravar === true);
+  await painel.assentar();
+  arvore = painel.render();
+  const novos = painel.pedidos.slice(antes);
+  const posts = novos.filter(function (p) { return p.metodo === "POST"; });
+  check("gesto: sai UM POST, para /sombra", posts.length === 1 && posts[0].url === "/sombra",
+        JSON.stringify(posts.map(function (p) { return p.metodo + " " + p.url; })));
+  check("gesto: o corpo leva o perfil aberto, o `activo` pedido e o rev lido pela pagina",
+        JSON.stringify(posts[0].corpo) === JSON.stringify({ rev: "rev-1", perfil: "financas", activo: false }),
+        JSON.stringify(posts[0].corpo));
+  check("gesto: depois de gravar, o painel RELE o estado do servidor",
+        novos.some(function (p) { return p.metodo === "GET" && p.url === "/estado"; }),
+        JSON.stringify(novos.map(function (p) { return p.metodo + " " + p.url; })));
+  check("gesto: a pagina passa a mostrar o perfil desligado, lido do servidor",
+        arvore.tag === "PaginaPerfil"
+          && arvore.props.estado.sombra.perfis.financas.activo === false
+          && arvore.props.estado.sombra.perfis.financas.origem === "proprio");
+  check("gesto: o outro perfil e o global ficaram como estavam",
+        arvore.props.estado.sombra.perfis.trabalho.activo === false
+          && arvore.props.estado.sombra.perfis.trabalho.origem === "proprio"
+          && arvore.props.estado.sombra.perfis.pessoal.activo === true
+          && arvore.props.estado.sombra.global.activo === true);
+  check("gesto: a pagina adopta o rev novo (o «Gravar e voltar» a seguir nao da conflito)",
+        arvore.props.rev === "rev-2", String(arvore.props.rev));
+  check("gesto: o aviso diz o que ficou, com a origem",
+        arvore.props.avisoSombra === "ensaio neste perfil: desligado · próprio deste perfil",
+        String(arvore.props.avisoSombra));
+  check("gesto: acabado o pedido, o interruptor volta a estar livre e sem erro",
+        arvore.props.sombraAGravar === false && !arvore.props.erro, String(arvore.props.erro));
+  check("gesto: a pagina do perfil continua aberta (o interruptor nao fecha o formulario)",
+        arvore.tag === "PaginaPerfil" && arvore.props.perfil === "financas");
+
+  // «Seguir o global».
+  arvore.props.onSombraPerfil({ herdar: true });
+  await painel.assentar();
+  arvore = painel.render();
+  const ultimoPost = painel.pedidos.filter(function (p) { return p.metodo === "POST"; }).pop();
+  check("gesto: «Seguir o global» manda `herdar` com o rev novo e sem `activo`",
+        JSON.stringify(ultimoPost.corpo) === JSON.stringify({ rev: "rev-2", perfil: "financas", herdar: true }),
+        JSON.stringify(ultimoPost.corpo));
+  check("gesto: o perfil volta a seguir o global",
+        arvore.props.estado.sombra.perfis.financas.activo === true
+          && arvore.props.estado.sombra.perfis.financas.origem === "herdado"
+          && arvore.props.rev === "rev-3");
+
+  // Conflito: outra sessao escreveu entretanto.
+  servidor.rev = "rev-99";
+  const postsAntes = painel.pedidos.filter(function (p) { return p.metodo === "POST"; }).length;
+  arvore.props.onSombraPerfil({ activo: false });
+  await painel.assentar();
+  arvore = painel.render();
+  check("gesto: com rev velho o servidor recusa e o perfil NAO muda",
+        painel.pedidos.filter(function (p) { return p.metodo === "POST"; }).length === postsAntes + 1
+          && servidor.sombra.perfis.financas.activo === true
+          && arvore.props.estado.sombra.perfis.financas.activo === true);
+  check("gesto: o conflito diz que nao gravou e o que fazer",
+        /O interruptor do ensaio não foi gravado/.test(String(arvore.props.erro))
+          && /Descartar e abrir outra vez/.test(String(arvore.props.erro)),
+        String(arvore.props.erro));
+  check("gesto: num conflito nao fica aviso de sucesso nem «a gravar» preso",
+        arvore.props.avisoSombra === "" && arvore.props.sombraAGravar === false,
+        JSON.stringify([arvore.props.avisoSombra, arvore.props.sombraAGravar]));
+  check("gesto: num conflito a pagina NAO adopta um rev que nao leu",
+        arvore.props.rev === "rev-3", String(arvore.props.rev));
+  // O conflito fez o painel reler o `/estado`, que ja traz o rev novo do
+  // servidor. Um segundo clique NAO pode ir buscar esse rev: a pagina continua
+  // com o formulario que leu antes da escrita alheia, e adoptar o rev fresco
+  // deixava o «Gravar e voltar» repor por cima o que a outra sessao escreveu.
+  check("gesto: o painel releu o estado e conhece o rev novo do servidor",
+        arvore.props.estado.rev === "rev-99", String(arvore.props.estado.rev));
+  arvore.props.onSombraPerfil({ activo: false });
+  await painel.assentar();
+  arvore = painel.render();
+  const repetido = painel.pedidos.filter(function (p) { return p.metodo === "POST"; }).pop();
+  check("gesto: insistir depois do conflito continua a mandar o rev que a PAGINA leu",
+        repetido.corpo.rev === "rev-3" && servidor.sombra.perfis.financas.activo === true
+          && arvore.props.rev === "rev-3"
+          && /O interruptor do ensaio não foi gravado/.test(String(arvore.props.erro)),
+        JSON.stringify(repetido.corpo) + " rev da pagina=" + arvore.props.rev);
+
+  // Recusa do servidor que nao e conflito: o motivo chega ao ecra.
+  servidor.rev = "rev-3";
+  servidor.recusar = { status: 400, mensagem: "nao gravou: perfil desconhecido: financas" };
+  arvore.props.onSombraPerfil({ activo: false });
+  await painel.assentar();
+  arvore = painel.render();
+  check("gesto: uma recusa mostra o motivo do servidor",
+        /Erro ao gravar o ensaio: nao gravou: perfil desconhecido: financas/.test(String(arvore.props.erro)),
+        String(arvore.props.erro));
+  servidor.recusar = null;
+
+  // Descartar a pagina do perfil nao manda nada para o servidor.
+  const totalAntes = painel.pedidos.filter(function (p) { return p.metodo === "POST"; }).length;
+  arvore.props.onDescartar();
+  await painel.assentar();
+  arvore = painel.render();
+  check("gesto: «Descartar» fecha a pagina sem escrever",
+        arvore.tag !== "PaginaPerfil"
+          && painel.pedidos.filter(function (p) { return p.metodo === "POST"; }).length === totalAntes);
+}
+
+function fechar() {
+  console.log("");
+  if (falhas) {
+    console.log(falhas + " de " + total + " verificacoes FALHARAM");
+    process.exit(1);
+  }
+  console.log(total + "/" + total + " verificacoes OK");
+}
+
+provaDoGestoPorPerfil()
+  .catch(function (e) {
+    check("gesto: a prova de ponta a ponta correu ate ao fim", false, String(e && e.stack ? e.stack : e));
+  })
+  .then(fechar);
