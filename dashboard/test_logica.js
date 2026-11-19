@@ -2678,6 +2678,10 @@ function carregarVivo(responder) {
       if (primeiro) { primeiro = false; efeitos.splice(0).forEach(function (f) { f(); }); }
       return arvore;
     },
+    // Corre um componente filho A SERIO, com estado que persiste entre renders.
+    // As posicoes de estado do filho vem a seguir as da `Pagina`, por isso a
+    // regra e uma so: `render()` primeiro e os filhos sempre pela mesma ordem.
+    filho: function (nome, props) { return ferramentas[nome](props); },
     assentar: function () {
       // As cadeias do painel tem varios `.then`: dez voltas ao ciclo de eventos
       // chegam para a mais comprida (pedido -> estado -> progresso -> fim).
@@ -2857,6 +2861,150 @@ async function provaDoGestoPorPerfil() {
           && painel.pedidos.filter(function (p) { return p.metodo === "POST"; }).length === totalAntes);
 }
 
+// ------------------- re-selar os bracos: a recusa do servidor chega ao ecra
+// O gesto atravessa quatro componentes (`Pagina` -> `PaginaConfig` ->
+// `SecaoClassificador` -> `SecaoSombra`) e o handler vive no primeiro. Um teste
+// que chame so a seccao com um `onBracos` falso nunca executa o `catch` do
+// handler verdadeiro: aqui correm os quatro a serio, com o clique no botao.
+async function provaDoReSelarRecusado() {
+  const servidor = {
+    rev: "rev-1", selo: "selo-antigo",
+    bracos: { a: "modelo-a", b: "modelo-b" },
+    recusar: { status: 400, mensagem: "modelo-fantasma não está no catálogo de nenhum perfil" },
+  };
+  function sombraDoServidor() {
+    return Object.assign(clonar(SOMBRA_PERFIS), {
+      selo: servidor.selo, bracos: clonar(servidor.bracos),
+      providers: { a: "prov-a", b: "prov-b" }, providers_declarados: true,
+    });
+  }
+  function responder(p) {
+    if (p.url === "/estado") {
+      return { rev: servidor.rev, idioma: "pt", activo: true, sombra: sombraDoServidor(),
+               perfis: { financas: { activo: true, catalogo: [], tarefas: {}, estrategia: {}, analise: {} } },
+               opcoes: {}, erros_config: [] };
+    }
+    if (p.url.indexOf("/log") === 0) return { linhas: [] };
+    if (p.url === "/config") return { config: { perfis: {} }, rev: servidor.rev };
+    if (p.url === "/sombra/progresso") return { sombra: sombraDoServidor(), progresso: {} };
+    if (p.url === "/sombra/bracos" && p.metodo === "POST") {
+      if (servidor.recusar) {
+        const erro = new Error(servidor.recusar.mensagem);
+        erro.status = servidor.recusar.status;
+        throw erro;
+      }
+      servidor.bracos = { a: p.corpo.braco_a, b: p.corpo.braco_b };
+      servidor.selo = "selo-novo";
+      return { ok: true, pre_registo: { selo_valido: true, sha256_ficheiro: "abcdef0123456789abcdef" } };
+    }
+    throw new Error("pedido inesperado: " + p.metodo + " " + p.url);
+  }
+
+  const painel = carregarVivo(responder);
+  // Um render completo: a pagina e, dentro dela, os tres filhos ate a seccao.
+  function montar() {
+    const raiz = painel.render();
+    if (raiz.tag !== "PaginaConfig") return { raiz: raiz, sec: null };
+    const cfg = painel.filho("PaginaConfig", raiz.props);
+    const noClassif = comTag(cfg, "SecaoClassificador")[0];
+    const classif = noClassif ? painel.filho("SecaoClassificador", noClassif.props) : null;
+    const noSombra = classif ? comTag(classif, "SecaoSombra")[0] : null;
+    return { raiz: raiz, sec: noSombra ? painel.filho("SecaoSombra", noSombra.props) : null };
+  }
+  function botaoReSelar(sec) {
+    return comTag(sec, "button").concat(comTag(sec, "Button")).filter(function (b) {
+      return textoPlano(b.filhos).trim() === "Re-selar braços";
+    })[0];
+  }
+  function posts() {
+    return painel.pedidos.filter(function (p) { return p.metodo === "POST"; });
+  }
+
+  painel.render();
+  await painel.assentar();
+  // «Editar configuração», como no painel principal.
+  comTag(painel.render(), "button").concat(comTag(painel.render(), "Button")).filter(function (b) {
+    return textoPlano(b.filhos).trim() === "Editar configuração";
+  })[0].props.onClick();
+  await painel.assentar();
+  let m = montar();
+  check("re-selar: o editor monta a seccao do ensaio com o botao «Re-selar braços»",
+        m.raiz.tag === "PaginaConfig" && !!m.sec && !!botaoReSelar(m.sec), m.raiz.tag);
+  check("re-selar: sem a confirmacao marcada o botao esta preso",
+        botaoReSelar(m.sec).props.disabled === true);
+
+  // Escrever um modelo que o catalogo nao tem no braco B e marcar a confirmacao.
+  procurarNaArvore(m.sec, function (n) {
+    return n.tag === "input" && n.props.placeholder === "braço b (gratuito)";
+  }).props.onChange({ target: { value: "modelo-fantasma" } });
+  procurarNaArvore(m.sec, function (n) {
+    return n.tag === "input" && n.props.type === "checkbox";
+  }).props.onChange({ target: { checked: true } });
+  m = montar();
+  check("re-selar: com dois modelos diferentes e a confirmacao, o botao fica livre",
+        botaoReSelar(m.sec).props.disabled === false);
+
+  // O clique. O servidor recusa: o modelo nao esta no catalogo.
+  let antes = painel.pedidos.length;
+  botaoReSelar(m.sec).props.onClick();
+  await painel.assentar();
+  m = montar();
+  let novos = painel.pedidos.slice(antes);
+  check("re-selar: sai UM POST para /sombra/bracos com bracos, providers, confirmacao e rev",
+        novos.filter(function (p) { return p.metodo === "POST"; }).length === 1
+          && JSON.stringify(posts().pop()) === JSON.stringify({
+            url: "/sombra/bracos", metodo: "POST",
+            corpo: { braco_a: "modelo-a", braco_b: "modelo-fantasma",
+                     braco_a_provider: "prov-a", braco_b_provider: "prov-b",
+                     confirmar_reabertura: true, rev: "rev-1" } }),
+        JSON.stringify(posts().pop()));
+  let texto = textoPlano(m.sec);
+  check("re-selar recusado: o bloco dos bracos mostra o motivo que o servidor deu",
+        texto.indexOf("modelo-fantasma não está no catálogo de nenhum perfil") !== -1,
+        texto.slice(-160));
+  check("re-selar recusado: o ecra nao mostra um erro interno do painel",
+        !/is not defined/.test(texto + " " + String(m.raiz.props.erro || "")),
+        texto.slice(-160));
+  check("re-selar recusado: o painel rele o estado do servidor",
+        novos.some(function (p) { return p.metodo === "GET" && p.url === "/estado"; }),
+        JSON.stringify(novos.map(function (p) { return p.metodo + " " + p.url; })));
+  check("re-selar recusado: o «a gravar» e libertado e o botao volta a estar livre",
+        m.raiz.props.aGravar === false && botaoReSelar(m.sec).props.disabled === false,
+        JSON.stringify([m.raiz.props.aGravar, botaoReSelar(m.sec).props.disabled]));
+  check("re-selar recusado: nao fica aviso de sucesso e os bracos do servidor nao mudaram",
+        !m.raiz.props.avisoSombra && servidor.bracos.b === "modelo-b" && servidor.selo === "selo-antigo",
+        JSON.stringify([m.raiz.props.avisoSombra, servidor.bracos]));
+
+  // Conflito de versao: o SDK entrega uma frase generica, o painel diz a sua.
+  servidor.recusar = { status: 409, mensagem: "That change conflicts with the current state on the server." };
+  botaoReSelar(m.sec).props.onClick();
+  await painel.assentar();
+  m = montar();
+  texto = textoPlano(m.sec);
+  check("re-selar em conflito: o bloco diz que o ensaio mudou e manda repetir",
+        texto.indexOf("O ensaio mudou noutro sítio — recarreguei o estado. Repita a re-selagem.") !== -1,
+        texto.slice(-160));
+  check("re-selar em conflito: o «a gravar» tambem e libertado",
+        m.raiz.props.aGravar === false, String(m.raiz.props.aGravar));
+
+  // O servidor passa a aceitar: o gesto seguinte grava e limpa o erro anterior.
+  servidor.recusar = null;
+  antes = posts().length;
+  botaoReSelar(m.sec).props.onClick();
+  await painel.assentar();
+  m = montar();
+  check("re-selar aceite: sai o POST e o servidor fica com os bracos pedidos",
+        posts().length === antes + 1 && servidor.bracos.b === "modelo-fantasma"
+          && servidor.selo === "selo-novo", JSON.stringify(servidor.bracos));
+  check("re-selar aceite: o aviso traz o inicio do sha256 do selo novo",
+        m.raiz.props.avisoSombra === "braços re-selado abcdef012345…",
+        String(m.raiz.props.avisoSombra));
+  check("re-selar aceite: o erro da tentativa anterior desaparece e nada fica a gravar",
+        textoPlano(m.sec).indexOf("O ensaio mudou noutro sítio") === -1
+          && m.raiz.props.aGravar === false && m.raiz.props.estado.sombra.selo === "selo-novo",
+        textoPlano(m.sec).slice(-160));
+}
+
 function fechar() {
   console.log("");
   if (falhas) {
@@ -2869,5 +3017,9 @@ function fechar() {
 provaDoGestoPorPerfil()
   .catch(function (e) {
     check("gesto: a prova de ponta a ponta correu ate ao fim", false, String(e && e.stack ? e.stack : e));
+  })
+  .then(provaDoReSelarRecusado)
+  .catch(function (e) {
+    check("re-selar: a prova de ponta a ponta correu ate ao fim", false, String(e && e.stack ? e.stack : e));
   })
   .then(fechar);

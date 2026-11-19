@@ -9,6 +9,38 @@ what that reviewer reads first.
 Older history (before 3.45.0) lives in `git log` — the repository was published
 with one automatic commit per change, each with a per-file summary.
 
+## 3.47.22 — 2026-11-19
+
+- **Uma recusa ao re-selar os braços volta a dizer porquê.** Desde a 3.47.17 o `catch` de
+  `mudarBracos`, na `Pagina`, chamava `setErroLocal`, que é estado da `SecaoSombra` e não existe nesse
+  âmbito. Quando o servidor recusava a re-selagem, o `catch` rebentava com `ReferenceError`. Medido com a
+  página a correr: o bloco dos braços mostrava «setErroLocal is not defined» em vez do motivo, o estado
+  não era relido, e o «a gravar» ficava preso a `true`, com o botão «Re-selar braços» desactivado até se
+  recarregar a página. A re-selagem aceite não era afectada.
+- **Correção:** o handler relê o estado, liberta o «a gravar» e relança o motivo, e é o `catch` de
+  `reabrir()`, na secção, que o escreve ao lado do botão. Num conflito de versão (409) a frase é a do
+  painel («O ensaio mudou noutro sítio — recarreguei o estado. Repita a re-selagem.»), porque o SDK
+  entrega para o 409 uma frase genérica em inglês. As duas chaves de tradução já existiam; o dicionário
+  fica em 549.
+- **Porque não o banner de topo, como até à 3.47.16.** Medido sobre uma cópia com o código antigo:
+  `setErro(...)` seguido de `return carregar()` deixa o banner a `null`, porque o `carregar()` com
+  sucesso o limpa. O código antigo não rebentava, mas a mensagem também não ficava no ecrã.
+- **Muda um comportamento:** depois de uma recusa a caixa «confirmo que reabro o ensaio» fica marcada
+  (antes era desmarcada, porque o handler resolvia sempre). Corrigir o nome do modelo e repetir é um
+  clique.
+- **Por corrigir, fora desta alteração.** O interruptor global do ensaio tem o mesmo padrão
+  `setErro` + `carregar()` e, medido, também fica sem mensagem depois de uma recusa; estratégia,
+  superfícies e língua têm o mesmo código, por leitura. E um conflito em que o selo tenha mudado noutro
+  sítio remonta a secção (a `key` é o selo), pelo que a mensagem desta correção se perde nesse caso — por
+  leitura, o harness não remonta componentes.
+- Prova: `dashboard/test_logica.js` 459/459 (14 novas: a `Pagina`, a `PaginaConfig`, a
+  `SecaoClassificador` e a `SecaoSombra` a correr a sério, com o clique no botão e um servidor falso que
+  recusa com 400, com 409 e depois aceita). Contra o bundle da 3.47.21 as mesmas 14 dão 6 falhas, todas
+  no ramo da recusa. 9 mutantes do bundle, 9 apanhados, entre eles o defeito original e o código da
+  3.47.16. Bateria 2088/2089, com as mesmas duas falhas de antes (`test_auditoria.py`, `test_idioma.py`).
+  O `sha256` do bundle servido pelo dashboard é o do disco (`370cf152…`). Só bundle: sem `api.py` novo e
+  sem reinício. Não foi visto num browser.
+
 ## 3.47.21 — 2026-11-19
 
 - **A página de cada perfil ganha o interruptor do ensaio em sombra.** O interruptor por perfil já

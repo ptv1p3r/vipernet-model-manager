@@ -4227,9 +4227,18 @@
           return carregar();
         })
         .catch(function (e) {
-          const msg = String(e && e.message ? e.message : e);
-          setErroLocal(msg); // Set error to local state for visibility
-          return carregar();
+          // O erro local do bloco dos bracos (`erroLocal`) e estado da
+          // `SecaoSombra`, nao desta pagina: daqui nao se lhe chega. Rele-se o
+          // estado, liberta-se o «a gravar» e RELANCA-SE o motivo, para ser o
+          // `catch` de `reabrir()` a mostra-lo ao lado do botao. O `setErro` de
+          // topo nao serve: o `carregar()` que se segue limpa-o.
+          const motivo = ehConflito(e)
+            ? new Error(T("O ensaio mudou noutro sítio — recarreguei o estado. Repita a re-selagem."))
+            : e;
+          return carregar().then(function () {
+            setAGravar(false);
+            throw motivo;
+          });
         })
         .then(function () { setAGravar(false); });
     }
