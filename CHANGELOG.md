@@ -9,6 +9,35 @@ what that reviewer reads first.
 Older history (before 3.45.0) lives in `git log` — the repository was published
 with one automatic commit per change, each with a per-file summary.
 
+## 3.47.23 — 2026-11-19
+
+- **A tabela de modelos de cada perfil sai pela `ordem` declarada.** No cartão do perfil, a rota com a
+  ordem mais baixa fica em cima e as que não declaram ordem ficam no fim. Duas rotas com a mesma ordem, e
+  as que não declaram nenhuma, ficam entre si pela posição no ficheiro. A ordem lê-se como o `gestor` a
+  lê (`_chave_ordem`): só um inteiro conta, o resto é «não declarado». O `0` é uma ordem e vem antes do
+  `1`.
+- **Só a tabela muda.** O ficheiro não é reordenado e o `catalogo` do `/estado` continua na posição do
+  ficheiro: as regras de superfície e as sugestões do ensaio leem-no como antes. A escolha do modelo no
+  turno não muda — o `gestor` já ordenava os candidatos por `ordem`, custo e `id`.
+- **Depois de gravar vê-se logo.** A página do modelo já relia o `/estado` ao gravar; como a tabela
+  ordena a cada desenho, a ordem nova aparece nessa releitura, sem recarregar a página. Entre o fecho da
+  página e a resposta do `/estado` a tabela mostra ainda a ordem anterior.
+- **O `/estado` passa a levar a `ordem`.** Medido no `/estado` vivo antes da alteração: as entradas do
+  catálogo traziam `id`, `provider`, `modelo`, `complexidade`, `tarefas` e `acesso`, e mais nada. O cartão
+  já tinha código para escrever «· ordem N» na linha, mas o valor nunca saía do servidor. Por isso esta
+  alteração toca no `dashboard/api.py` e **só fica visível depois de reiniciar o contentor do
+  dashboard**; até lá o bundle novo ordena uma lista sem ordens e a tabela fica como estava.
+- **Por corrigir, fora desta alteração.** O `custo` e o `esforço` têm o mesmo problema: o cartão
+  desenha-os e o `/estado` não os manda, logo a linha diz sempre «custo —» e a coluna «esforço» fica
+  sempre vazia. E a ajuda do campo `ordem` na página do modelo diz «desempate entre custos iguais»,
+  quando no `gestor` a ordem manda sobre o custo.
+- Prova: `dashboard/test_logica.js` 482/482 (23 novas: a função pura, o cartão, e a `Pagina` a correr
+  com um servidor falso em que se muda a ordem pela página do modelo, se apaga e se empata). Contra o
+  bundle da 3.47.22 falham 14 dessas 23. `test_painel_estado.py` 128 (8 novas, 4 falham contra o `api.py`
+  da 3.47.22). Bateria 2119/2120, com as mesmas duas falhas de antes (`test_auditoria.py`,
+  `test_idioma.py`). Com o `api.py` do disco sobre uma cópia da config viva, os quatro perfis saem pela
+  ordem declarada. **O controlo negativo por mutação não foi corrido** e não foi visto num browser.
+
 ## 3.47.22 — 2026-11-19
 
 - **Uma recusa ao re-selar os braços volta a dizer porquê.** Desde a 3.47.17 o `catch` de
