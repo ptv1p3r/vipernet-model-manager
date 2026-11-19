@@ -119,6 +119,34 @@
   border-radius: 0.5rem;
 }
 
+.vmm-utilizacao {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 32rem), 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+.vmm-estat-figura {
+  display: grid;
+  grid-template-columns: clamp(3rem, 12%, 5rem) minmax(0, 1fr);
+  gap: .5rem 1rem;
+  align-items: center;
+  margin: 0;
+  padding-block: .75rem;
+  border-top: 1px solid hsl(var(--border, 214 32% 91%));
+}
+.vmm-estat-figura figcaption { grid-column: 1 / -1; font-weight: 600; }
+.vmm-estat-circulo { aspect-ratio: 1; border-radius: 50%; }
+.vmm-estat-figura ul { list-style: none; margin: 0; padding: 0; }
+.vmm-estat-figura li {
+  display: grid;
+  grid-template-columns: .75rem minmax(0, 1fr) auto;
+  gap: .5rem;
+  align-items: baseline;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.vmm-estat-cor { width: .7rem; height: .7rem; border-radius: 50%; }
+
 .vmm-grelha {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(28rem, 1fr));

@@ -17,7 +17,10 @@ import hashlib
 import json
 import os
 import sys
+from collections.abc import Iterable
 from datetime import datetime, timezone
+from functools import lru_cache
+from threading import Lock
 from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
@@ -461,6 +464,65 @@ def _linhas_ledger(caminho: Path) -> Any:
                 continue
             if isinstance(evento, dict):
                 yield evento
+
+
+_DIMENSOES_RESPOSTA = {
+    "modelos": "respondido_por", "perfis": "perfil", "tarefas": "tarefa",
+    "superficies": "superficie", "origens": "origem",
+}
+
+
+def _agregar_respostas(eventos: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    grupos: dict[str, dict[str, int]] = {nome: {} for nome in _DIMENSOES_RESPOSTA}
+    total = 0
+    inicio = fim = primeiro = ultimo = None
+    for evento in eventos:
+        if evento.get("evento") != "resposta":
+            continue
+        total += 1
+        for nome, campo in _DIMENSOES_RESPOSTA.items():
+            valor = evento.get(campo)
+            chave = valor.strip() if isinstance(valor, str) else ""
+            if chave == "desconhecido":
+                chave = ""
+            grupo = grupos[nome]
+            grupo[chave] = grupo.get(chave, 0) + 1
+        ts = evento.get("ts")
+        if not isinstance(ts, str):
+            continue
+        try:
+            instante = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if instante.tzinfo is None:
+            instante = instante.replace(tzinfo=timezone.utc)
+        if primeiro is None or instante < primeiro:
+            primeiro, inicio = instante, ts
+        if ultimo is None or instante > ultimo:
+            ultimo, fim = instante, ts
+    return {"total": total, **grupos, "inicio": inicio, "fim": fim}
+
+
+# Só o último agregado fica em memória. A trava evita passagens simultâneas
+# pelo mesmo ficheiro quando várias abas abrem o painel a frio.
+_TRAVA_ESTATISTICAS = Lock()
+
+
+@lru_cache(maxsize=1)
+def _estatisticas_do_ledger(caminho: Path, assinatura: tuple[int, ...]) -> dict[str, Any]:
+    return _agregar_respostas(_linhas_ledger(caminho))
+
+
+@router.get("/estatisticas")
+def estatisticas() -> dict[str, Any]:
+    """Uma observação por resposta no detalhe retido, não por turno ou dia."""
+    caminho = gestor.caminho_ledger()
+    with _TRAVA_ESTATISTICAS:
+        try:
+            st = caminho.stat()
+        except FileNotFoundError:
+            return _agregar_respostas(())
+        return _estatisticas_do_ledger(caminho, (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns))
 
 
 # As contagens são caras (uma passagem ao ledger) e mudam só quando o ledger

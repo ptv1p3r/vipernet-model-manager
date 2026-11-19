@@ -6,6 +6,10 @@ the same number the panel shows and the catalogue lists; a bump of the catalogue
 pin is a new PR whose diff a reviewer reads (catalogue rule 4), and this file is
 what that reviewer reads first.
 
+## 3.48.0
+
+- Add a usage statistics card beside the log: chart confirmed responses by model, profile, task, request surface and routing origin across retained detail, with counts, percentages and the observed date range.
+
 Older history (before 3.45.0) lives in `git log` — the repository was published
 with one automatic commit per change, each with a per-file summary.
 

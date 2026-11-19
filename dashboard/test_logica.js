@@ -1994,8 +1994,8 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   // +9 na 3.47.16 (remover uma rota do catalogo), +34 na 3.47.17 (painel do
   // ensaio em sombra: etiquetas de estado, barras e previsao), +18 na 3.47.21
   // (interruptor do ensaio por perfil e o resumo por perfil ao lado do global).
-  check("i18n: o dicionario tem as 549 chaves medidas",
-        chaves.length === 549, "tem " + chaves.length);
+  check("i18n: o dicionario tem as 561 chaves medidas",
+        chaves.length === 561, "tem " + chaves.length);
   check("i18n: nenhuma traducao vazia",
         chaves.every(function (k) { return String(I.PT_EN[k]).trim() !== ""; }));
   // Nomes proprios e termos tecnicos ficam iguais nas duas linguas — o que nao
@@ -3218,6 +3218,74 @@ async function provaDaOrdemDepoisDeGravar() {
         !l.raiz.props || !l.raiz.props.erro, String(l.raiz.props && l.raiz.props.erro));
 }
 
+async function provaEstatisticas() {
+  const pendentes = [];
+  const painel = carregarVivo(p => {
+    if (p.url === '/estatisticas' && p.metodo === 'GET')
+      return new Promise((resolve, reject) => pendentes.push({ resolve, reject }));
+    if (p.url === '/estado') return { idioma: 'pt', perfis: {} };
+    if (p.url.startsWith('/log?')) return { linhas: [{ modelo: 'modelo-log' }] };
+    if (p.url === '/config') return { config: {} };
+    throw Error(p.url);
+  });
+  painel.render();
+  await painel.assentar();
+  let pagina = painel.render();
+  const registo = recolher(pagina, n => n.tag === 'TabelaLog')[0];
+  check('estatísticas: o registo chega com o GET das estatísticas ainda pendente',
+        pendentes.length === 1 && registo && registo.props.linhas[0].modelo === 'modelo-log');
+  if (!pendentes.length) return;
+  const texto = () => textoPlano(painel.render());
+  check('estatísticas: carregamento explícito', texto().includes('A carregar estatísticas…'));
+  pendentes[0].reject(Error('404'));
+  await painel.assentar();
+  check('estatísticas: indisponível não é zero nem esconde o registo',
+        texto().includes('Estatísticas indisponíveis.') && !texto().includes('Sem respostas') && texto().includes('Registo de utilizacao'));
+  const actualizar = () => recolher(painel.render(), n => n.tag === 'button' && textoPlano(n) === 'Actualizar')[0].props.onClick();
+  actualizar();
+  check('estatísticas: Actualizar repete o GET', pendentes.length === 2);
+  pendentes[1].resolve({ total: 0, inicio: null, fim: null, modelos: {}, perfis: {}, tarefas: {}, superficies: {}, origens: {} });
+  await painel.assentar();
+  check('estatísticas: zero confirmado, sem gráfico ou percentagem fictícia',
+        texto().includes('Sem respostas no detalhe retido.') && !texto().includes('NaN') && !recolher(painel.render(), n => n.tag === 'figure').length);
+  actualizar();
+  await painel.assentar();
+  actualizar();
+  const dados = { total: 4, inicio: '2025-01-01', fim: '2026-02-02',
+    modelos: { 'modelo-A': 3, '': 1 }, perfis: { pessoal: 4 }, tarefas: { editar: 4 },
+    superficies: { web: 4 }, origens: { fixa: 4 } };
+  pendentes[3].resolve(dados);
+  await painel.assentar();
+  pendentes[2].reject(Error('pedido antigo'));
+  await painel.assentar();
+  pagina = painel.render();
+  const figuras = recolher(pagina, n => n.tag === 'figure');
+  const grupos = [['Modelos', 'modelo-A', 3, '75'], ['Perfis', 'pessoal', 4, '100'],
+    ['Tarefas', 'editar', 4, '100'], ['Proveniência', 'web', 4, '100'], ['Origens de decisão', 'fixa', 4, '100']];
+  for (const [titulo, nome, n, pct] of grupos) {
+    const figura = figuras.find(f => textoPlano(f).includes(titulo));
+    check('estatísticas: gráfico e legenda de ' + titulo, figura &&
+      recolher(figura, e => e.props && e.props.style && /conic-gradient/.test(e.props.style.backgroundImage)).length === 1 &&
+      recolher(figura, e => e.tag === 'li').some(e => textoPlano(e).includes(nome) &&
+        new RegExp('\\b' + n + '\\b').test(textoPlano(e)) && new RegExp(pct + '(?:,0)?\\s*%').test(textoPlano(e))));
+  }
+  check('estatísticas: a chave vazia é contada', /Não registado.*1.*25/.test(texto()));
+  check('estatísticas: total, período e âmbito', /Total de respostas.*4/.test(texto()) &&
+    /01\/01\/2025.*02\/02\/2026/.test(texto()) && /detalhe retido.*todos os perfis/i.test(texto()));
+  check('estatísticas: os cartões partilham uma grelha, registo primeiro', recolher(pagina,
+    e => e.props && e.props.className === 'vmm-utilizacao' && e.filhos.length === 2 &&
+      textoPlano(e.filhos[0]).includes('Registo de utilizacao') && textoPlano(e.filhos[1]).includes('Estatísticas de utilização')).length === 1);
+  const en = carregar();
+  en.idioma.setIdioma('en');
+  check('estatísticas: interface inglesa e identificadores intactos', typeof en.cartaoEstatisticas === 'function' && (() => {
+    const text = textoPlano(en.cartaoEstatisticas({ fase: 'pronto', dados: { ...dados, modelos: { Tarefas: 3, '': 1 } } }));
+    return ['Usage statistics', 'Models', 'Profiles', 'Tasks', 'Provenance', 'Decision origins',
+      'Tarefas', 'Not recorded', 'Total responses', 'Period', 'retained detail', 'all profiles'].every(s => text.includes(s));
+  })());
+  actualizar(); pendentes[4].resolve({}); await painel.assentar();
+  check('estatísticas: payload incompleto não simula ausência de respostas', texto().includes('Estatísticas indisponíveis.'));
+}
+
 function fechar() {
   console.log("");
   if (falhas) {
@@ -3239,4 +3307,6 @@ provaDoGestoPorPerfil()
   .catch(function (e) {
     check("ordem/gravar: a prova de ponta a ponta correu ate ao fim", false, String(e && e.stack ? e.stack : e));
   })
+  .then(provaEstatisticas)
+  .catch(e => check('estatísticas: prova completa', false, e.stack))
   .then(fechar);

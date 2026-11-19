@@ -29,6 +29,18 @@
   const IDIOMA_PADRAO = "en";
   const ETIQUETA_IDIOMA = { en: "English", pt: "Português" };
   const PT_EN = {
+    "Estatísticas de utilização": "Usage statistics",
+    "A carregar estatísticas…": "Loading statistics…",
+    "Estatísticas indisponíveis.": "Statistics unavailable.",
+    "Sem respostas no detalhe retido.": "No responses in the retained detail.",
+    "Contagens de respostas no detalhe retido, para todos os perfis.": "Response counts from retained detail across all profiles.",
+    "Total de respostas": "Total responses",
+    "Período": "Period",
+    "Modelos": "Models",
+    "Perfis": "Profiles",
+    "Proveniência": "Provenance",
+    "Origens de decisão": "Decision origins",
+    "Não registado": "Not recorded",
     "  em vigor: ": "  in force: ",
     "  ultimas ": "   last ",
     "  uma associação de tarefa manda sobre a complexidade e sobre a superfície": "  a task association overrides complexity and the surface",
@@ -2981,6 +2993,52 @@
     );
   }
 
+  const GRUPOS_USO = { modelos: "Modelos", perfis: "Perfis", tarefas: "Tarefas",
+    superficies: "Proveniência", origens: "Origens de decisão" };
+
+  function estatisticasValidas(d) {
+    return d && Number.isSafeInteger(d.total) && d.total >= 0 &&
+      [d.inicio, d.fim].every(v => v === null || typeof v === "string") &&
+      Object.keys(GRUPOS_USO).every(k => {
+        const mapa = d[k];
+        if (!mapa || typeof mapa !== "object" || Array.isArray(mapa)) return false;
+        const ns = Object.values(mapa);
+        return ns.every(n => Number.isSafeInteger(n) && n >= 0) &&
+          ns.reduce((s, n) => s + n, 0) === d.total;
+      });
+  }
+
+  function graficoUso(chave, dados) {
+    const paragens = [];
+    let soma = 0;
+    const legenda = Object.entries(dados[chave]).sort((a, b) => b[1] - a[1]).map(([nome, n], i) => {
+      const cor = `hsl(${i * 137.508 % 360}, 60%, 45%)`;
+      const inicio = soma / dados.total * 100;
+      soma += n;
+      paragens.push(`${cor} ${inicio}% ${soma / dados.total * 100}%`);
+      return h("li", { key: nome }, h("span", { className: "vmm-estat-cor", style: { backgroundColor: cor }, "aria-hidden": true }),
+        hBase("span", null, nome || T("Não registado")),
+        h("span", null, fmtNum(n, 0) + " (" + fmtPct(n / dados.total * 100, 1) + ")"));
+    });
+    return h("figure", { key: chave, className: "vmm-estat-figura" },
+      h("figcaption", null, GRUPOS_USO[chave]),
+      h("div", { className: "vmm-estat-circulo", "aria-hidden": true,
+        style: { backgroundImage: `conic-gradient(${paragens.join(", ")})` } }), h("ul", null, legenda));
+  }
+
+  function cartaoEstatisticas(estado) {
+    const d = estado.dados;
+    const mensagem = estado.fase === "carga" ? "A carregar estatísticas…"
+      : estado.fase === "erro" ? "Estatísticas indisponíveis."
+      : !d.total ? "Sem respostas no detalhe retido." : "";
+    return h(Card, { className: "vmm-card" }, h(CardContent, { className: "vmm-card-content" },
+      h("h2", null, "Estatísticas de utilização"),
+      h("p", null, "Contagens de respostas no detalhe retido, para todos os perfis."),
+      h("div", { role: "status" }, mensagem, d && h("p", null, T("Total de respostas") + ": " + fmtNum(d.total, 0)),
+        d && h("p", null, T("Período") + ": " + [d.inicio, d.fim].map(v => dataCurta(v) || "—").join(" – "))),
+      d && d.total > 0 ? Object.keys(GRUPOS_USO).map(k => graficoUso(k, d)) : null));
+  }
+
   function TabelaLog(props) {
     const linhas = props.linhas || [];
     if (!linhas.length) return h("div", { className: "vmm-mudo" }, "sem registos");
@@ -4085,6 +4143,19 @@
         .then(function () { setACarregar(false); });
     }, [limite]);
 
+    const [estatisticas, setEstatisticas] = useState({ fase: "carga" });
+    function carregarEstatisticas() {
+      // A identidade distingue pedidos sobrepostos: só o mais recente publica.
+      const pedido = { fase: "carga" };
+      setEstatisticas(pedido);
+      function concluir(resultado) {
+        setEstatisticas(actual => actual === pedido ? resultado : actual);
+      }
+      pedir("/estatisticas").then(dados => concluir(estatisticasValidas(dados)
+        ? { fase: "pronto", dados } : { fase: "erro" }))
+        .catch(() => concluir({ fase: "erro" }));
+    }
+    useEffect(function () { carregarEstatisticas(); }, []);
     useEffect(function () { carregar(); carregarConfig(); }, [carregar]);
 
     function alternar(ambito, perfil, activo) {
@@ -4917,7 +4988,7 @@
           },
           "Editar configuração"
         ),
-        h(Button, { size: "sm", variant: "outline", onClick: carregar, disabled: aCarregar },
+        h(Button, { size: "sm", variant: "outline", onClick: function () { carregar(); carregarEstatisticas(); }, disabled: aCarregar },
             aCarregar ? "a actualizar…" : "Actualizar")
         )
       ),
@@ -4958,7 +5029,7 @@
         ? h(PainelSombra, { dados: sombraProg, sombra: estado.sombra, aCarregar: aCarregar })
         : null,
 
-      h(
+      h("div", { className: "vmm-utilizacao" }, h(
         Card,
         { className: "vmm-card" },
         h(
@@ -4989,8 +5060,7 @@
                 estado.ledger.caminho + " · " + fmtNum((estado.ledger.bytes || 0) / 1024, 0) + T(" KiB"))
             : null
         )
-      ),
-
+      ), cartaoEstatisticas(estatisticas)),
       h("div", { className: "vmm-pe vmm-mudo" },
         T("Catalogo e associacoes de tarefa vivem em plugin-data/vipernet-model-manager/config.json — este painel permite editar a configuração. Versao do plugin: ") +
         meta.versao + T(" · painel: ") + meta.manifest +
@@ -5030,6 +5100,7 @@
     // recebe o payload de `/sombra/progresso` e desenha-o. E o unico sitio onde
     // a visibilidade condicionada ao interruptor e a ausencia de data num
     // ensaio travado se podem provar sem browser.
+    window.__VMM_TEST__.cartaoEstatisticas = cartaoEstatisticas;
     window.__VMM_TEST__.PainelSombra = PainelSombra;
     window.__VMM_TEST__.mostrarPainelSombra = mostrarPainelSombra;
     window.__VMM_TEST__.dataCurta = dataCurta;
