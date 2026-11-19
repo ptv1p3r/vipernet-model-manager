@@ -157,9 +157,25 @@ class TestLeitura(unittest.TestCase):
             mw_activo = bool(mw._sombra_config(real, nome).get("activo"))
             check(f"config viva: {nome} — CLI e middleware concordam",
                   ef["activo"] == mw_activo, f"cli={ef['activo']} mw={mw_activo}")
-        check("config viva: trabalho herda o global",
-              gestor.sombra_efectiva(real, "trabalho")["origem"] == "herdado",
-              json.dumps(gestor.sombra_efectiva(real, "trabalho")))
+            # A origem tem de corresponder ao que o bloco do perfil declara — e
+            # nao a um perfil concreto: fixar aqui `trabalho` herda o global
+            # passava a falhar no dia em que o dono ligasse ou desligasse o
+            # ensaio nesse perfil, que e precisamente o gesto que isto serve.
+            bloco = ((real.get("perfis") or {}).get(nome) or {}).get("sombra")
+            bloco = bloco if isinstance(bloco, dict) else {}
+            if bloco.get("herda") is True:
+                esperado = "herdado"
+            elif isinstance(bloco.get("activo"), bool):
+                esperado = "proprio"
+            else:
+                esperado = "global"
+            check(f"config viva: {nome} — origem {ef['origem']} corresponde ao bloco",
+                  ef["origem"] == esperado,
+                  f"origem={ef['origem']} esperado={esperado} bloco={json.dumps(bloco)}")
+            if esperado == "proprio":
+                check(f"config viva: {nome} — interruptor proprio vale",
+                      ef["activo"] is bool(bloco["activo"]),
+                      json.dumps(ef))
 
 
 class TestLedger(unittest.TestCase):
