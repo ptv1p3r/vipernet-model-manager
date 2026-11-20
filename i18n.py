@@ -192,6 +192,7 @@ _EN: dict[str, str] = {
     "corpo nao e um objecto JSON (recebido o tipo {tipo})":
         "body is not a JSON object (got type {tipo})",
     "'activo' tem de ser booleano": "'activo' must be a boolean",
+    "'painel_graficos' exige uma lista de gráficos conhecidos, sem repetições: {nomes}": "'painel_graficos' requires a list of known charts without duplicates: {nomes}",
     "'painel_estatisticas' tem de ser booleano": "'painel_estatisticas' must be a boolean",
     "indique a revisão lida em 'rev'": "provide the revision you read in 'rev'",
     "'ambito' tem de ser 'global' ou 'perfil'": "'ambito' must be 'global' or 'perfil'",

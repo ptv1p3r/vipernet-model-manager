@@ -63,6 +63,34 @@ class PainelEstatisticas(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()['rev'], self.client.get('/config').json()['rev'])
 
+    def test_selecao_global_por_config_e_interruptor_independente(self):
+        chave = 'painel_graficos'
+        antes = self.config.read_bytes()
+        self.assertEqual(self.client.get('/estado').json().get(chave),
+                         ['modelos', 'perfis', 'tarefas', 'superficies', 'origens'])
+        self.assertEqual(self.config.read_bytes(), antes)
+        for selecao in (['perfis', 'origens'], []):
+            doc = self.client.get('/config').json()
+            doc['config'][chave] = selecao
+            r = self.client.post('/config', json=doc)
+            self.assertEqual(r.status_code, 200, r.text)
+            for activo in (False, True):
+                estado = self.client.get('/estado').json()
+                self.assertEqual(estado[chave], selecao)
+                r = self.client.post('/painel-estatisticas', json={'rev': estado['rev'], 'activo': activo})
+                self.assertEqual(r.status_code, 200, r.text)
+                self.assertEqual(json.loads(self.config.read_bytes())[chave], selecao)
+
+    def test_editor_recusa_selecao_invalida_sem_gravar(self):
+        doc = self.client.get('/config').json()
+        antes = self.config.read_bytes()
+        for valor in (None, 'perfis', ['inventado'], ['perfis', 'perfis'], [{}]):
+            with self.subTest(valor=valor):
+                doc['config']['painel_graficos'] = valor
+                self.assertTrue(self.client.post('/validar', json=doc['config']).json()['erros'])
+                self.assertEqual(self.client.post('/config', json=doc).status_code, 400)
+                self.assertEqual(self.config.read_bytes(), antes)
+
     def test_editor_recusa_tipo_invalido(self):
         cfg = self.client.get('/config').json()['config']
         for valor in ('false', None, 0):

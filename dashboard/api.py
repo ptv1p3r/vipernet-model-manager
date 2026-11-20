@@ -466,10 +466,7 @@ def _linhas_ledger(caminho: Path) -> Any:
                 yield evento
 
 
-_DIMENSOES_RESPOSTA = {
-    "modelos": "respondido_por", "perfis": "perfil", "tarefas": "tarefa",
-    "superficies": "superficie", "origens": "origem",
-}
+_DIMENSOES_RESPOSTA = gestor.DIMENSOES_RESPOSTA
 
 
 def _agregar_respostas(eventos: Iterable[dict[str, Any]]) -> dict[str, Any]:
@@ -1051,6 +1048,7 @@ def estado() -> dict[str, Any]:
         # de um segundo render, o que se via como um piscar de portugues.
         "idioma": gestor.idioma_efectivo(cfg),
         "painel_estatisticas": cfg.get("painel_estatisticas", True),
+        "painel_graficos": cfg.get("painel_graficos", list(_DIMENSOES_RESPOSTA)),
         "opcoes": {
             "estrategia": gestor.opcoes_estrategia(),
             # Superficies que ja foram vistas neste ambiente. Nao e a lista

@@ -32,6 +32,7 @@
     "Grava de imediato": "Saves immediately",
     "Estatísticas de utilização": "Usage statistics",
     "A carregar estatísticas…": "Loading statistics…",
+    "Gráficos a apresentar — grave em «Gravar e voltar»": "Charts to show — save with ‘Save and return’",
     "Estatísticas indisponíveis.": "Statistics unavailable.",
     "Sem respostas no detalhe retido.": "No responses in the retained detail.",
     "Contagens de respostas no detalhe retido, para todos os perfis.": "Response counts from retained detail across all profiles.",
@@ -3034,7 +3035,8 @@
         style: { backgroundImage: `conic-gradient(${paragens.join(", ")})` } }), h("ul", null, legenda));
   }
 
-  function cartaoEstatisticas(estado) {
+  function cartaoEstatisticas(estado, selecao) {
+    const grupos = Object.keys(GRUPOS_USO).filter(k => !Array.isArray(selecao) || selecao.includes(k));
     const d = estado.dados;
     const mensagem = estado.fase === "carga" ? "A carregar estatísticas…"
       : estado.fase === "erro" ? "Estatísticas indisponíveis."
@@ -3044,7 +3046,7 @@
       h("p", null, "Contagens de respostas no detalhe retido, para todos os perfis."),
       h("div", { role: "status" }, mensagem, d && h("p", null, T("Total de respostas") + ": " + fmtNum(d.total, 0)),
         d && h("p", null, T("Período") + ": " + [d.inicio, d.fim].map(v => dataCurta(v) || "—").join(" – "))),
-      d && d.total > 0 ? Object.keys(GRUPOS_USO).map(k => graficoUso(k, d)) : null));
+      d && d.total > 0 ? grupos.map(k => graficoUso(k, d)) : null));
   }
 
   function TabelaLog(props) {
@@ -3936,6 +3938,20 @@
   // ao painel: um "fechar" que descartasse em silencio perdia o trabalho que o
   // dono acabou de fazer, e um "gravar" que nao fecha deixava-o preso aqui.
   // Ha um "Descartar" explicito para quem quiser sair sem gravar.
+  function escolhaGraficos(props) {
+    // O backend antigo rejeita a chave; não oferecer uma edição que não pode gravar.
+    if (!Array.isArray(props.estado.painel_graficos)) return null;
+    const cfg = lerJSON(props.configJSON);
+    const ids = Object.keys(GRUPOS_USO);
+    const selecao = cfg && cfg.painel_graficos !== undefined ? cfg.painel_graficos : ids;
+    return h("fieldset", { disabled: props.aGravar || !cfg || !Array.isArray(selecao) },
+      h("legend", null, "Gráficos a apresentar — grave em «Gravar e voltar»"),
+      ids.map(k => h("label", { key: k }, h("input", { type: "checkbox", value: k,
+        checked: Array.isArray(selecao) && selecao.includes(k),
+        onChange: () => props.onMudarJSON(JSON.stringify({ ...cfg,
+          painel_graficos: alternarOpcao(selecao, k, !selecao.includes(k)) }, null, 2)) }), GRUPOS_USO[k])));
+  }
+
   function PaginaConfig(props) {
     const estado = props.estado || {};
     const meta = metaPlugin(estado);
@@ -4005,7 +4021,7 @@
           h(Button, { size: "sm", variant: "outline", role: "switch",
             "aria-label": "Estatísticas de utilização", "aria-checked": estado.painel_estatisticas,
             title: "Grava de imediato", disabled: props.aGravar || !props.podeMudarEstatisticas,
-            onClick: props.onEstatisticas }, estado.painel_estatisticas ? "Ligado — desligar" : "Desligado — ligar"))) : null,
+            onClick: props.onEstatisticas }, estado.painel_estatisticas ? "Ligado — desligar" : "Desligado — ligar")), escolhaGraficos(props)) : null,
 
       // Os tres blocos, cada um com titulo proprio: duas decisoes diferentes
       // (quem classifica / como se escolhe) nao partilham o mesmo bloco.
@@ -5104,7 +5120,7 @@
                 estado.ledger.caminho + " · " + fmtNum((estado.ledger.bytes || 0) / 1024, 0) + T(" KiB"))
             : null
         )
-      ), mostrarEstatisticas(estado) ? cartaoEstatisticas(estatisticas) : null),
+      ), mostrarEstatisticas(estado) ? cartaoEstatisticas(estatisticas, estado.painel_graficos) : null),
       h("div", { className: "vmm-pe vmm-mudo" },
         T("Catalogo e associacoes de tarefa vivem em plugin-data/vipernet-model-manager/config.json — este painel permite editar a configuração. Versao do plugin: ") +
         meta.versao + T(" · painel: ") + meta.manifest +

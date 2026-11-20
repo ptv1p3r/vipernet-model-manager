@@ -1995,8 +1995,8 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   // ensaio em sombra: etiquetas de estado, barras e previsao), +18 na 3.47.21
   // (interruptor do ensaio por perfil e o resumo por perfil ao lado do global),
   // +1 na 3.48.1 (estado `em pausa (quota)` — pausa de quota nao e avaria).
-  check("i18n: o dicionario tem as 563 chaves medidas",
-        chaves.length === 563, "tem " + chaves.length);
+  check("i18n: o dicionario tem as 564 chaves medidas",
+        chaves.length === 564, "tem " + chaves.length);
   check("i18n: nenhuma traducao vazia",
         chaves.every(function (k) { return String(I.PT_EN[k]).trim() !== ""; }));
   // Nomes proprios e termos tecnicos ficam iguais nas duas linguas — o que nao
@@ -3285,6 +3285,12 @@ async function provaEstatisticas() {
       recolher(figura, e => e.tag === 'li').some(e => textoPlano(e).includes(nome) &&
         new RegExp('\\b' + n + '\\b').test(textoPlano(e)) && new RegExp(pct + '(?:,0)?\\s*%').test(textoPlano(e))));
   }
+  for (const [selecao, titulos] of [[['perfis', 'origens'], ['Perfis', 'Origens de decisão']], [[], []]]) {
+    const ui = carregar(); ui.idioma.setIdioma('pt');
+    const cartao = ui.cartaoEstatisticas({ fase: 'pronto', dados }, selecao);
+    check('estatísticas: só desenha os gráficos seleccionados ' + selecao,
+      JSON.stringify(recolher(cartao, n => n.tag === 'figcaption').map(textoPlano)) === JSON.stringify(titulos));
+  }
   check('estatísticas: a chave vazia é contada', /Não registado.*1.*25/.test(texto()));
   check('estatísticas: total, período e âmbito', /Total de respostas.*4/.test(texto()) &&
     /01\/01\/2025.*02\/02\/2026/.test(texto()) && /detalhe retido.*todos os perfis/i.test(texto()));
@@ -3300,6 +3306,29 @@ async function provaEstatisticas() {
   })());
   actualizar(); await painel.assentar(); pendentes[4].resolve({}); await painel.assentar();
   check('estatísticas: payload incompleto não simula ausência de respostas', texto().includes('Estatísticas indisponíveis.'));
+}
+
+async function provaEscolhaGraficos() {
+  const ids = ['modelos', 'perfis', 'tarefas', 'superficies', 'origens'];
+  let cfg = { perfis: {}, idioma: 'pt' };
+  const painel = carregarVivo(p => {
+    if (p.url === '/estado') return { perfis: {}, idioma: 'pt', painel_estatisticas: true, painel_graficos: cfg.painel_graficos || ids };
+    if (p.url === '/config') {
+      if (p.metodo === 'POST') cfg = p.corpo.config;
+      return { config: cfg, rev: 'r' };
+    }
+    if (p.url === '/estatisticas') return Object.assign({ total: 1, inicio: null, fim: null }, Object.fromEntries(ids.map(k => [k, { a: 1 }])));
+    return {};
+  });
+  const config = () => painel.filho('PaginaConfig', painel.render().props);
+  const caixas = () => recolher(config(), n => n.tag === 'input' && n.props.type === 'checkbox' && ids.includes(n.props.value));
+  painel.render(); await painel.assentar();
+  recolher(painel.render(), n => n.tag === 'button' && textoPlano(n) === 'Editar configuração')[0].props.onClick(); await painel.assentar();
+  check('escolha global: cinco opções inicialmente activas', caixas().length === 5 && caixas().every(n => n.props.checked));
+  for (const id of ids) caixas().find(n => n.props.value === id)?.props.onChange();
+  check('escolha global: vazio é um rascunho, nenhum POST', JSON.stringify(JSON.parse(painel.render().props.configJSON).painel_graficos) === '[]' && !painel.pedidos.some(p => p.metodo === 'POST'));
+  painel.render().props.onGravar(); await painel.assentar();
+  check('escolha global: Gravar e voltar persiste vazio e remove as figuras', JSON.stringify(cfg.painel_graficos) === '[]' && recolher(painel.render(), n => n.tag === 'figure').length === 0);
 }
 
 async function provaInterruptorEstatisticas() {
@@ -3381,6 +3410,8 @@ provaDoGestoPorPerfil()
   })
   .then(provaEstatisticas)
   .catch(e => check('estatísticas: prova completa', false, e.stack))
+  .then(provaEscolhaGraficos)
+  .catch(e => check('escolha global: prova completa', false, e.stack))
   .then(provaInterruptorEstatisticas)
   .catch(e => check('interruptor: prova completa', false, e.stack))
   .then(fechar);

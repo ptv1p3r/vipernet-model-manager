@@ -379,7 +379,11 @@ _LIMITES_INTERNOS = ("contexto_max", "latencia_p95_ms")
 # derivadas do `PADRAO` dele pela mesma razao.
 _CHAVES_CONFIG = frozenset({"versao", "activo", "registar", "analise",
                             "estrategia", "retencao", "sombra", "idioma", "painel_estatisticas",
-                            "perfis"})
+                            "painel_graficos", "perfis"})
+DIMENSOES_RESPOSTA = {
+    "modelos": "respondido_por", "perfis": "perfil", "tarefas": "tarefa",
+    "superficies": "superficie", "origens": "origem",
+}
 _CHAVES_PERFIL = frozenset({"activo", "estrategia", "analise", "catalogo",
                             "tarefas", "latencia_max_ms", "rodizio", "sombra"})
 _CHAVES_ANALISE = frozenset(set(ANALISE_PADRAO) | {"pesos", "aprendiz",
@@ -1304,6 +1308,15 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
             saida["painel_estatisticas"] = cfg["painel_estatisticas"]
         else:
             erros.append(_t("'painel_estatisticas' tem de ser booleano"))
+    if "painel_graficos" in cfg:
+        grupos = cfg["painel_graficos"]
+        if (isinstance(grupos, list)
+                and all(isinstance(k, str) and k in DIMENSOES_RESPOSTA for k in grupos)
+                and len(set(grupos)) == len(grupos)):
+            saida["painel_graficos"] = [k for k in DIMENSOES_RESPOSTA if k in grupos]
+        else:
+            erros.append(_t("'painel_graficos' exige uma lista de gráficos conhecidos, sem repetições: {nomes}",
+                            nomes=", ".join(DIMENSOES_RESPOSTA)))
     idioma, erros_idioma = normalizar_idioma(cfg.get("idioma"))
     erros.extend(erros_idioma)
     if idioma:

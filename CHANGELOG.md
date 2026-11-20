@@ -6,6 +6,10 @@ the same number the panel shows and the catalogue lists; a bump of the catalogue
 pin is a new PR whose diff a reviewer reads (catalogue rule 4), and this file is
 what that reviewer reads first.
 
+## 3.49.0
+
+- **Seleção global dos gráficos de utilização.** Em «Editar configuração», marque os gráficos pretendidos e use «Gravar e voltar». Sem `painel_graficos`, o painel apresenta os cinco; `[]` mantém o total e o período sem desenhar gráficos. O interruptor `painel_estatisticas` continua a gravar de imediato e não altera a seleção. O editor usa `POST /config` com `rev`; o gestor recusa identificadores desconhecidos e repetidos. Um backend anterior continua a mostrar os gráficos sem oferecer o novo seletor.
+
 ## 3.48.1
 
 - **Uma pausa de quota deixa de ser um braço morto.** Um `HTTP 429` da quota diária de modelos free
