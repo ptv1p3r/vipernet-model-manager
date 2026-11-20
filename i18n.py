@@ -192,6 +192,8 @@ _EN: dict[str, str] = {
     "corpo nao e um objecto JSON (recebido o tipo {tipo})":
         "body is not a JSON object (got type {tipo})",
     "'activo' tem de ser booleano": "'activo' must be a boolean",
+    "'painel_estatisticas' tem de ser booleano": "'painel_estatisticas' must be a boolean",
+    "indique a revisão lida em 'rev'": "provide the revision you read in 'rev'",
     "'ambito' tem de ser 'global' ou 'perfil'": "'ambito' must be 'global' or 'perfil'",
     "perfil {nome!r} nao existe na configuracao":
         "profile {nome!r} does not exist in the configuration",

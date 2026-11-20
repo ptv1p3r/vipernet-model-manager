@@ -125,6 +125,7 @@
   gap: 1rem;
   align-items: start;
 }
+.vmm-utilizacao > :only-child { grid-column: 1 / -1; }
 .vmm-estat-figura {
   display: grid;
   grid-template-columns: clamp(3rem, 12%, 5rem) minmax(0, 1fr);

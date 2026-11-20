@@ -29,6 +29,7 @@
   const IDIOMA_PADRAO = "en";
   const ETIQUETA_IDIOMA = { en: "English", pt: "Português" };
   const PT_EN = {
+    "Grava de imediato": "Saves immediately",
     "Estatísticas de utilização": "Usage statistics",
     "A carregar estatísticas…": "Loading statistics…",
     "Estatísticas indisponíveis.": "Statistics unavailable.",
@@ -2996,6 +2997,11 @@
   const GRUPOS_USO = { modelos: "Modelos", perfis: "Perfis", tarefas: "Tarefas",
     superficies: "Proveniência", origens: "Origens de decisão" };
 
+  // Sem o campo, um servidor antigo mantém o painel histórico, sem interruptor.
+  function mostrarEstatisticas(estado) {
+    return !!estado && estado.painel_estatisticas !== false;
+  }
+
   function estatisticasValidas(d) {
     return d && Number.isSafeInteger(d.total) && d.total >= 0 &&
       [d.inicio, d.fim].every(v => v === null || typeof v === "string") &&
@@ -3991,6 +3997,14 @@
         "✓ " + props.validacaoOk
       ) : null,
 
+      typeof estado.painel_estatisticas === "boolean" ? h(Card, { className: "vmm-card" },
+        h(CardContent, { className: "vmm-card-content vmm-linha" },
+          h("strong", null, "Estatísticas de utilização"),
+          h(Button, { size: "sm", variant: "outline", role: "switch",
+            "aria-label": "Estatísticas de utilização", "aria-checked": estado.painel_estatisticas,
+            title: "Grava de imediato", disabled: props.aGravar || !props.podeMudarEstatisticas,
+            onClick: props.onEstatisticas }, estado.painel_estatisticas ? "Ligado — desligar" : "Desligado — ligar"))) : null,
+
       // Os tres blocos, cada um com titulo proprio: duas decisoes diferentes
       // (quem classifica / como se escolhe) nao partilham o mesmo bloco.
       h(SecaoClassificador, {
@@ -4125,6 +4139,8 @@
           // render que se segue ja sai na lingua certa, sem um piscar de ingles.
           setIdioma(r[0] && r[0].idioma);
           setEstado(r[0]);
+          if (mostrarEstatisticas(r[0])) carregarEstatisticas();
+          else setEstatisticas({ fase: "carga" }); // invalida a resposta ainda em voo
           setLog((r[1] && r[1].linhas) || []);
           setErro(null);
           // Progresso do ensaio em sombra: so com o interruptor ligado. Um erro
@@ -4155,7 +4171,31 @@
         ? { fase: "pronto", dados } : { fase: "erro" }))
         .catch(() => concluir({ fase: "erro" }));
     }
-    useEffect(function () { carregarEstatisticas(); }, []);
+    function mudarPainelEstatisticas() {
+      if (!configRev || typeof estado.painel_estatisticas !== "boolean") return;
+      setAGravar(true);
+      return pedir("/painel-estatisticas", { method: "POST",
+        body: { rev: configRev, activo: !estado.painel_estatisticas } })
+        .then(function (r) {
+          setConfigRev(r.rev);
+          setConfigJSON(function (texto) {
+            const cfg = lerJSON(texto);
+            if (!cfg) return texto;
+            cfg.painel_estatisticas = r.painel_estatisticas;
+            return JSON.stringify(cfg, null, 2);
+          });
+          setValidacaoOk(null);
+          return carregar();
+        })
+        .catch(function (e) {
+          if (ehConflito(e)) return carregar().then(function () {
+            setErro(T("A configuração foi alterada noutro sítio desde que abriu esta página. ") +
+              T("Descartar e abrir outra vez para ver o estado actual."));
+          });
+          setErro(textoDoErro(e));
+        })
+        .finally(function () { setAGravar(false); });
+    }
     useEffect(function () { carregar(); carregarConfig(); }, [carregar]);
 
     function alternar(ambito, perfil, activo) {
@@ -4932,6 +4972,8 @@
         onGravar: gravarEFechar,
         onDescartar: fecharEditor,
         onIdioma: mudarIdioma,
+        podeMudarEstatisticas: !!configRev,
+        onEstatisticas: mudarPainelEstatisticas,
         idiomaAGravar: idiomaAGravar,
         onSuperficie: function (perfil, sup, alvo) { mudarSuperficie(perfil, sup, alvo); },
         onSombra: function (campos) { mudarSombra(campos); },
@@ -4988,7 +5030,7 @@
           },
           "Editar configuração"
         ),
-        h(Button, { size: "sm", variant: "outline", onClick: function () { carregar(); carregarEstatisticas(); }, disabled: aCarregar },
+        h(Button, { size: "sm", variant: "outline", onClick: carregar, disabled: aCarregar },
             aCarregar ? "a actualizar…" : "Actualizar")
         )
       ),
@@ -5060,7 +5102,7 @@
                 estado.ledger.caminho + " · " + fmtNum((estado.ledger.bytes || 0) / 1024, 0) + T(" KiB"))
             : null
         )
-      ), cartaoEstatisticas(estatisticas)),
+      ), mostrarEstatisticas(estado) ? cartaoEstatisticas(estatisticas) : null),
       h("div", { className: "vmm-pe vmm-mudo" },
         T("Catalogo e associacoes de tarefa vivem em plugin-data/vipernet-model-manager/config.json — este painel permite editar a configuração. Versao do plugin: ") +
         meta.versao + T(" · painel: ") + meta.manifest +

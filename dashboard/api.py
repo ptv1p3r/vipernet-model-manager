@@ -1050,6 +1050,7 @@ def estado() -> dict[str, Any]:
         # o primeiro componente — sem isto abria em ingles e so mudava depois
         # de um segundo render, o que se via como um piscar de portugues.
         "idioma": gestor.idioma_efectivo(cfg),
+        "painel_estatisticas": cfg.get("painel_estatisticas", True),
         "opcoes": {
             "estrategia": gestor.opcoes_estrategia(),
             # Superficies que ja foram vistas neste ambiente. Nao e a lista
@@ -1129,6 +1130,30 @@ def toggle(corpo: Any = Body(default=None)) -> JSONResponse:
             detail=t("gravacao nao confirmada: pedido {pedido}, lido {lido}", pedido=activo, lido=lido),
         )
     return JSONResponse({"ok": True, "ambito": ambito, "alvo": alvo, "activo": lido})
+
+
+@router.post("/painel-estatisticas")
+def painel_estatisticas_post(corpo: Any = Body(default=None)) -> JSONResponse:
+    corpo = _corpo_objeto(corpo)
+    activo = corpo.get("activo")
+    rev = corpo.get("rev")
+    if not isinstance(activo, bool):
+        raise HTTPException(status_code=400, detail=t("'activo' tem de ser booleano"))
+    if not isinstance(rev, str) or not rev.strip():
+        raise HTTPException(status_code=400, detail=t("indique a revisão lida em 'rev'"))
+
+    def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
+        cfg["painel_estatisticas"] = activo
+        return cfg
+
+    try:
+        cfg, nova_rev = gestor.alterar(mutar, rev_esperado=rev)
+    except gestor.Conflito as exc:
+        return JSONResponse(status_code=409, content=_corpo_conflito(
+            t("a configuração mudou desde que este painel leu o estado"), exc.rev_actual))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({"ok": True, "painel_estatisticas": cfg["painel_estatisticas"], "rev": nova_rev})
 
 
 @router.post("/idioma")

@@ -1994,8 +1994,8 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   // +9 na 3.47.16 (remover uma rota do catalogo), +34 na 3.47.17 (painel do
   // ensaio em sombra: etiquetas de estado, barras e previsao), +18 na 3.47.21
   // (interruptor do ensaio por perfil e o resumo por perfil ao lado do global).
-  check("i18n: o dicionario tem as 561 chaves medidas",
-        chaves.length === 561, "tem " + chaves.length);
+  check("i18n: o dicionario tem as 562 chaves medidas",
+        chaves.length === 562, "tem " + chaves.length);
   check("i18n: nenhuma traducao vazia",
         chaves.every(function (k) { return String(I.PT_EN[k]).trim() !== ""; }));
   // Nomes proprios e termos tecnicos ficam iguais nas duas linguas — o que nao
@@ -3242,7 +3242,7 @@ async function provaEstatisticas() {
   check('estatísticas: indisponível não é zero nem esconde o registo',
         texto().includes('Estatísticas indisponíveis.') && !texto().includes('Sem respostas') && texto().includes('Registo de utilizacao'));
   const actualizar = () => recolher(painel.render(), n => n.tag === 'button' && textoPlano(n) === 'Actualizar')[0].props.onClick();
-  actualizar();
+  actualizar(); await painel.assentar();
   check('estatísticas: Actualizar repete o GET', pendentes.length === 2);
   pendentes[1].resolve({ total: 0, inicio: null, fim: null, modelos: {}, perfis: {}, tarefas: {}, superficies: {}, origens: {} });
   await painel.assentar();
@@ -3250,7 +3250,7 @@ async function provaEstatisticas() {
         texto().includes('Sem respostas no detalhe retido.') && !texto().includes('NaN') && !recolher(painel.render(), n => n.tag === 'figure').length);
   actualizar();
   await painel.assentar();
-  actualizar();
+  actualizar(); await painel.assentar();
   const dados = { total: 4, inicio: '2025-01-01', fim: '2026-02-02',
     modelos: { 'modelo-A': 3, '': 1 }, perfis: { pessoal: 4 }, tarefas: { editar: 4 },
     superficies: { web: 4 }, origens: { fixa: 4 } };
@@ -3282,8 +3282,64 @@ async function provaEstatisticas() {
     return ['Usage statistics', 'Models', 'Profiles', 'Tasks', 'Provenance', 'Decision origins',
       'Tarefas', 'Not recorded', 'Total responses', 'Period', 'retained detail', 'all profiles'].every(s => text.includes(s));
   })());
-  actualizar(); pendentes[4].resolve({}); await painel.assentar();
+  actualizar(); await painel.assentar(); pendentes[4].resolve({}); await painel.assentar();
   check('estatísticas: payload incompleto não simula ausência de respostas', texto().includes('Estatísticas indisponíveis.'));
+}
+
+async function provaInterruptorEstatisticas() {
+  for (const [idioma, inicial] of [['pt', false], ['en', true], ['pt', undefined], ['en', 'false']]) {
+    let activo = inicial, rev = 'abertura';
+    const painel = carregarVivo(p => {
+      if (p.url === '/estado') return { idioma, rev, perfis: {}, painel_estatisticas: activo };
+      if (p.url.startsWith('/log?')) return { linhas: [] };
+      if (p.url === '/config') return { config: {}, rev };
+      if (p.url === '/estatisticas') return {};
+      if (p.url === '/painel-estatisticas' && p.metodo === 'POST') {
+        if (p.corpo.rev !== rev) throw Object.assign(Error('conflict'), { status: 409 });
+        activo = p.corpo.activo; rev = 'gravada'; return { rev, painel_estatisticas: activo };
+      }
+      throw Error(p.url);
+    });
+    const pedidosStats = () => painel.pedidos.filter(p => p.url === '/estatisticas').length;
+    const titulo = idioma === 'pt' ? 'Estatísticas de utilização' : 'Usage statistics';
+    const abre = idioma === 'pt' ? 'Editar configuração' : 'Edit configuration';
+    const botao = (arvore, texto) => recolher(arvore, n => n.tag === 'button' && textoPlano(n) === texto)[0];
+    painel.render();
+    check('estatísticas: aguarda /estado antes do GET', pedidosStats() === 0);
+    await painel.assentar();
+    const actualizar = recolher(painel.render(), n => n.tag === 'button' && /^(Actualizar|Refresh)$/.test(textoPlano(n)))[0];
+    actualizar.props.onClick(); await painel.assentar();
+    check('estatísticas: montagem e actualização respeitam ' + inicial, pedidosStats() === (activo === false ? 0 : 2) &&
+      textoPlano(painel.render()).includes(titulo) === (activo !== false) && recolher(painel.render(), n => n.tag === 'TabelaLog').length === 1);
+    if (activo === false) {
+      const grelha = recolher(painel.render(), n => n.props && n.props.className === 'vmm-utilizacao')[0];
+      const visiveis = grelha.filhos.filter(Boolean);
+      check('desligado: o registo é o único cartão e ocupa todas as colunas', visiveis.length === 1 &&
+        recolher(visiveis[0], n => n.tag === 'TabelaLog').length === 1 &&
+        /\.vmm-utilizacao\s*>\s*:only-child\s*\{\s*grid-column:\s*1\s*\/\s*-1/.test(fs.readFileSync(path.join(__dirname, 'dist/style.css'), 'utf8')));
+    }
+    botao(painel.render(), abre).props.onClick(); await painel.assentar();
+    const config = () => painel.filho('PaginaConfig', painel.render().props);
+    const switchNo = () => recolher(config(), n => n.props && n.props.role === 'switch' && n.props['aria-label'] === titulo)[0];
+    const suporta = typeof inicial === 'boolean';
+    check('configuração: só oferece interruptor com booleano: ' + inicial, !!switchNo() === suporta);
+    if (!suporta || !switchNo()) continue;
+    check('configuração: ajuda na língua activa', switchNo().props.title === (idioma === 'pt' ? 'Grava de imediato' : 'Saves immediately'));
+    painel.render().props.onMudarJSON('{"rascunho":42}');
+    check('configuração: estado e acção ' + idioma, switchNo().props['aria-checked'] === inicial && textoPlano(switchNo()) ===
+      (idioma === 'pt' ? 'Desligado — ligar' : 'On — turn off'));
+    switchNo().props.onClick(); await painel.assentar();
+    const corpo = painel.pedidos.filter(p => p.url === '/painel-estatisticas')[0].corpo;
+    check('configuração: POST global com revisão da página', Object.keys(corpo).sort().join(',') === 'activo,rev' && corpo.rev === 'abertura' && corpo.activo === !inicial);
+    const cfg = JSON.parse(painel.render().props.configJSON);
+    check('configuração: conserva rascunho e acompanha o valor gravado', cfg.rascunho === 42 && cfg.painel_estatisticas === !inicial && switchNo().props['aria-checked'] === !inicial);
+    rev = 'externa';
+    for (let i = 0; i < 2; i++) {
+      switchNo().props.onClick(); await painel.assentar();
+      check('configuração: após 409 não adopta a revisão alheia', painel.pedidos.filter(p => p.url === '/painel-estatisticas').at(-1).corpo.rev === 'gravada' &&
+        textoPlano(config()).includes(idioma === 'pt' ? 'Descartar e abrir' : 'Discard and reopen'));
+    }
+  }
 }
 
 function fechar() {
@@ -3309,4 +3365,6 @@ provaDoGestoPorPerfil()
   })
   .then(provaEstatisticas)
   .catch(e => check('estatísticas: prova completa', false, e.stack))
+  .then(provaInterruptorEstatisticas)
+  .catch(e => check('interruptor: prova completa', false, e.stack))
   .then(fechar);

@@ -378,7 +378,7 @@ _LIMITES_INTERNOS = ("contexto_max", "latencia_p95_ms")
 # divergirem. As listas do classificador vivem em `analise_modelo` (`CHAVES`),
 # derivadas do `PADRAO` dele pela mesma razao.
 _CHAVES_CONFIG = frozenset({"versao", "activo", "registar", "analise",
-                            "estrategia", "retencao", "sombra", "idioma",
+                            "estrategia", "retencao", "sombra", "idioma", "painel_estatisticas",
                             "perfis"})
 _CHAVES_PERFIL = frozenset({"activo", "estrategia", "analise", "catalogo",
                             "tarefas", "latencia_max_ms", "rodizio", "sombra"})
@@ -1299,6 +1299,11 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
     # declarado, e a ausencia vale o ingles. Sem esta fiacao o seletor do painel
     # escrevia a chave e a leitura deitava-a fora, e o painel voltava a ingles
     # no render seguinte como se nada tivesse sido escolhido.
+    if "painel_estatisticas" in cfg:
+        if isinstance(cfg["painel_estatisticas"], bool):
+            saida["painel_estatisticas"] = cfg["painel_estatisticas"]
+        else:
+            erros.append(_t("'painel_estatisticas' tem de ser booleano"))
     idioma, erros_idioma = normalizar_idioma(cfg.get("idioma"))
     erros.extend(erros_idioma)
     if idioma:
@@ -1822,8 +1827,8 @@ def _podar_backups(caminho: Path, manter: int = 10,
     return apagadas
 
 
-def _escrever(cfg: dict[str, Any], caminho: Path) -> Path:
-    """Valida, faz backup, escreve em `.tmp` e troca com `os.replace`."""
+def _escrever(cfg: dict[str, Any], caminho: Path) -> dict[str, Any]:
+    """Valida, faz backup e troca com `os.replace`; devolve o documento gravado."""
     limpo, erros = validar(cfg)
     if erros:
         raise ValueError("; ".join(erros))
@@ -1846,7 +1851,7 @@ def _escrever(cfg: dict[str, Any], caminho: Path) -> Path:
     tmp.write_text(texto, encoding="utf-8")
     os.replace(tmp, caminho)
     _registar_quem(caminho, antes, texto.encode("utf-8"))
-    return caminho
+    return limpo
 
 
 def gravar(cfg: dict[str, Any], caminho: Path | None = None,
@@ -1864,7 +1869,8 @@ def gravar(cfg: dict[str, Any], caminho: Path | None = None,
             actual, _erros = carregar(caminho)
             if rev(actual) != rev_esperado:
                 raise Conflito(rev(actual))
-        return _escrever(cfg, caminho)
+        _escrever(cfg, caminho)
+        return caminho
 
 
 def alterar(mutador, caminho: Path | None = None,
@@ -1892,8 +1898,8 @@ def alterar(mutador, caminho: Path | None = None,
             raise Conflito(actual)
         resultado = mutador(cfg)
         novo = resultado if isinstance(resultado, dict) else cfg
-        _escrever(novo, caminho)
-        return novo, rev(novo)
+        gravado = _escrever(novo, caminho)
+        return gravado, rev(gravado)
 
 
 def garantir() -> Path:
