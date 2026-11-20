@@ -191,6 +191,44 @@ def _sombra_mod():
     return mod
 
 
+def _reset_epoch(cabecalhos: Any) -> float:
+    """Epoch do proximo reset de quota, lido dos cabecalhos — `0` se nao vier.
+
+    `X-RateLimit-Reset` vem em **milissegundos** na OpenRouter (medido:
+    `1795132800000`); `Retry-After` vem em segundos. Sem cabecalho devolve-se
+    `0` — nunca se inventa uma hora de reposicao que o provider nao declarou.
+    """
+    if cabecalhos is None:
+        return 0.0
+
+    def ler(nome: str) -> str:
+        try:
+            valor = cabecalhos.get(nome)
+        except AttributeError:
+            return ""
+        return str(valor or "").strip()
+
+    bruto = ler("X-RateLimit-Reset") or ler("x-ratelimit-reset")
+    try:
+        valor = float(bruto)
+    except (TypeError, ValueError):
+        valor = 0.0
+    if valor > 1e11:  # milissegundos
+        valor = valor / 1000.0
+    if valor > 0:
+        return valor
+    bruto = ler("Retry-After") or ler("retry-after")
+    try:
+        segundos = float(bruto)
+    except (TypeError, ValueError):
+        return 0.0
+    if segundos > 0:
+        import time
+
+        return time.time() + segundos
+    return 0.0
+
+
 def _chamar_modelo(provider: str, modelo: str) -> dict[str, Any]:
     """Uma chamada minima ao modelo, so para provar que responde.
 
@@ -242,8 +280,16 @@ def _chamar_modelo(provider: str, modelo: str) -> dict[str, Any]:
             msg = json.loads(texto).get("error", {}).get("message", texto)
         except (ValueError, AttributeError):
             msg = texto
-        return {"ok": False, "http": exc.code, "provider": provider,
-                "provider_inferido": inferido, "motivo": str(msg)[:160]}
+        resposta = {"ok": False, "http": exc.code, "provider": provider,
+                    "provider_inferido": inferido, "motivo": str(msg)[:160]}
+        # A hora de reposicao da quota vem nos cabecalhos e e o que distingue
+        # uma pausa com fim de uma avaria: sem ela, um 429 da quota diaria era
+        # indistinguivel de um slug morto e o ensaio so voltava na sonda
+        # seguinte. Nao se inventa: sem cabecalho o campo nao entra.
+        reset = _reset_epoch(exc.headers)
+        if reset > 0:
+            resposta["reset_ts"] = reset
+        return resposta
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "http": 0, "provider": provider,
                 "provider_inferido": inferido,
@@ -381,11 +427,34 @@ def cmd_sombra(args) -> int:
         temporario.replace(destino)
         for braco in ("a", "b"):
             d = veredicto[f"braco_{braco}"]
-            estado = _t('vivo') if d.get("ok") else _t('MORTO')
+            if d.get("ok"):
+                estado = _t('vivo')
+            elif d.get("classe") == "quota":
+                estado = _t('sem quota')
+            else:
+                estado = _t('MORTO')
             print(f"braco {braco}: {d.get('modelo')} — {estado} "
                   f"(HTTP {d.get('http')}) {d.get('motivo') or ''}".rstrip())
         print(_t('todos vivos: {v0} | gravado em {v1}', v0=veredicto['todos_vivos'], v1=destino))
-        return 0 if veredicto["todos_vivos"] else 1
+        if veredicto["todos_vivos"]:
+            return 0
+        falta_quota = [b for b in ("a", "b")
+                       if veredicto[f"braco_{b}"].get("classe") == "quota"]
+        outros = [b for b in ("a", "b")
+                  if not veredicto[f"braco_{b}"].get("ok")
+                  and veredicto[f"braco_{b}"].get("classe") != "quota"]
+        if not outros:
+            # Pausa de quota nao e avaria: tem hora de fim declarada pelo
+            # provider. Sai 0 (o job nao fica em falha por uma pausa esperada),
+            # mas diz em voz alta que o ensaio esta parado e ate quando.
+            ate = next((str(veredicto[f"braco_{b}"].get("pausa_ate") or "")
+                        for b in falta_quota
+                        if veredicto[f"braco_{b}"].get("pausa_ate")), "")
+            print(_t('em pausa: quota esgotada no braco {v0}{v1}',
+                     v0=",".join(falta_quota),
+                     v1=_t(' — repoe em {v0}', v0=ate) if ate else ''))
+            return 0
+        return 1
 
     cfg, _ = _cfg()
     _bloco = cfg.get("sombra")

@@ -122,7 +122,7 @@ class Base(unittest.TestCase):
 
     # -- ferramentas ---------------------------------------------------
     def escrever_vida(self, *, ok_a=True, ok_b=True, horas_atras=0.0,
-                      motivo_b="") -> None:
+                      motivo_b="", classe_b="") -> None:
         instante = time.time() - horas_atras * 3600
         dados = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(instante)),
@@ -135,6 +135,11 @@ class Base(unittest.TestCase):
                         "motivo": motivo_b},
             "todos_vivos": ok_a and ok_b,
         }
+        if classe_b:
+            dados["braco_b"]["classe"] = classe_b
+            if classe_b == "quota":
+                dados["braco_b"]["http"] = 429
+                dados["braco_b"]["pausa_ate"] = "2026-11-20T00:00:00+00:00"
         destino = self.dir / "aprendiz" / "sombra" / "vida.json"
         destino.parent.mkdir(parents=True, exist_ok=True)
         destino.write_text(json.dumps(dados), encoding="utf-8")
@@ -208,6 +213,18 @@ class LigacaoAoMiddleware(Base):
         self.assertEqual(e["sombra"]["motivo"], "braco_sem_vida:b")
         self.assertFalse(e["sombra"]["aplicado"])
         self.assertIn("unavailable", e["sombra"]["mortos"]["b"])
+
+    def test_quota_esgotada_para_o_ensaio_com_motivo_proprio(self):
+        """429 da quota diaria nao e braco morto: motivo propio e hora de fim."""
+        self.escrever_vida(ok_b=False, classe_b="quota",
+                           motivo_b="Rate limit exceeded: free-models-per-day")
+        tid = self.turno_do_braco("b")
+        e = self.run_turn(tid)
+        self.assertEqual(self.agent.model, BARATO, "turno segue a rota normal")
+        self.assertNotEqual(e["origem"], "sombra")
+        self.assertEqual(e["sombra"]["motivo"], "quota_esgotada:b")
+        self.assertEqual(e["sombra"]["pausa_ate"], "2026-11-20T00:00:00+00:00")
+        self.assertFalse(e["sombra"]["aplicado"])
 
     def test_vida_nao_medida_nao_aplica(self):
         e = self.run_turn(self.turno_do_braco("b"))

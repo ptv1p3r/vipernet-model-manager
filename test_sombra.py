@@ -335,6 +335,55 @@ class TestProjectar(unittest.TestCase):
         self.assertIn("braço b sem vida", p["motivo"])
         self.assertIn("404", p["motivo"])
 
+    def test_quota_esgotada_e_pausa_com_hora_e_sem_data_de_fim(self):
+        """429 da quota diaria nao e braco morto: e uma pausa com hora de fim.
+
+        Medido a 2026-11-19/20: o balde free da OpenRouter (1000/dia, reset as
+        00:00 UTC) esgotava-se em ~2h46 e a sonda das 19:07 marcava o braco b
+        morto. O estado saia `travado`, indistinguivel de um slug retirado, e o
+        ensaio so voltava as 07:07 — 7 h de quota nova perdidas por dia.
+        """
+        r = self._registo_pequeno()
+        alvo = r["n_por_braco"]
+        vida = {"todos_vivos": False, "ts": "2026-11-19T19:07:51+00:00",
+                "braco_a": {"modelo": "caro", "ok": True, "http": 200,
+                            "classe": "viva"},
+                "braco_b": {"modelo": "barato", "ok": False, "http": 429,
+                            "classe": "quota",
+                            "pausa_ate": "2026-11-20T00:00:00+00:00",
+                            "motivo": "Rate limit exceeded: free-models-per-day"}}
+        p = s.projectar(self._contagem(alvo // 2, alvo // 2), r,
+                        agora=self._agora(), vida=vida)
+        self.assertEqual(p["estado"], "em_pausa")
+        self.assertEqual(p["pausa_ate"], "2026-11-20T00:00:00+00:00")
+        self.assertEqual(p["fim_estimado"], "", "ensaio parado nao tem data de fim")
+        self.assertIn("sem quota", p["motivo"])
+        self.assertIn("429", p["motivo"])
+        self.assertIn("repõe em", p["motivo"])
+
+    def test_um_braco_morto_ganha_a_um_em_quota(self):
+        """Com um morto e um sem quota o estado e `travado`: a morte manda."""
+        r = self._registo_pequeno()
+        alvo = r["n_por_braco"]
+        vida = {"todos_vivos": False,
+                "braco_a": {"modelo": "caro", "ok": False, "http": 404,
+                            "classe": "morta", "motivo": "0 endpoints"},
+                "braco_b": {"modelo": "barato", "ok": False, "http": 429,
+                            "classe": "quota", "motivo": "rate limit"}}
+        p = s.projectar(self._contagem(alvo, alvo // 2), r,
+                        agora=self._agora(), vida=vida)
+        self.assertEqual(p["estado"], "travado")
+        self.assertIn("braço a", p["motivo"])
+        self.assertNotIn("sem quota", p["motivo"])
+
+    def test_classe_falha_separa_quota_de_morte(self):
+        self.assertEqual(s.classe_falha({"ok": True, "http": 200}), s.CLASSE_VIVA)
+        self.assertEqual(s.classe_falha({"ok": False, "http": 429}), s.CLASSE_QUOTA)
+        self.assertEqual(s.classe_falha({"ok": False, "http": 0,
+                                        "motivo": "Rate limit exceeded"}), s.CLASSE_QUOTA)
+        self.assertEqual(s.classe_falha({"ok": False, "http": 404}), s.CLASSE_MORTA)
+        self.assertEqual(s.classe_falha({"ok": False, "http": 401}), s.CLASSE_MORTA)
+
     def test_sem_chamadas_medidas_nao_inventa_data(self):
         r = self._registo_pequeno()
         p = s.projectar(self._contagem(0, 0), r, agora=self._agora())

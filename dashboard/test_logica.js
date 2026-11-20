@@ -1993,9 +1993,10 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   // o que obriga a olhar para o dicionario. +9 na 3.47.12 (sonda de ligacao),
   // +9 na 3.47.16 (remover uma rota do catalogo), +34 na 3.47.17 (painel do
   // ensaio em sombra: etiquetas de estado, barras e previsao), +18 na 3.47.21
-  // (interruptor do ensaio por perfil e o resumo por perfil ao lado do global).
-  check("i18n: o dicionario tem as 562 chaves medidas",
-        chaves.length === 562, "tem " + chaves.length);
+  // (interruptor do ensaio por perfil e o resumo por perfil ao lado do global),
+  // +1 na 3.48.1 (estado `em pausa (quota)` — pausa de quota nao e avaria).
+  check("i18n: o dicionario tem as 563 chaves medidas",
+        chaves.length === 563, "tem " + chaves.length);
   check("i18n: nenhuma traducao vazia",
         chaves.every(function (k) { return String(I.PT_EN[k]).trim() !== ""; }));
   // Nomes proprios e termos tecnicos ficam iguais nas duas linguas — o que nao
@@ -2360,6 +2361,21 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   check("sombra: sem payload nao inventa numeros",
         semPayload.indexOf("progresso indisponível") !== -1
         && semPayload.indexOf("51,28") === -1, semPayload);
+
+  // Pausa de quota: um 429 da quota diaria nao e braco morto. O painel tem de
+  // dizer "em pausa (quota)" e continuar sem data de fim — a pausa ainda nao
+  // tem ritmo medido. Antes da 3.48.1 isto saia "travado", indistinguivel de
+  // um slug retirado, e o ensaio so voltava na sonda seguinte.
+  const emPausa = JSON.parse(JSON.stringify(payload));
+  emPausa.progresso.estado = "em_pausa";
+  emPausa.progresso.motivo = "braço b sem quota (nvidia/nemotron-3-ultra-550b-a55b:free, HTTP 429)";
+  emPausa.progresso.pausa_ate = "2026-11-20T00:00:00+00:00";
+  const textoPausa = textoDaArvore(T.PainelSombra({ dados: emPausa }));
+  check("sombra: quota esgotada diz 'em pausa (quota)'",
+        textoPausa.indexOf("em pausa (quota)") !== -1, textoPausa);
+  check("sombra: em pausa nao mostra data de fim",
+        textoPausa.split("modelos em uso")[0].indexOf("sem previsão de fim") !== -1
+        && textoPausa.split("modelos em uso")[0].indexOf("/2026") === -1, textoPausa);
   const aCarregarTxt = textoDaArvore(T.PainelSombra({ dados: null, aCarregar: true }));
   check("sombra: enquanto le, diz que esta a ler",
         aCarregarTxt.indexOf("a ler o ledger do ensaio") !== -1, aCarregarTxt);

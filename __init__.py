@@ -610,15 +610,29 @@ def _sombra_do_turno(
     if not isinstance(ts, (int, float)) or (time.time() - float(ts)) > ttl_h * 3600:
         diag["motivo"] = "vida_expirada"
         return diag
-    mortos = [b for b in ("a", "b")
-              if not (vida.get(f"braco_{b}") or {}).get("ok")]
-    if mortos:
+    falhados = [b for b in ("a", "b")
+                if not (vida.get(f"braco_{b}") or {}).get("ok")]
+    if falhados:
         # Braco morto nao e braco com falhas: nao ha resultado a medir. O ensaio
         # para inteiro e o turno segue a rota normal — correr so com um braco
         # vivo daria um "A/B" que compara um modelo com nada.
-        diag["motivo"] = "braco_sem_vida:" + ",".join(mortos)
+        #
+        # Sem quota e diferente de morto: um 429 da quota diaria de modelos free
+        # repoe-se sozinho. O ensaio para na mesma (atribuir turnos a um braco
+        # que devolve 429 queimava o turno), mas o motivo diz o que e — uma
+        # pausa com hora de fim — para o painel e o alerta a tratarem como tal.
+        quota = [b for b in falhados
+                 if str((vida.get(f"braco_{b}") or {}).get("classe") or "") == "quota"]
+        mortos = [b for b in falhados if b not in quota] or falhados
+        if quota and len(quota) == len(falhados):
+            diag["motivo"] = "quota_esgotada:" + ",".join(quota)
+            diag["pausa_ate"] = next(
+                (str((vida.get(f"braco_{b}") or {}).get("pausa_ate") or "")
+                 for b in quota if (vida.get(f"braco_{b}") or {}).get("pausa_ate")), "")
+        else:
+            diag["motivo"] = "braco_sem_vida:" + ",".join(mortos)
         diag["mortos"] = {b: str((vida.get(f"braco_{b}") or {}).get("motivo") or "")[:120]
-                          for b in mortos}
+                          for b in falhados}
         return diag
 
     entrada = _entrada_por_modelo(pcfg, modelo, provider_braco)

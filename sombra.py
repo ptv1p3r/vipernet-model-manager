@@ -41,6 +41,37 @@ Z_PODER_80 = 0.8416212335729143
 # e a data de fim saem desfasadas por um factor de ~30.
 UNIDADE_CHAMADA = "chamada de ferramenta medida por exit_code"
 
+# Classes de veredicto de um braco na sonda de vida. A distincao entre "quota"
+# e "morta" e a que faltava: um 429 da quota diaria de modelos free da
+# OpenRouter repoe-se sozinho as 00:00 UTC, enquanto um slug retirado nao
+# volta. Tratados como iguais, o ensaio parava no dia em que a quota acabava e
+# so voltava na sonda seguinte (12 h depois) — perdia as horas de quota nova
+# que o reset abria. Medido a 2026-11-19/20.
+CLASSE_VIVA = "viva"
+CLASSE_QUOTA = "quota"
+CLASSE_MORTA = "morta"
+
+
+def classe_falha(resposta: dict[str, Any]) -> str:
+    """`viva`, `quota` ou `morta` a partir de uma resposta de sonda.
+
+    Quota esgotada e `HTTP 429` (ou motivo que o diga): e um limite com hora de
+    fim, nao um modelo que desapareceu. Qualquer outra recusa e morte — um
+    401/404 nao se cura com o tempo.
+    """
+    if isinstance(resposta, dict) and resposta.get("ok"):
+        return CLASSE_VIVA
+    resposta = resposta if isinstance(resposta, dict) else {}
+    try:
+        http = int(resposta.get("http") or 0)
+    except (TypeError, ValueError):
+        http = 0
+    motivo = str(resposta.get("motivo") or "").lower()
+    if http == 429 or "rate limit" in motivo or "429" in motivo:
+        return CLASSE_QUOTA
+    return CLASSE_MORTA
+
+
 LIMIARES = {"alfa": 0.05, "poder": 0.80, "unilateral": True}
 
 
@@ -478,6 +509,11 @@ def projectar(contagem: dict[str, Any], registo: dict[str, Any], *,
       `braco_sem_vida:<x>` e nem o braco vivo acumula) e nao se apresenta data
       nenhuma: uma data para um ensaio travado e uma promessa que ninguem pode
       cumprir. Declara-se `travado` e o motivo.
+    - **Sem quota tambem nao e morte.** Um 429 da quota diaria de modelos free
+      tem hora de reposicao: declara-se `em_pausa` com `pausa_ate` (quando o
+      provider a diz) e o mesmo cuidado com as datas — o ensaio esta parado e
+      uma data de fim seria inventada. A distincao importa porque uma pausa
+      cura-se sozinha e um slug morto nao.
     - O ritmo tem **ancora declarada**: a media desde a primeira chamada de cada
       braco (`ritmo_dia`) e o ultimo dia completo (`ritmo_ultimo_dia`), que
       diferem quando houve pausas. As duas datas vao no resultado; o painel
@@ -560,15 +596,47 @@ def projectar(contagem: dict[str, Any], registo: dict[str, Any], *,
                       "fim_estimado_ultimo_dia": ""})
         return saida
     if todos_vivos is False:
-        mortos = []
-        for braco in ("a", "b"):
-            d = (vida or {}).get(f"braco_{braco}") or {}
-            if d and not d.get("ok"):
-                mortos.append(f"braço {braco} sem vida ({d.get('modelo') or '?'}"
-                              f"{', HTTP ' + str(d.get('http')) if d.get('http') else ''})")
+        falhados = [(b, (vida or {}).get(f"braco_{b}") or {})
+                    for b in ("a", "b")
+                    if ((vida or {}).get(f"braco_{b}") or {})]
+        falhados = [(b, d) for b, d in falhados if not d.get("ok")]
+        mortos = [(b, d) for b, d in falhados
+                  if str(d.get("classe") or "") != CLASSE_QUOTA]
+        quota = [(b, d) for b, d in falhados
+                 if str(d.get("classe") or "") == CLASSE_QUOTA]
+        if falhados and not mortos:
+            # Sem quota nao e braco morto: e uma pausa com hora de fim. Fica
+            # `em_pausa` — sem data de fim do ensaio (a pausa ainda nao tem
+            # ritmo medido) mas com a hora a que o provider repoe, que e a
+            # unica coisa honesta a dizer. O middleware para o ensaio na
+            # mesma: correr so com um braco vivo compararia um modelo com nada.
+            pausa_ate = ""
+            for _b, d in quota:
+                quando = str(d.get("pausa_ate") or "")
+                if quando and quando > pausa_ate:
+                    pausa_ate = quando
+            partes = [f"braço {b} sem quota ({d.get('modelo') or '?'}"
+                      f"{', HTTP ' + str(d.get('http')) if d.get('http') else ''})"
+                      for b, d in quota]
+            motivo = "; ".join(partes)
+            if pausa_ate:
+                motivo += f" — repõe em {pausa_ate}"
+            saida.update({
+                "estado": "em_pausa",
+                "motivo": motivo,
+                "pausa_ate": pausa_ate,
+                "fim_estimado": "",
+                "fim_estimado_ultimo_dia": "",
+            })
+            return saida
+        mortos = mortos or falhados
+        partes = []
+        for braco, d in mortos:
+            partes.append(f"braço {braco} sem vida ({d.get('modelo') or '?'}"
+                          f"{', HTTP ' + str(d.get('http')) if d.get('http') else ''})")
         saida.update({
             "estado": "travado",
-            "motivo": "; ".join(mortos) or "a sonda de vida diz que um braço não responde",
+            "motivo": "; ".join(partes) or "a sonda de vida diz que um braço não responde",
             "fim_estimado": "",
             "fim_estimado_ultimo_dia": "",
         })
@@ -614,7 +682,7 @@ def sondar_vida(registo: dict[str, Any], chamar: Any, *,
     Um braco cujo slug morreu nao e um braco com mais falhas: e um braco sem
     resultado. Por isso a sonda e o que autoriza (ou nao) o ensaio a arrancar.
     """
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     instante = agora if agora is not None else datetime.now().astimezone()
     saida: dict[str, Any] = {
@@ -645,6 +713,17 @@ def sondar_vida(registo: dict[str, Any], chamar: Any, *,
             "http": http,
             "motivo": str(resposta.get("motivo") or "")[:160],
         })
+        # A classe separa «sem quota» de «morto»: sem ela o middleware e o
+        # painel nao tinham como distinguir uma pausa com hora de fim de uma
+        # avaria do slug. `pausa_ate` so existe quando o provider diz quando
+        # repoe — nunca se inventa uma hora.
+        detalhe = saida[f"braco_{braco}"]
+        detalhe["classe"] = classe_falha(detalhe)
+        reset = resposta.get("reset_ts")
+        if detalhe["classe"] == CLASSE_QUOTA and isinstance(reset, (int, float)) and reset > 0:
+            detalhe["pausa_ate"] = datetime.fromtimestamp(
+                float(reset), tz=timezone.utc).isoformat(timespec="seconds")
+
     saida["todos_vivos"] = all(saida[f"braco_{b}"]["ok"] for b in ("a", "b"))
     return saida
 

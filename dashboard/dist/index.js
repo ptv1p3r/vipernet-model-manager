@@ -580,6 +580,7 @@
       "  percentage, pace and models of the A/B trial. Only shown while the trial is on.",
     "a correr": "running",
     "travado": "stalled",
+    "em pausa (quota)": "paused (quota)",
     "concluído": "done",
     "sem ritmo": "no pace",
     "sem alvo": "no target",
@@ -2837,6 +2838,7 @@
   const ESTADOS_SOMBRA = {
     a_correr: "a correr",
     travado: "travado",
+    em_pausa: "em pausa (quota)",
     concluido: "concluído",
     sem_ritmo: "sem ritmo",
     sem_alvo: "sem alvo",

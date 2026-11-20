@@ -6,6 +6,21 @@ the same number the panel shows and the catalogue lists; a bump of the catalogue
 pin is a new PR whose diff a reviewer reads (catalogue rule 4), and this file is
 what that reviewer reads first.
 
+## 3.48.1
+
+- **Uma pausa de quota deixa de ser um braço morto.** Um `HTTP 429` da quota diária de modelos free
+  da OpenRouter (1000 pedidos por conta, reset às 00:00 UTC) era lido como slug retirado: o estado
+  saía `travado`, o job ficava em falha e o ensaio só voltava na sonda seguinte — 12 h depois. Medido
+  a 2026-11-19/20: a quota esgotava-se em ~2 h 46 e a sonda das 19:07 perdia as ~7 h que o reset já
+  tinha aberto.
+- **A sonda classifica a falha**: `viva`, `quota` (429 ou motivo que o diga) ou `morta`. A hora de
+  reposição vem do `X-RateLimit-Reset`/`Retry-After` quando o provider a declara — nunca é inventada.
+- **Estado novo `em_pausa`**, com `pausa_ate` e sem data de fim (o ensaio está parado, logo uma data
+  seria uma promessa que ninguém cumpre). O middleware regista `quota_esgotada:<braço>` em vez de
+  `braco_sem_vida`, mantendo o ensaio parado — atribuir turnos a um braço em 429 queimava o turno.
+- **O job de renovação passa a correr de hora a hora**: a recuperação acontece dentro de uma hora do
+  reset em vez de esperar a sonda seguinte, e um braço morto a sério é apanhado no mesmo intervalo.
+
 ## 3.48.0
 
 - Add a usage statistics card beside the log: chart confirmed responses by model, profile, task, request surface and routing origin across retained detail, with counts, percentages and the observed date range.
