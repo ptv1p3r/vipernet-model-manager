@@ -127,6 +127,20 @@ class PainelEstatisticas(unittest.TestCase):
             self.assertEqual(self.client.post('/painel-filtros', json=dict(rev=rev, painel_filtros=valor)).status_code, 400)
         self.assertEqual(self.config.read_bytes(), antes)
 
+    def test_limiar_inteiro_seguro_do_painel(self):
+        doc = self.client.get('/config').json()
+        antes = self.config.read_bytes()
+        filtros = dict(periodo='semana', modelos='acima', limiar=2**53)
+        cfg = dict(doc['config'], painel_filtros=filtros)
+        self.assertTrue(self.client.post('/validar', json=cfg).json()['erros'])
+        self.assertEqual(self.client.post('/config', json=dict(config=cfg, rev=doc['rev'])).status_code, 400)
+        self.assertEqual(self.client.post('/painel-filtros', json=dict(rev=doc['rev'], painel_filtros=filtros)).status_code, 400)
+        self.assertEqual(self.config.read_bytes(), antes)
+        filtros['limiar'] = 2**53 - 1
+        self.assertFalse(self.client.post('/validar', json=cfg).json()['erros'])
+        self.assertEqual(self.client.post('/painel-filtros', json=dict(rev=doc['rev'], painel_filtros=filtros)).status_code, 200)
+        self.assertEqual(self.client.get('/estado').json()['painel_filtros'], filtros)
+
     def test_editor_recusa_tipo_invalido(self):
         cfg = self.client.get('/config').json()['config']
         for valor in ('false', None, 0):

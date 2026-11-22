@@ -1315,10 +1315,10 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
         if (isinstance(filtros, dict) and filtros.keys() == PAINEL_FILTROS_PADRAO.keys()
                 and filtros["periodo"] in PERIODOS_PAINEL
                 and filtros["modelos"] in ("todos", "acima", "top5")
-                and type(filtros["limiar"]) is int and filtros["limiar"] >= 0):
+                and type(filtros["limiar"]) is int and 0 <= filtros["limiar"] <= 2**53 - 1):
             saida["painel_filtros"] = dict(filtros)
         else:
-            erros.append(_t("'painel_filtros': periodo (semana|mes|sempre), modelos (todos|acima|top5), limiar (inteiro >= 0)"))
+            erros.append(_t("'painel_filtros': periodo (semana|mes|sempre), modelos (todos|acima|top5), limiar (inteiro de 0 a 9007199254740991)"))
     if "painel_graficos" in cfg:
         grupos = cfg["painel_graficos"]
         if (isinstance(grupos, list)
