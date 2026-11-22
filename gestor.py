@@ -379,7 +379,9 @@ _LIMITES_INTERNOS = ("contexto_max", "latencia_p95_ms")
 # derivadas do `PADRAO` dele pela mesma razao.
 _CHAVES_CONFIG = frozenset({"versao", "activo", "registar", "analise",
                             "estrategia", "retencao", "sombra", "idioma", "painel_estatisticas",
-                            "painel_graficos", "perfis"})
+                            "painel_graficos", "painel_filtros", "perfis"})
+PAINEL_FILTROS_PADRAO = {"periodo": "sempre", "modelos": "todos", "limiar": 0}
+PERIODOS_PAINEL = ("semana", "mes", "sempre")
 DIMENSOES_RESPOSTA = {
     "modelos": "respondido_por", "perfis": "perfil", "tarefas": "tarefa",
     "superficies": "superficie", "origens": "origem",
@@ -1308,6 +1310,15 @@ def validar(cfg: Any) -> tuple[dict[str, Any], list[str]]:
             saida["painel_estatisticas"] = cfg["painel_estatisticas"]
         else:
             erros.append(_t("'painel_estatisticas' tem de ser booleano"))
+    if "painel_filtros" in cfg:
+        filtros = cfg["painel_filtros"]
+        if (isinstance(filtros, dict) and filtros.keys() == PAINEL_FILTROS_PADRAO.keys()
+                and filtros["periodo"] in PERIODOS_PAINEL
+                and filtros["modelos"] in ("todos", "acima", "top5")
+                and type(filtros["limiar"]) is int and filtros["limiar"] >= 0):
+            saida["painel_filtros"] = dict(filtros)
+        else:
+            erros.append(_t("'painel_filtros': periodo (semana|mes|sempre), modelos (todos|acima|top5), limiar (inteiro >= 0)"))
     if "painel_graficos" in cfg:
         grupos = cfg["painel_graficos"]
         if (isinstance(grupos, list)

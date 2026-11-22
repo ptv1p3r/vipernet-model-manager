@@ -194,6 +194,7 @@ _EN: dict[str, str] = {
     "'activo' tem de ser booleano": "'activo' must be a boolean",
     "'painel_graficos' exige uma lista de gráficos conhecidos, sem repetições: {nomes}": "'painel_graficos' requires a list of known charts without duplicates: {nomes}",
     "'painel_estatisticas' tem de ser booleano": "'painel_estatisticas' must be a boolean",
+    "'painel_filtros': periodo (semana|mes|sempre), modelos (todos|acima|top5), limiar (inteiro >= 0)": "'painel_filtros': periodo (semana|mes|sempre), modelos (todos|acima|top5), limiar (integer >= 0)",
     "indique a revisão lida em 'rev'": "provide the revision you read in 'rev'",
     "'ambito' tem de ser 'global' ou 'perfil'": "'ambito' must be 'global' or 'perfil'",
     "perfil {nome!r} nao existe na configuracao":

@@ -91,6 +91,42 @@ class PainelEstatisticas(unittest.TestCase):
                 self.assertEqual(self.client.post('/config', json=doc).status_code, 400)
                 self.assertEqual(self.config.read_bytes(), antes)
 
+    def test_filtros_globais_opcionais_e_concorrencia(self):
+        antes = self.config.read_bytes()
+        estado = self.client.get('/estado').json()
+        self.assertEqual(estado.get('painel_filtros'), {'periodo': 'sempre', 'modelos': 'todos', 'limiar': 0})
+        self.assertNotIn('painel_filtros', self.client.get('/config').json()['config'])
+        self.assertEqual(self.config.read_bytes(), antes)
+        for periodo, modelos in [('semana', 'acima'), ('mes', 'top5'), ('sempre', 'todos')]:
+            valor = dict(periodo=periodo, modelos=modelos, limiar=5)
+            corpo = dict(rev=estado['rev'], painel_filtros=valor)
+            r = self.client.post('/painel-filtros', json=corpo)
+            self.assertEqual(r.status_code, 200, r.text)
+            estado = self.client.get('/estado').json()
+            self.assertEqual(r.json(), dict(ok=True, rev=estado['rev'], painel_filtros=valor))
+            self.assertEqual(estado['painel_filtros'], valor)
+            self.assertEqual(json.loads(self.config.read_text())['painel_filtros'], valor)
+            antes = self.config.read_bytes()
+            conflito = self.client.post('/painel-filtros', json=corpo)
+            self.assertEqual(conflito.status_code, 409)
+            self.assertEqual(conflito.json()['rev'], estado['rev'])
+            self.assertEqual(self.config.read_bytes(), antes)
+
+    def test_filtros_recusados_na_rota_e_no_editor(self):
+        antes = self.config.read_bytes()
+        doc = self.client.get('/config').json()
+        valor = dict(periodo='sempre', modelos='todos', limiar=0)
+        for invalido in (None, [], {}, dict(valor, periodo=[]), dict(valor, modelos='seis'),
+                         dict(valor, limiar=False), dict(valor, limiar=-1), dict(valor, extra=1)):
+            with self.subTest(invalido=invalido):
+                self.assertEqual(self.client.post('/painel-filtros', json=dict(rev=doc['rev'], painel_filtros=invalido)).status_code, 400)
+                cfg = dict(doc['config'], painel_filtros=invalido)
+                self.assertTrue(self.client.post('/validar', json=cfg).json()['erros'])
+                self.assertEqual(self.client.post('/config', json=dict(config=cfg, rev=doc['rev'])).status_code, 400)
+        for rev in (None, '', 2):
+            self.assertEqual(self.client.post('/painel-filtros', json=dict(rev=rev, painel_filtros=valor)).status_code, 400)
+        self.assertEqual(self.config.read_bytes(), antes)
+
     def test_editor_recusa_tipo_invalido(self):
         cfg = self.client.get('/config').json()['config']
         for valor in ('false', None, 0):

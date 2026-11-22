@@ -57,6 +57,40 @@ class Estatisticas(unittest.TestCase):
             self.assertEqual(self.obter()['tarefas'], {'b': 2})
             self.assertEqual(ler.call_count, 3)
 
+    def test_janelas_civis_lisboa_e_cache(self):
+        from datetime import datetime
+        # A semana atravessa o fim da hora de verão: à meia-noite de 22/10
+        # ainda é 21/10 em UTC; à meia-noite de 29/10 já não há diferença.
+        datas = ['2026-09-28T22:59:59Z', '2026-09-28T23:00:00Z',
+                 '2026-10-21T22:59:59Z', '2026-10-21T23:00:00Z',
+                 '2026-10-28T23:59:59Z', '2026-10-29T00:00:00Z', 'inválido']
+        self.ledger.write_text(''.join(json.dumps(dict(evento='resposta', ts=ts, respondido_por=str(i))) + '\n'
+                                       for i, ts in enumerate(datas)))
+        def obter(periodo):
+            r = self.client.get('/estatisticas', params={'periodo': periodo})
+            self.assertEqual(r.status_code, 200, r.text)
+            return r.json()
+        with patch.object(api, 'datetime', wraps=datetime) as relogio, \
+                patch.object(api, '_linhas_ledger', wraps=api._linhas_ledger) as ler:
+            def fixar(ts):
+                relogio.now.side_effect = lambda tz: datetime.fromisoformat(ts).astimezone(tz)
+            fixar('2026-10-28T23:59:59+00:00')
+            semana, mes = obter('semana'), obter('mes')
+            for r, inicio, modelos in [(semana, '2026-10-22', ['3', '4']),
+                                       (mes, '2026-09-29', ['1', '2', '3', '4'])]:
+                self.assertEqual((r['janela_inicio'], r['janela_fim']), (inicio, '2026-10-28'))
+                self.assertEqual(r['modelos'], dict.fromkeys(modelos, 1))
+                self.assertEqual(r['total'], len(modelos))
+            chamadas = ler.call_count
+            self.assertEqual(obter('semana'), semana)
+            self.assertEqual(obter('mes'), mes)
+            self.assertEqual(ler.call_count, chamadas)
+            self.assertEqual(obter('sempre'), self.obter())
+            self.assertEqual(self.obter()['total'], len(datas))
+            fixar('2026-10-29T00:00:00+00:00')
+            self.assertEqual(obter('semana')['modelos'], {'4': 1, '5': 1})
+        self.assertIn(self.client.get('/estatisticas?periodo=ano').status_code, (400, 422))
+
     def test_ausente_ou_sem_detalhe(self):
         vazio = dict(total=0, modelos={}, perfis={}, tarefas={}, superficies={}, origens={},
                      inicio=None, fim=None)

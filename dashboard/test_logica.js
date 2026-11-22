@@ -1995,8 +1995,8 @@ check("cartao do perfil: nenhuma coluna de accoes a direita do cartao",
   // ensaio em sombra: etiquetas de estado, barras e previsao), +18 na 3.47.21
   // (interruptor do ensaio por perfil e o resumo por perfil ao lado do global),
   // +1 na 3.48.1 (estado `em pausa (quota)` — pausa de quota nao e avaria).
-  check("i18n: o dicionario tem as 564 chaves medidas",
-        chaves.length === 564, "tem " + chaves.length);
+  check("i18n: o dicionario tem as 576 chaves medidas",
+        chaves.length === 576, "tem " + chaves.length);
   check("i18n: nenhuma traducao vazia",
         chaves.every(function (k) { return String(I.PT_EN[k]).trim() !== ""; }));
   // Nomes proprios e termos tecnicos ficam iguais nas duas linguas — o que nao
@@ -2657,7 +2657,7 @@ function carregarVivo(responder) {
     useEffect: function (fn) { if (primeiro) efeitos.push(fn); },
     useCallback: function (f) { return f; },
     useMemo: function (f) { return f(); },
-    useRef: function (v) { return { current: v }; },
+    useRef: function (v) { const i = cursor++; return estados[i] || (estados[i] = { current: v }); },
     Fragment: "Fragment",
   };
   const registos = {};
@@ -3285,6 +3285,15 @@ async function provaEstatisticas() {
       recolher(figura, e => e.tag === 'li').some(e => textoPlano(e).includes(nome) &&
         new RegExp('\\b' + n + '\\b').test(textoPlano(e)) && new RegExp(pct + '(?:,0)?\\s*%').test(textoPlano(e))));
   }
+  const mapa = Object.fromEntries(Array.from({length: 15}, (_, i) => ['m' + i, i + 1]));
+  const uiFiltros = carregar();
+  for (const [modelos, limiar, esperados] of [['todos', 99, 15], ['top5', 99, 5], ['acima', 12, 3], ['acima', 15, 0]]) {
+    const cartao = uiFiltros.cartaoEstatisticas({ fase: 'pronto', dados: { ...dados, total: 120, modelos: mapa, perfis: mapa } }, ['modelos','perfis'], { modelos, limiar });
+    const [m, p] = recolher(cartao, n => n.tag === 'figure');
+    const linhas = recolher(m, n => n.tag === 'li');
+    check('filtros: ' + modelos + '/' + limiar + ' só limita modelos, ordem e percentagens do total', linhas.length === esperados &&
+      (!esperados || /m14.*12[.,]5/.test(textoPlano(linhas[0]))) && recolher(p, n => n.tag === 'li').length === 15);
+  }
   for (const [selecao, titulos] of [[['perfis', 'origens'], ['Perfis', 'Origens de decisão']], [[], []]]) {
     const ui = carregar(); ui.idioma.setIdioma('pt');
     const cartao = ui.cartaoEstatisticas({ fase: 'pronto', dados }, selecao);
@@ -3387,6 +3396,55 @@ async function provaInterruptorEstatisticas() {
   }
 }
 
+async function provaFiltros() {
+  const inicial = { periodo: 'sempre', modelos: 'todos', limiar: 0 };
+  let filtros = inicial, rev = '1';
+  const posts = [], gets = [];
+  const painel = carregarVivo(p => {
+    if (p.url === '/estado') return { idioma: 'pt', perfis: {}, painel_estatisticas: true, painel_filtros: filtros, rev };
+    if (p.url === '/config') return { config: { painel_filtros: filtros }, rev };
+    if (p.url.startsWith('/estatisticas')) return new Promise(resolve => gets.push({ url: p.url, resolve }));
+    if (p.url === '/painel-filtros') return new Promise((resolve, reject) => posts.push({ p, reject, aceitar() {
+      filtros = p.corpo.painel_filtros; rev += 'x'; resolve({ ok: true, rev, painel_filtros: filtros });
+    } }));
+    return {};
+  });
+  const dados = nome => ({ total: 1, inicio: null, fim: null, ...Object.fromEntries(['modelos','perfis','tarefas','superficies','origens'].map(k => [k, { [nome]: 1 }])) });
+  const config = () => painel.filho('PaginaConfig', painel.render().props);
+  const campo = k => recolher(config(), n => n.props && n.props.name === k)[0];
+  const mudar = (k, valor) => campo(k).props.onChange({ target: { value: valor } });
+  painel.render(); await painel.assentar();
+  recolher(painel.render(), n => n.tag === 'button' && textoPlano(n) === 'Editar configuração')[0].props.onClick();
+  await painel.assentar();
+  check('filtros: apresenta controlos globais na configuração', !!campo('periodo') && !!campo('modelos'));
+  if (!campo('periodo')) return;
+  mudar('periodo', 'semana'); mudar('modelos', 'acima'); mudar('periodo', 'mes');
+  painel.render().props.onMudarJSON('{"rascunho":"em voo"}');
+  check('filtros: primeiro POST imediato e único em voo', posts.length === 1 && posts[0].p.metodo === 'POST' && JSON.stringify(posts[0].p.corpo) === JSON.stringify({ rev: '1', painel_filtros: { ...inicial, periodo: 'semana' } }));
+  posts[0].aceitar(); await painel.assentar();
+  check('filtros: agrega escolhas em voo e usa a revisão confirmada', posts.length === 2 && posts[1].p.corpo.rev === '1x' && posts[1].p.corpo.painel_filtros.periodo === 'mes' && posts[1].p.corpo.painel_filtros.modelos === 'acima');
+  posts[1].aceitar(); await painel.assentar();
+  const cfg = JSON.parse(painel.render().props.configJSON);
+  check('filtros: funde revisão sem perder edições feitas durante o POST', cfg.rascunho === 'em voo' && cfg.painel_filtros.periodo === 'mes');
+  check('filtros: períodos da API', gets.some(x => x.url.endsWith('?periodo=semana')) && gets.at(-1).url.endsWith('?periodo=mes'));
+  gets.at(-1).resolve(dados('mensal')); gets[0].resolve(dados('obsoleto')); await painel.assentar();
+  check('filtros: pré-visualização não aceita um GET antigo', textoPlano(config()).includes('mensal') && !textoPlano(config()).includes('obsoleto'));
+  for (const mau of ['', '1.5', '-1', '2x', '1e2', '9007199254740992']) mudar('limiar', mau);
+  check('filtros: limiar inválido não é arredondado nem enviado', posts.length === 2);
+  mudar('limiar', '1'); posts[2].aceitar(); await painel.assentar();
+  check('filtros: limiar imediato estrito e sem novo GET', posts[2].p.corpo.painel_filtros.limiar === 1 && textoPlano(config()).includes('Nenhum modelo acima do limiar.') && gets.length === 3);
+  mudar('modelos', 'top5'); posts[3].reject(Object.assign(Error('conflito'), { status: 409 })); await painel.assentar();
+  check('filtros: conflito mantém rascunho e repõe preferência confirmada', campo('modelos').props.value === 'acima' && JSON.parse(painel.render().props.configJSON).rascunho === 'em voo' && textoPlano(config()).includes('Descartar e abrir'));
+  painel.render().props.onMudarJSON('{"incompleto":');
+  mudar('limiar', '0'); posts[4].aceitar(); await painel.assentar();
+  check('filtros: zero aceite e JSON incompleto preservado literalmente', posts[4].p.corpo.painel_filtros.limiar === 0 && painel.render().props.configJSON === '{"incompleto":');
+  painel.render().props.onMudarJSON('{"incompleto":42}');
+  const reparado = JSON.parse(painel.render().props.configJSON);
+  check('filtros: ao reparar o JSON não se perde o filtro já gravado', reparado.incompleto === 42 && reparado.painel_filtros?.limiar === 0);
+  painel.render().props.onDescartar(); await painel.assentar();
+  check('filtros: painel e pré-visualização aplicam o mesmo filtro', !textoPlano(painel.render()).includes('Nenhum modelo acima do limiar.') && textoPlano(painel.render()).includes('mensal'));
+}
+
 function fechar() {
   console.log("");
   if (falhas) {
@@ -3414,4 +3472,6 @@ provaDoGestoPorPerfil()
   .catch(e => check('escolha global: prova completa', false, e.stack))
   .then(provaInterruptorEstatisticas)
   .catch(e => check('interruptor: prova completa', false, e.stack))
+  .then(provaFiltros)
+  .catch(e => check('filtros: prova completa', false, e.stack))
   .then(fechar);

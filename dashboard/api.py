@@ -18,7 +18,7 @@ import json
 import os
 import sys
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
 from threading import Lock
 from pathlib import Path
@@ -469,12 +469,33 @@ def _linhas_ledger(caminho: Path) -> Any:
 _DIMENSOES_RESPOSTA = gestor.DIMENSOES_RESPOSTA
 
 
-def _agregar_respostas(eventos: Iterable[dict[str, Any]]) -> dict[str, Any]:
+_LISBOA = ZoneInfo("Europe/Lisbon")
+
+
+def _instante_resposta(ts: Any) -> datetime | None:
+    if not isinstance(ts, str):
+        return None
+    try:
+        instante = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return instante if instante.tzinfo else instante.replace(tzinfo=timezone.utc)
+
+
+def _agregar_respostas(eventos: Iterable[dict[str, Any]], janela: tuple[date, date] | None) -> dict[str, Any]:
     grupos: dict[str, dict[str, int]] = {nome: {} for nome in _DIMENSOES_RESPOSTA}
     total = 0
     inicio = fim = primeiro = ultimo = None
+    limites = None if janela is None else (
+        datetime.combine(janela[0], time.min, _LISBOA),
+        datetime.combine(janela[1] + timedelta(days=1), time.min, _LISBOA),
+    )
     for evento in eventos:
         if evento.get("evento") != "resposta":
+            continue
+        ts = evento.get("ts")
+        instante = _instante_resposta(ts)
+        if limites and (instante is None or not limites[0] <= instante < limites[1]):
             continue
         total += 1
         for nome, campo in _DIMENSOES_RESPOSTA.items():
@@ -484,42 +505,44 @@ def _agregar_respostas(eventos: Iterable[dict[str, Any]]) -> dict[str, Any]:
                 chave = ""
             grupo = grupos[nome]
             grupo[chave] = grupo.get(chave, 0) + 1
-        ts = evento.get("ts")
-        if not isinstance(ts, str):
+        if instante is None:
             continue
-        try:
-            instante = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        if instante.tzinfo is None:
-            instante = instante.replace(tzinfo=timezone.utc)
         if primeiro is None or instante < primeiro:
             primeiro, inicio = instante, ts
         if ultimo is None or instante > ultimo:
             ultimo, fim = instante, ts
-    return {"total": total, **grupos, "inicio": inicio, "fim": fim}
+    resultado = {"total": total, **grupos, "inicio": inicio, "fim": fim}
+    if janela:
+        resultado.update(janela_inicio=janela[0].isoformat(), janela_fim=janela[1].isoformat())
+    return resultado
 
 
-# Só o último agregado fica em memória. A trava evita passagens simultâneas
-# pelo mesmo ficheiro quando várias abas abrem o painel a frio.
+# Uma entrada por janela; o novo dia civil invalida semana/mês sem tocar no ledger.
 _TRAVA_ESTATISTICAS = Lock()
 
 
-@lru_cache(maxsize=1)
-def _estatisticas_do_ledger(caminho: Path, assinatura: tuple[int, ...]) -> dict[str, Any]:
-    return _agregar_respostas(_linhas_ledger(caminho))
+@lru_cache(maxsize=3)
+def _estatisticas_do_ledger(caminho: Path, assinatura: tuple[int, ...], janela: tuple[date, date] | None) -> dict[str, Any]:
+    return _agregar_respostas(_linhas_ledger(caminho), janela)
 
 
 @router.get("/estatisticas")
-def estatisticas() -> dict[str, Any]:
+def estatisticas(periodo: str = "sempre") -> dict[str, Any]:
     """Uma observação por resposta no detalhe retido, não por turno ou dia."""
+    if periodo not in gestor.PERIODOS_PAINEL:
+        raise HTTPException(status_code=400, detail="periodo: semana|mes|sempre")
     caminho = gestor.caminho_ledger()
     with _TRAVA_ESTATISTICAS:
+        janela = None
+        if periodo != "sempre":
+            hoje = datetime.now(_LISBOA).date()
+            janela = (hoje - timedelta(days=6 if periodo == "semana" else 29), hoje)
         try:
             st = caminho.stat()
         except FileNotFoundError:
-            return _agregar_respostas(())
-        return _estatisticas_do_ledger(caminho, (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns))
+            return _agregar_respostas((), janela)
+        assinatura = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+        return _estatisticas_do_ledger(caminho, assinatura, janela)
 
 
 # As contagens são caras (uma passagem ao ledger) e mudam só quando o ledger
@@ -1049,6 +1072,7 @@ def estado() -> dict[str, Any]:
         "idioma": gestor.idioma_efectivo(cfg),
         "painel_estatisticas": cfg.get("painel_estatisticas", True),
         "painel_graficos": cfg.get("painel_graficos", list(_DIMENSOES_RESPOSTA)),
+        "painel_filtros": cfg.get("painel_filtros", gestor.PAINEL_FILTROS_PADRAO),
         "opcoes": {
             "estrategia": gestor.opcoes_estrategia(),
             # Superficies que ja foram vistas neste ambiente. Nao e a lista
@@ -1137,11 +1161,21 @@ def painel_estatisticas_post(corpo: Any = Body(default=None)) -> JSONResponse:
     rev = corpo.get("rev")
     if not isinstance(activo, bool):
         raise HTTPException(status_code=400, detail=t("'activo' tem de ser booleano"))
+    return _gravar_preferencia_painel("painel_estatisticas", activo, rev)
+
+
+@router.post("/painel-filtros")
+def painel_filtros_post(corpo: Any = Body(default=None)) -> JSONResponse:
+    corpo = _corpo_objeto(corpo)
+    return _gravar_preferencia_painel("painel_filtros", corpo.get("painel_filtros"), corpo.get("rev"))
+
+
+def _gravar_preferencia_painel(chave: str, valor: Any, rev: Any) -> JSONResponse:
     if not isinstance(rev, str) or not rev.strip():
         raise HTTPException(status_code=400, detail=t("indique a revisão lida em 'rev'"))
 
     def mutar(cfg: dict[str, Any]) -> dict[str, Any]:
-        cfg["painel_estatisticas"] = activo
+        cfg[chave] = valor
         return cfg
 
     try:
@@ -1151,7 +1185,7 @@ def painel_estatisticas_post(corpo: Any = Body(default=None)) -> JSONResponse:
             t("a configuração mudou desde que este painel leu o estado"), exc.rev_actual))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return JSONResponse({"ok": True, "painel_estatisticas": cfg["painel_estatisticas"], "rev": nova_rev})
+    return JSONResponse({"ok": True, chave: cfg[chave], "rev": nova_rev})
 
 
 @router.post("/idioma")

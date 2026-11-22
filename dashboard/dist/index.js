@@ -29,6 +29,18 @@
   const IDIOMA_PADRAO = "en";
   const ETIQUETA_IDIOMA = { en: "English", pt: "Português" };
   const PT_EN = {
+    "Nenhum modelo acima do limiar.": "No models above the threshold.",
+    "Filtros — gravação imediata": "Filters — saved immediately",
+    "Sempre": "All time",
+    "Últimos 7 dias": "Last 7 days",
+    "Últimos 30 dias": "Last 30 days",
+    "Todos os modelos": "All models",
+    "Acima do limiar": "Above threshold",
+    "Cinco mais utilizados": "Five most used",
+    "Limiar de respostas": "Response threshold",
+    "Introduza um inteiro não negativo.": "Enter a non-negative integer.",
+    "Pré-visualização": "Preview",
+    "Resposta inválida ao gravar os filtros.": "Invalid response when saving filters.",
     "Grava de imediato": "Saves immediately",
     "Estatísticas de utilização": "Usage statistics",
     "A carregar estatísticas…": "Loading statistics…",
@@ -3017,10 +3029,15 @@
       });
   }
 
-  function graficoUso(chave, dados) {
+  const FILTROS_PADRAO = { periodo: "sempre", modelos: "todos", limiar: 0 };
+
+  function graficoUso(chave, dados, filtros) {
     const paragens = [];
     let soma = 0;
-    const legenda = Object.entries(dados[chave]).sort((a, b) => b[1] - a[1]).map(([nome, n], i) => {
+    let entradas = Object.entries(dados[chave]).sort((a, b) => b[1] - a[1]);
+    if (chave === "modelos" && filtros.modelos === "top5") entradas = entradas.slice(0, 5);
+    if (chave === "modelos" && filtros.modelos === "acima") entradas = entradas.filter(([, n]) => n > filtros.limiar);
+    const legenda = entradas.map(([nome, n], i) => {
       const cor = `hsl(${i * 137.508 % 360}, 60%, 45%)`;
       const inicio = soma / dados.total * 100;
       soma += n;
@@ -3029,13 +3046,14 @@
         hBase("span", null, nome || T("Não registado")),
         h("span", null, fmtNum(n, 0) + " (" + fmtPct(n / dados.total * 100, 1) + ")"));
     });
+    if (soma < dados.total) paragens.push(`transparent ${soma / dados.total * 100}% 100%`);
     return h("figure", { key: chave, className: "vmm-estat-figura" },
       h("figcaption", null, GRUPOS_USO[chave]),
-      h("div", { className: "vmm-estat-circulo", "aria-hidden": true,
+      !entradas.length ? h("p", null, "Nenhum modelo acima do limiar.") : h("div", { className: "vmm-estat-circulo", "aria-hidden": true,
         style: { backgroundImage: `conic-gradient(${paragens.join(", ")})` } }), h("ul", null, legenda));
   }
 
-  function cartaoEstatisticas(estado, selecao) {
+  function cartaoEstatisticas(estado, selecao, filtros = FILTROS_PADRAO) {
     const grupos = Object.keys(GRUPOS_USO).filter(k => !Array.isArray(selecao) || selecao.includes(k));
     const d = estado.dados;
     const mensagem = estado.fase === "carga" ? "A carregar estatísticas…"
@@ -3045,8 +3063,8 @@
       h("h2", null, "Estatísticas de utilização"),
       h("p", null, "Contagens de respostas no detalhe retido, para todos os perfis."),
       h("div", { role: "status" }, mensagem, d && h("p", null, T("Total de respostas") + ": " + fmtNum(d.total, 0)),
-        d && h("p", null, T("Período") + ": " + [d.inicio, d.fim].map(v => dataCurta(v) || "—").join(" – "))),
-      d && d.total > 0 ? grupos.map(k => graficoUso(k, d)) : null));
+        d && h("p", null, T("Período") + ": " + (d.janela_inicio && d.janela_fim ? [d.janela_inicio, d.janela_fim].map(v => dataCurta(v + "T12:00:00")) : [d.inicio, d.fim].map(v => dataCurta(v) || "—")).join(" – "))),
+      d && d.total > 0 ? grupos.map(k => graficoUso(k, d, filtros)) : null));
   }
 
   function TabelaLog(props) {
@@ -3952,7 +3970,34 @@
           painel_graficos: alternarOpcao(selecao, k, !selecao.includes(k)) }, null, 2)) }), GRUPOS_USO[k])));
   }
 
+  const PERIODOS = { sempre: "Sempre", semana: "Últimos 7 dias", mes: "Últimos 30 dias" };
+  const MODOS_MODELO = { todos: "Todos os modelos", acima: "Acima do limiar", top5: "Cinco mais utilizados" };
+  function filtrosValidos(f) {
+    return !!f && Object.hasOwn(PERIODOS, f.periodo) && Object.hasOwn(MODOS_MODELO, f.modelos) &&
+      Number.isSafeInteger(f.limiar) && f.limiar >= 0;
+  }
+  function escolhaFiltros(props, limiarInvalido, setLimiarInvalido) {
+    if (!filtrosValidos(props.estado.painel_filtros)) return null;
+    const f = props.filtros;
+    function seletor(nome, titulo, opcoes) {
+      return h("label", null, titulo, h("select", { name: nome, value: f[nome], onChange: e => {
+        if (nome === "modelos") setLimiarInvalido(null);
+        props.onFiltro(nome, e.target.value);
+      } }, Object.entries(opcoes).map(([v, texto]) => h("option", { key: v, value: v }, texto))));
+    }
+    return h("fieldset", { disabled: props.bloquearFiltros }, h("legend", null, "Filtros — gravação imediata"),
+      seletor("periodo", "Período", PERIODOS), seletor("modelos", "Modelos", MODOS_MODELO),
+      f.modelos === "acima" && h("label", null, "Limiar de respostas", h("input", { name: "limiar", type: "text", inputMode: "numeric",
+        value: limiarInvalido === null ? String(f.limiar) : limiarInvalido, "aria-invalid": limiarInvalido !== null,
+        onChange: e => {
+          const s = e.target.value;
+          if (!/^\d+$/.test(s) || !Number.isSafeInteger(Number(s))) { setLimiarInvalido(s); return; }
+          setLimiarInvalido(null); props.onFiltro("limiar", Number(s));
+        } })), f.modelos === "acima" && limiarInvalido !== null && h("span", { role: "alert" }, "Introduza um inteiro não negativo."));
+  }
+
   function PaginaConfig(props) {
+    const [limiarInvalido, setLimiarInvalido] = useState(null);
     const estado = props.estado || {};
     const meta = metaPlugin(estado);
     const versao = (estado.plugin || {}).versao || estado.versao_painel || "";
@@ -4001,7 +4046,7 @@
           h(Button, {
             size: "sm",
             variant: "ghost",
-            onClick: props.onDescartar,
+            onClick: props.onDescartar, disabled: props.aGravar,
             title: "Voltar ao painel sem gravar as alterações",
           }, "Descartar")
         )
@@ -4021,7 +4066,11 @@
           h(Button, { size: "sm", variant: "outline", role: "switch",
             "aria-label": "Estatísticas de utilização", "aria-checked": estado.painel_estatisticas,
             title: "Grava de imediato", disabled: props.aGravar || !props.podeMudarEstatisticas,
-            onClick: props.onEstatisticas }, estado.painel_estatisticas ? "Ligado — desligar" : "Desligado — ligar")), escolhaGraficos(props)) : null,
+            onClick: props.onEstatisticas }, estado.painel_estatisticas ? "Ligado — desligar" : "Desligado — ligar")), escolhaGraficos(props),
+        escolhaFiltros(props, limiarInvalido, setLimiarInvalido),
+        estado.painel_estatisticas && filtrosValidos(estado.painel_filtros) && props.estatisticas && h("section", null,
+          h("h3", null, "Pré-visualização"), cartaoEstatisticas(props.estatisticas,
+            (lerJSON(props.configJSON) || estado).painel_graficos, estado.painel_filtros))) : null,
 
       // Os tres blocos, cada um com titulo proprio: duas decisoes diferentes
       // (quem classifica / como se escolhe) nao partilham o mesmo bloco.
@@ -4065,7 +4114,7 @@
           h(
             "div",
             { className: "vmm-editor-accoes" },
-            h(Button, { size: "sm", variant: "ghost", onClick: props.onDescartar }, "Voltar sem gravar")
+            h(Button, { size: "sm", variant: "ghost", onClick: props.onDescartar, disabled: props.aGravar }, "Voltar sem gravar")
           )
         )
       )
@@ -4157,7 +4206,7 @@
           // render que se segue ja sai na lingua certa, sem um piscar de ingles.
           setIdioma(r[0] && r[0].idioma);
           setEstado(r[0]);
-          if (mostrarEstatisticas(r[0])) carregarEstatisticas();
+          if (mostrarEstatisticas(r[0])) carregarEstatisticas(r[0].painel_filtros);
           else setEstatisticas({ fase: "carga" }); // invalida a resposta ainda em voo
           setLog((r[1] && r[1].linhas) || []);
           setErro(null);
@@ -4178,17 +4227,66 @@
     }, [limite]);
 
     const [estatisticas, setEstatisticas] = useState({ fase: "carga" });
-    function carregarEstatisticas() {
+    function carregarEstatisticas(filtros) {
       // A identidade distingue pedidos sobrepostos: só o mais recente publica.
       const pedido = { fase: "carga" };
       setEstatisticas(pedido);
       function concluir(resultado) {
         setEstatisticas(actual => actual === pedido ? resultado : actual);
       }
-      pedir("/estatisticas").then(dados => concluir(estatisticasValidas(dados)
+      pedir("/estatisticas" + (filtrosValidos(filtros) ? "?periodo=" + filtros.periodo : "")).then(dados => concluir(estatisticasValidas(dados)
         ? { fase: "pronto", dados } : { fase: "erro" }))
         .catch(() => concluir({ fase: "erro" }));
     }
+    const [filtrosDesejados, setFiltrosDesejados] = useState(null);
+    // A mesma fila é vista pelos callbacks de renders diferentes (incluindo antes do próximo render).
+    const filaFiltros = React.useRef(null);
+    // Se a confirmação chegou a meio de JSON inválido, só se funde a chave quando voltar a ser um objecto.
+    const filtrosParaFundir = React.useRef(null);
+    function mudarFiltro(campo, valor) {
+      if (!configRev || aGravar || idiomaAGravar || aCarregar || !filtrosValidos(estado.painel_filtros)) return;
+      const fila = filaFiltros.current;
+      const anterior = fila ? fila.alvo : estado.painel_filtros;
+      const alvo = { ...anterior, [campo]: valor };
+      if (!filtrosValidos(alvo) || anterior[campo] === valor) return;
+      setFiltrosDesejados(alvo);
+      if (fila) { fila.alvo = alvo; return; }
+      const nova = { alvo };
+      filaFiltros.current = nova;
+      setErro(null);
+      async function gravar() {
+        let rev = configRev, confirmado = estado.painel_filtros;
+        try {
+          for (;;) {
+            const enviado = nova.alvo;
+            const r = await pedir("/painel-filtros", { method: "POST", body: { rev, painel_filtros: enviado } });
+            if (!r || r.ok !== true || typeof r.rev !== "string" || !r.rev || !filtrosValidos(r.painel_filtros))
+              throw Error(T("Resposta inválida ao gravar os filtros."));
+            rev = r.rev;
+            const f = r.painel_filtros;
+            setConfigRev(rev);
+            setEstado(s => ({ ...s, rev: r.rev, painel_filtros: f }));
+            filtrosParaFundir.current = f;
+            setConfigJSON(texto => {
+              const cfg = lerJSON(texto);
+              return cfg ? JSON.stringify({ ...cfg, painel_filtros: f }, null, 2) : texto;
+            });
+            setValidacaoOk(null);
+            if (confirmado.periodo !== f.periodo && mostrarEstatisticas(estado)) carregarEstatisticas(f);
+            confirmado = f;
+            if (nova.alvo === enviado) break;
+          }
+        } catch (e) {
+          setErro(ehConflito(e) ? T("A configuração foi alterada noutro sítio desde que abriu esta página. ") +
+            T("Descartar e abrir outra vez para ver o estado actual.") : textoDoErro(e));
+        } finally {
+          filaFiltros.current = null;
+          setFiltrosDesejados(null);
+        }
+      }
+      return gravar();
+    }
+
     function mudarPainelEstatisticas() {
       if (!configRev || typeof estado.painel_estatisticas !== "boolean") return;
       setAGravar(true);
@@ -4406,6 +4504,7 @@
     }
 
     function carregarConfig() {
+      setConfigRev(""); // A revisão anterior não habilita gravações durante a releitura do rascunho.
       pedir("/config")
         .then(function (r) {
           // O backend devolve {"config": ..., "rev": ...}; o rev volta no
@@ -4515,6 +4614,7 @@
     // Sair sem gravar: so aqui o texto e abandonado, e sempre por accao
     // explicita do dono.
     function fecharEditor() {
+      if (filaFiltros.current) return;
       setMostrarEditor(false);
       // O texto NAO se apaga: a seccao de classificador/estrategia le-o sempre.
       setErrosValidacao([]);
@@ -4985,21 +5085,32 @@
         errosValidacao: errosValidacao,
         validacaoOk: validacaoOk,
         aValidar: aValidar,
-        aGravar: aGravar,
+        aGravar: aGravar || !!filtrosDesejados,
+        bloquearFiltros: !configRev || aGravar || idiomaAGravar || aCarregar,
+        estatisticas, filtros: filtrosDesejados || estado.painel_filtros, onFiltro: mudarFiltro,
         onValidar: validarConfig,
         onGravar: gravarEFechar,
         onDescartar: fecharEditor,
         onIdioma: mudarIdioma,
         podeMudarEstatisticas: !!configRev,
         onEstatisticas: mudarPainelEstatisticas,
-        idiomaAGravar: idiomaAGravar,
+        idiomaAGravar: idiomaAGravar || !!filtrosDesejados,
         onSuperficie: function (perfil, sup, alvo) { mudarSuperficie(perfil, sup, alvo); },
         onSombra: function (campos) { mudarSombra(campos); },
         onBracos: function (a, b, provA, provB) { return mudarBracos(a, b, provA, provB); },
         avisoSombra: avisoSombra,
         onMudarJSON: function (novo) {
-          setConfigJSON(novo);
           setValidacaoOk(null);
+          const pendente = filtrosParaFundir.current;
+          if (pendente) {
+            // Um rascunho já válido tem a chave fundida: não reformata as teclas seguintes.
+            if (lerJSON(configJSON)) filtrosParaFundir.current = null;
+            else {
+              const cfg = lerJSON(novo);
+              if (cfg) { novo = JSON.stringify({ ...cfg, painel_filtros: pendente }, null, 2); filtrosParaFundir.current = null; }
+            }
+          }
+          setConfigJSON(novo);
           setErrosValidacao([]);
         },
       });
@@ -5120,7 +5231,7 @@
                 estado.ledger.caminho + " · " + fmtNum((estado.ledger.bytes || 0) / 1024, 0) + T(" KiB"))
             : null
         )
-      ), mostrarEstatisticas(estado) ? cartaoEstatisticas(estatisticas, estado.painel_graficos) : null),
+      ), mostrarEstatisticas(estado) ? cartaoEstatisticas(estatisticas, estado.painel_graficos, estado.painel_filtros || FILTROS_PADRAO) : null),
       h("div", { className: "vmm-pe vmm-mudo" },
         T("Catalogo e associacoes de tarefa vivem em plugin-data/vipernet-model-manager/config.json — este painel permite editar a configuração. Versao do plugin: ") +
         meta.versao + T(" · painel: ") + meta.manifest +
