@@ -543,6 +543,43 @@ _EN: dict[str, str] = {
         'config: {v0}',
     'desligado':
         'off',
+    # Shadow trial controls: CLI status, command help and validation errors.
+    '  global_control: activo={v0} ts={v1} por={v2} motivo={v3}':
+        '  global_control: active={v0} ts={v1} by={v2} reason={v3}',
+    '  sem global_control: o interruptor e o `activo` do topo do bloco (vmm sombra on/off escreve-o)':
+        '  no global_control: the switch is the top-level `activo` field in this block (set by vmm sombra on/off)',
+    '  {v0}: {v1} ({v2}) ttl {v3}h': '  {v0}: {v1} ({v2}) TTL {v3} h',
+    ' — repoe em {v0}': ' — resets at {v0}',
+    'aviso: controlo nao registado no ledger: {v0}':
+        'warning: could not record the change in the control ledger: {v0}',
+    'em pausa: quota esgotada no braco {v0}{v1}': 'paused: quota exhausted for arm {v0}{v1}',
+    'ensaio em sombra {v0}: herda o interruptor global': 'shadow trial {v0}: inherits the global switch setting',
+    'ensaio em sombra {v0}: {v1}': 'shadow trial {v0}: {v1}',
+    'herdar precisa de --perfil: o global herda-se de si proprio':
+        'herdar requires --perfil: the global setting cannot inherit from itself',
+    'interruptor global: {v0}': 'global switch: {v0}',
+    'interruptor so deste perfil (on/off/herdar); sem isto e o global':
+        'set the switch for this profile only (on/off/herdar); omit this option to set the global switch',
+    'no global': 'globally',
+    'no perfil {v0}': 'for profile {v0}',
+    'perfil desconhecido: {p0}': 'unknown profile: {p0}',
+    'perfil desconhecido: {v0}': 'unknown profile: {v0}',
+    'perfis.{v0} nao e um objecto': 'perfis.{v0} is not an object',
+    'por perfil (efectivo, origem):': 'by profile (effective setting, source):',
+    'porque se ligou/desligou (fica no ledger de controlo)':
+        'reason for switching on or off (recorded in the control ledger)',
+    "quantas entradas do ledger de controlo mostrar (com 'controlo')":
+        "number of control ledger entries to show with 'controlo'",
+    'registado em {v0}: {v1} ({v2} -> {v3})': 'recorded in {v0}: {v1} ({v2} -> {v3})',
+    'sem controlos registados em {v0}': 'no control changes recorded in {v0}',
+    'sem quota': 'out of quota',
+    '{p0}.activo ({p1}) e {p0}.global_control.activo ({p2}) discordam':
+        '{p0}.activo ({p1}) and {p0}.global_control.activo ({p2}) do not match',
+    '{p0}.herda tem de ser booleano': '{p0}.herda must be a boolean',
+    '{p0}.ts nao e uma data ISO 8601: {p1}': '{p0}.ts is not an ISO 8601 date: {p1}',
+    '{p0}.{p1} tem de ser texto': '{p0}.{p1} must be text',
+    '{v0} | {v1} | {v2} | {v3} -> {v4} | por {v5} | rev {v6}':
+        '{v0} | {v1} | {v2} | {v3} -> {v4} | by {v5} | rev {v6}',
     'ensaio em sombra: {v0}':
         'shadow trial: {v0}',
     'ensaio: {v0} | unidade: {v1}':

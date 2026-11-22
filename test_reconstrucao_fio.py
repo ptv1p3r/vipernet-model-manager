@@ -18,7 +18,7 @@ O que se prova aqui, com os transports **reais** do core (ida e volta):
 
 1. `codex_responses` -> chat: um payload Responses convertido produz as mesmas
    mensagens chat que a conversa original produzia, com o prompt de sistema
-   vindo de `instructions`.
+   preservado, quer venha de `instructions` quer de uma mensagem `developer`.
 2. `anthropic_messages` -> chat: `system` e os blocos `tool_use`/`tool_result`
    sobrevivem a conversao.
 3. `_payload_na_forma_do_destino` devolve um corpo com `messages` e sem
@@ -208,25 +208,32 @@ class ReconstrucaoDoFio(unittest.TestCase):
         self.assertIs(novo, pedido)
 
     def test_responses_sem_instrucoes_nao_inventa_sistema(self):
-        pedido = _responses()
-        pedido.pop("instructions", None)
-        convertidas = vmm._mensagens_de_responses(pedido)
-        self.assertTrue(convertidas)
-        self.assertNotEqual(convertidas[0]["role"], "system")
+        # Sem prompt em nenhum dos dois locais do fio Responses.
+        pedido = {"input": [{"type": "message", "role": "user", "content": "Ola"}]}
+        self.assertEqual(vmm._mensagens_de_responses(pedido),
+                         [{"role": "user", "content": "Ola"}])
+
+    def test_prompt_developer_equivale_a_instructions(self):
+        texto = CONVERSA[0]["content"]
+        turno = {"type": "message", "role": "user", "content": "Ola"}
+        for pedido in ({"instructions": texto, "input": [turno]},
+                       {"input": [{"type": "message", "role": "developer", "content": [
+                           {"type": "input_text", "text": texto}]}, turno]}):
+            with self.subTest(pedido=pedido):
+                self.assertEqual(vmm._mensagens_de_responses(pedido), [
+                    {"role": "system", "content": texto}, {"role": "user", "content": "Ola"}])
 
     def test_itens_desconhecidos_caem_sem_partir_a_conversa(self):
-        pedido = _responses()
-        pedido["input"] = [
+        pedido = {"instructions": CONVERSA[0]["content"], "input": [
             {"type": "reasoning", "encrypted_content": "xxx"},
             {"type": "message", "role": "user", "content": "Ola"},
             {"type": "web_search_call", "id": "ws_1", "status": "completed"},
             {"type": "message", "role": "assistant",
              "content": [{"type": "output_text", "text": "Bom dia"}]},
-        ]
+        ]}
         convertidas = vmm._mensagens_de_responses(pedido)
-        papeis = [m["role"] for m in convertidas]
-        self.assertEqual(papeis, ["system", "user", "assistant"])
-        self.assertEqual(convertidas[-1]["content"], "Bom dia")
+        self.assertEqual(convertidas, [CONVERSA[0], {"role": "user", "content": "Ola"},
+                                      {"role": "assistant", "content": "Bom dia"}])
 
     def test_api_mode_vazio_infere_a_forma_do_corpo(self):
         """Sem kwarg e sem `api_mode` na rota, o corpo diz o fio de origem.
