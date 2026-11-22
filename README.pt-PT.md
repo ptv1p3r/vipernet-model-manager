@@ -270,6 +270,15 @@ Auto-teste do painel (não toca na config viva):
 VMM_DIR=$(mktemp -d) /opt/hermes/.venv/bin/python dashboard/selftest.py
 ```
 
+### Estatísticas de utilização
+
+Em Configuração → Estatísticas de utilização, liga o painel para veres a pré-visualização. Em «Filtros — gravação imediata» tens duas escolhas:
+
+- «Período» muda o total de respostas e todos os gráficos. Escolhe «Últimos 7 dias», «Últimos 30 dias» ou «Sempre». O painel conta as respostas de todos os perfis para as quais ainda há registo detalhado. «Sempre» não recupera histórico já eliminado.
+- «Modelos» muda apenas o gráfico de modelos. «Todos os modelos» mostra todos os que responderam no período; «Cinco mais utilizados» mostra até cinco, por número de respostas; «Acima do limiar» só mostra os que ultrapassam o valor indicado. Com um limiar de 10, um modelo com 10 respostas fica de fora e um com 11 aparece. As percentagens continuam a usar o total do período, mesmo quando há modelos ocultos.
+
+Os filtros ficam guardados e a pré-visualização atualiza-se sem recarregar a página. Não precisas de usar «Gravar e voltar» para os filtros; esse botão é necessário se alterares as caixas de «Gráficos a apresentar».
+
 ## Instalação
 
 ```sh

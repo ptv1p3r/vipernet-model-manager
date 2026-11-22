@@ -270,6 +270,15 @@ Panel self-test (does not touch the live config):
 VMM_DIR=$(mktemp -d) /opt/hermes/.venv/bin/python dashboard/selftest.py
 ```
 
+### Usage statistics
+
+Open Configuration → Usage statistics and turn the panel on to see the preview. The two filters are saved immediately:
+
+- Period changes the response total and every chart. Choose the last 7 days, the last 30 days, or all time. The panel counts responses across all profiles using the detailed records still available; all time does not restore deleted history.
+- Models changes only the model chart. Show all models that responded in the period, the five with the most responses (or fewer if fewer were used), or only those above a threshold. With a threshold of 10, a model with 10 responses is hidden and one with 11 is shown. Percentages still use the total for the period, including hidden models.
+
+The preview updates without a page reload. You do not need to select ‘Save and return’ for either filter. Use that button if you change the ‘Charts to show’ checkboxes.
+
 ## Installation
 
 ```sh
